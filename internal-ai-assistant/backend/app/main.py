@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import time
 import uuid
@@ -166,6 +167,46 @@ def citation_view_url(document_id: str, chunk_id: Optional[str] = None) -> str:
     return f"{url}?chunk_id={chunk_id}" if chunk_id else url
 
 
+def citation_content_url(document_id: str, chunk_id: Optional[str] = None) -> str:
+    url = f"/api/documents/{document_id}/content"
+    return f"{url}?chunk_id={chunk_id}" if chunk_id else url
+
+
+FEEDBACK_STATUSES = {"new", "reviewed", "resolved", "ignored"}
+MIN_CONTEXT_SCORE = 0.18
+CHINESE_STOP_CHARS = set("的了和与及或为对中于以从按可有无这那此它其你我他她们吗呢啊吧")
+
+
+def relevance_terms(text: str) -> set[str]:
+    raw = (text or "").lower()
+    terms = set(re.findall(r"[a-z0-9_]{2,}", raw))
+    cjk_chars = [ch for ch in re.findall(r"[\u4e00-\u9fff]", raw) if ch not in CHINESE_STOP_CHARS]
+    terms.update(cjk_chars)
+    for size in (2, 3, 4):
+        for i in range(max(0, len(cjk_chars) - size + 1)):
+            terms.add("".join(cjk_chars[i : i + size]))
+    return terms
+
+
+def filter_relevant_contexts(contexts: List[dict], question: str, min_score: float = MIN_CONTEXT_SCORE) -> List[dict]:
+    if not contexts:
+        return []
+    question_terms = relevance_terms(question)
+    question_cjk = "".join(re.findall(r"[\u4e00-\u9fff]", question or ""))
+    filtered = []
+    for context in contexts:
+        score = context.get("score")
+        haystack = " ".join([context.get("content") or "", context.get("document_title") or "", context.get("filename") or ""])
+        content_terms = relevance_terms(haystack)
+        overlap = question_terms.intersection(content_terms) if question_terms and content_terms else set()
+        lexical_hit = bool(overlap) or bool(question_cjk and any(term in haystack for term in question_terms if len(term) >= 2))
+        semantic_hit = isinstance(score, (int, float)) and score >= min_score
+        if lexical_hit or semantic_hit:
+            context["match_terms"] = sorted(list(overlap))[:12]
+            filtered.append(context)
+    return filtered
+
+
 def can_access_document(db: Session, doc: Document, user: User) -> bool:
     source_type = str(doc.source_type or "")
     if source_type.startswith("chat_"):
@@ -211,6 +252,7 @@ def build_citation(context: dict, index: int = 0) -> dict:
         "excerpt": snippet_text(content),
         "view_url": citation_view_url(document_id, chunk_id or None) if document_id else "",
         "url": citation_view_url(document_id, chunk_id or None) if document_id else "",
+        "content_url": citation_content_url(document_id, chunk_id or None) if document_id else "",
     }
     return citation
 
@@ -431,13 +473,24 @@ def audit(db: Session, actor: Optional[User], action: str, resource_type: str = 
 
 def ensure_runtime_schema():
     # SQLite 无迁移工具时做最小兼容：给旧库补新增列，新表仍由 create_all 创建。
+    def add_column_if_missing(conn, table: str, column: str, ddl: str):
+        cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+        if cols and column not in cols:
+            try:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+            except Exception as exc:
+                # 多进程/热重启并发初始化时，另一进程可能已经加好列；复查一次避免误中断启动。
+                refreshed = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+                if column not in refreshed:
+                    raise exc
+
     with engine.begin() as conn:
-        user_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)").fetchall()}
-        if "is_active" not in user_cols:
-            conn.exec_driver_sql("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
-        chat_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(chat_messages)").fetchall()}
-        if chat_cols and "sources_json" not in chat_cols:
-            conn.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'")
+        add_column_if_missing(conn, "users", "is_active", "is_active BOOLEAN NOT NULL DEFAULT 1")
+        add_column_if_missing(conn, "chat_messages", "sources_json", "sources_json TEXT NOT NULL DEFAULT '[]'")
+        add_column_if_missing(conn, "feedback", "sources_json", "sources_json TEXT NOT NULL DEFAULT '[]'")
+        add_column_if_missing(conn, "feedback", "status", "status TEXT NOT NULL DEFAULT 'new'")
+        add_column_if_missing(conn, "feedback", "reviewed_at", "reviewed_at DATETIME")
+        add_column_if_missing(conn, "feedback", "review_note", "review_note TEXT NOT NULL DEFAULT ''")
 
 
 def enqueue_document_task(db: Session, doc: Document, task_type: str, actor: Optional[User]) -> BackgroundTask:
@@ -648,6 +701,44 @@ def view_document_file(document_id: str, chunk_id: Optional[str] = None, db: Ses
     return FileResponse(path=str(file_path), filename=doc.filename, headers=headers)
 
 
+@app.get("/api/documents/{document_id}/content")
+def get_document_content(document_id: str, chunk_id: Optional[str] = None, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    doc, _ = resolve_document_file_for_user(db, document_id, user)
+    if chunk_id:
+        chunk = db.get(DocumentChunk, chunk_id)
+        if not chunk or chunk.document_id != doc.id:
+            raise HTTPException(status_code=404, detail="引用片段不存在")
+        chunks = [chunk]
+    else:
+        chunks = db.execute(
+            select(DocumentChunk).where(DocumentChunk.document_id == doc.id).order_by(DocumentChunk.chunk_index.asc()).limit(50)
+        ).scalars().all()
+    serialized_chunks = [
+        {
+            "id": c.id,
+            "chunk_id": c.id,
+            "chunk_index": c.chunk_index,
+            "page_number": c.page_number,
+            "page": c.page_number,
+            "content": c.content,
+            "snippet": snippet_text(c.content, 500),
+        }
+        for c in chunks
+    ]
+    return {
+        "id": doc.id,
+        "document_id": doc.id,
+        "title": doc.title,
+        "filename": doc.filename,
+        "source_type": doc.source_type,
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        "view_url": citation_view_url(doc.id, chunk_id),
+        "content_url": citation_content_url(doc.id, chunk_id),
+        "chunks": serialized_chunks,
+        "content": "\n\n".join(c["content"] for c in serialized_chunks),
+    }
+
+
 @app.get("/api/documents/{document_id}/meta")
 def get_document_meta(document_id: str, db: Session = Depends(get_db), user: User = Depends(require_user)):
     doc, _ = resolve_document_file_for_user(db, document_id, user)
@@ -658,6 +749,7 @@ def get_document_meta(document_id: str, db: Session = Depends(get_db), user: Use
         "source_type": doc.source_type,
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
         "view_url": citation_view_url(doc.id),
+        "content_url": citation_content_url(doc.id),
     }
 
 
@@ -748,32 +840,45 @@ def retry_task(task_id: str, db: Session = Depends(get_db), actor: User = Depend
     return {"ok": True}
 
 
+def feedback_to_dict(f: Feedback) -> dict:
+    sources = parse_json_list(f.sources_json)
+    return {
+        "id": f.id,
+        "user_id": f.user_id,
+        "username": f.username,
+        "session_id": f.session_id,
+        "message_id": f.message_id,
+        "rating": f.rating,
+        "content": f.content,
+        "question": f.question_snapshot,
+        "answer": f.answer_snapshot,
+        "sources": sources,
+        "citations": sources,
+        "status": f.status,
+        "created_at": f.created_at.isoformat() if f.created_at else None,
+        "reviewed_at": f.reviewed_at.isoformat() if f.reviewed_at else None,
+        "review_note": f.review_note,
+    }
+
+
 @app.get("/api/admin/feedback")
 def list_feedback(status: Optional[str] = None, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    status_filter = (status or "").strip().lower()
+    if status_filter and status_filter not in FEEDBACK_STATUSES:
+        raise HTTPException(status_code=400, detail="反馈状态只能是 new/reviewed/resolved/ignored")
     stmt = select(Feedback).order_by(Feedback.created_at.desc())
-    if status:
-        stmt = select(Feedback).where(Feedback.status == status).order_by(Feedback.created_at.desc())
+    if status_filter:
+        stmt = select(Feedback).where(Feedback.status == status_filter).order_by(Feedback.created_at.desc())
     rows = db.execute(stmt).scalars().all()
-    return [
-        {
-            "id": f.id,
-            "user_id": f.user_id,
-            "username": f.username,
-            "session_id": f.session_id,
-            "message_id": f.message_id,
-            "rating": f.rating,
-            "content": f.content,
-            "question": f.question_snapshot,
-            "answer": f.answer_snapshot,
-            "sources": parse_json_list(f.sources_json),
-            "citations": parse_json_list(f.sources_json),
-            "status": f.status,
-            "created_at": f.created_at.isoformat() if f.created_at else None,
-            "reviewed_at": f.reviewed_at.isoformat() if f.reviewed_at else None,
-            "review_note": f.review_note,
-        }
-        for f in rows[:300]
-    ]
+    return [feedback_to_dict(f) for f in rows[:300]]
+
+
+@app.get("/api/admin/feedback/{feedback_id}")
+def get_feedback_detail(feedback_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    item = db.get(Feedback, feedback_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="反馈不存在")
+    return feedback_to_dict(item)
 
 
 @app.put("/api/admin/feedback/{feedback_id}")
@@ -782,7 +887,7 @@ def review_feedback(feedback_id: str, req: FeedbackReview, db: Session = Depends
     if not item:
         raise HTTPException(status_code=404, detail="反馈不存在")
     status = (req.status or "reviewed").strip().lower()
-    if status not in {"new", "reviewed", "resolved", "ignored"}:
+    if status not in FEEDBACK_STATUSES:
         raise HTTPException(status_code=400, detail="反馈状态只能是 new/reviewed/resolved/ignored")
     item.status = status
     item.review_note = (req.review_note or "").strip()[:1000]
@@ -1050,15 +1155,18 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         if not existing or existing.user_id != user.id:
             raise HTTPException(status_code=404, detail="会话不存在")
     limit = max(1, min(req.top_k, 10))
+    candidate_limit = max(limit * 3, limit)
     q_embedding = embed_texts([question])[0]
     group_ids = [g.id for g in user.groups]
     retrieval_backend = "sqlite"
+    retrieval_note = ""
     try:
-        contexts = search_chunks(q_embedding, user.id, bool(user.is_admin), group_ids, limit)
+        candidate_contexts = search_chunks(q_embedding, user.id, bool(user.is_admin), group_ids, candidate_limit)
         retrieval_backend = "qdrant"
-        if not contexts:
+        if not candidate_contexts:
             raise QdrantUnavailable("Qdrant 暂无命中，回退 SQLite")
-    except QdrantUnavailable:
+    except QdrantUnavailable as exc:
+        retrieval_note = str(exc)
         rows = db.execute(select(DocumentChunk, Document).join(Document, Document.id == DocumentChunk.document_id)).all()
         scored = []
         for chunk, doc in rows:
@@ -1092,10 +1200,11 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
                 }
             )
         scored.sort(key=lambda x: x["score"], reverse=True)
-        contexts = scored[:limit]
+        candidate_contexts = scored[:candidate_limit]
+    contexts = filter_relevant_contexts(candidate_contexts, question)[:limit]
     sources = serialize_sources(contexts)
     if not contexts:
-        answer = "没有在你有权限访问的内部文档或个人附件中找到相关内容。你可以换个问法，或先上传 PDF/Word/Excel/CSV/TXT/Markdown/图片附件。"
+        answer = "没有在你有权限访问的内部文档或个人附件中找到与问题直接相关的内容，因此我不能脱离知识库泛答。你可以换个问法，或先上传/授权包含该问题答案的 PDF、Word、Excel、CSV、TXT、Markdown 或图片附件。"
     else:
         cfg = get_model_config(db)
         answer = chat_answer(question, contexts, cfg["api_key"], cfg["base_url"], cfg["model"])
@@ -1106,7 +1215,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
     assistant_message_id = new_id()
     db.add(ChatMessage(id=user_message_id, session_id=session_id, role="user", content=question))
     db.add(ChatMessage(id=assistant_message_id, session_id=session_id, role="assistant", content=answer, sources_json=json.dumps(sources, ensure_ascii=False)))
-    audit(db, user, "chat.ask", "chat_session", session_id, {"retrieval_backend": retrieval_backend, "sources": len(sources)})
+    audit(db, user, "chat.ask", "chat_session", session_id, {"retrieval_backend": retrieval_backend, "candidate_sources": len(candidate_contexts), "sources": len(sources)})
     db.commit()
     return {
         "session_id": session_id,
@@ -1115,6 +1224,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         "user_message_id": user_message_id,
         "answer": answer,
         "retrieval_backend": retrieval_backend,
+        "retrieval_note": retrieval_note,
         "sources": sources,
         "citations": sources,
         "source_count": len(sources),
@@ -1129,8 +1239,9 @@ def submit_feedback(req: FeedbackCreate, db: Session = Depends(get_db), user: Us
     if len(content) > 2000:
         raise HTTPException(status_code=400, detail="反馈内容不能超过 2000 字")
     rating = (req.rating or "").strip().lower()
-    if len(rating) > 30:
-        raise HTTPException(status_code=400, detail="反馈类型过长")
+    allowed_ratings = {"", "helpful", "unhelpful", "wrong", "unsafe", "other"}
+    if len(rating) > 30 or rating not in allowed_ratings:
+        raise HTTPException(status_code=400, detail="反馈类型只能是 helpful/unhelpful/wrong/unsafe/other")
     session = None
     if req.session_id:
         session = db.get(ChatSession, req.session_id)

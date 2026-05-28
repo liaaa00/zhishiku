@@ -61,6 +61,20 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
     return [local_hash_embedding(text) for text in texts]
 
 
+def extractive_fallback_answer(question: str, contexts: List[dict], reason: str = "") -> str:
+    if not contexts:
+        return "没有在授权知识库中找到相关内容，因此不能脱离资料泛答。"
+    lines = ["当前模型服务不可用，下面仅根据已命中的授权知识库片段提取可核验信息："]
+    for i, context in enumerate(contexts[:5], 1):
+        content = " ".join(str(context.get("content") or "").split())[:420]
+        title = context.get("document_title") or context.get("filename") or "未知文档"
+        page = context.get("page_number") or "未知"
+        lines.append(f"- [来源{i}] {title}（页码：{page}）：{content}")
+    if reason:
+        lines.append(f"\n说明：模型生成失败或未配置（{reason}），已避免脱离知识库生成答案。")
+    return "\n".join(lines)
+
+
 def chat_answer(
     question: str,
     contexts: List[dict],
@@ -71,7 +85,7 @@ def chat_answer(
     try:
         client = _openai_client(api_key, base_url)
     except ValueError as exc:
-        return str(exc)
+        return extractive_fallback_answer(question, contexts, str(exc))
 
     real_model = model or CHAT_MODEL or "deepseek-chat"
     context_text = "\n\n".join(
@@ -84,12 +98,15 @@ def chat_answer(
         "回答要简洁、准确，优先使用中文；可以使用 Markdown 分点，并在末尾按 [来源1]、[来源2] 标注实际用到的引用，不要编造来源。"
     )
     user = f"授权知识库片段（回答只能依据以下内容）：\n{context_text}\n\n用户问题：{question}"
-    response = client.chat.completions.create(
-        model=real_model,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.2,
-    )
-    return response.choices[0].message.content or "未生成回答。"
+    try:
+        response = client.chat.completions.create(
+            model=real_model,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.2,
+        )
+        return response.choices[0].message.content or "未生成回答。"
+    except Exception as exc:
+        return extractive_fallback_answer(question, contexts, str(exc)[:200])
 
 
 def image_to_text(
