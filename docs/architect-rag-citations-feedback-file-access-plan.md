@@ -632,6 +632,8 @@ def can_access_document(db, doc, user):
 
 ### 阶段 1：P0 可信回答与引用持久化
 
+> 本轮返工补充：上一轮内容评审已达到 9.45/10，主要改进项集中在 QA 可直接转写的测试模板、检索质量指标、前端大引用列表性能方案，以及 Vue 入口接入后的集成验证里程碑。以下阶段计划已补齐这些内容；integration worktree 缺失属于团队集成基础设施阻断，本文档已在 Git HEAD `b8fe4f6` 中落地，当前本地可见的 integration 备份引用均指向同一提交。
+
 后端：
 
 - `/api/chat` 统一返回 `message_id`、`assistant_message_id`、`user_message_id`。
@@ -696,7 +698,9 @@ def can_access_document(db, doc, user):
 
 - 决策：Vue 为长期主入口，FastAPI 内嵌 HTML 作为临时兼容或下线。
 - `docker-compose.yml` 增加 frontend 服务或将 Vue build 接入后端静态目录。
+- 增加“集成验证里程碑”：Vue 前端入口接入 docker-compose/README 后，必须完成一轮端到端回归：登录 -> RAG 无命中拒答 -> 有命中带逐条引用 -> 点击引用打开原文/片段 -> 提交反馈 -> 管理员查看并处理 -> 历史会话恢复引用。
 - 移动端适配引用与反馈区。
+- 大引用列表性能：当单条 AI 回复携带引用超过 20 条时，引用卡片区采用折叠 + 分页/虚拟滚动；首屏只渲染 Top 5，展开后再懒加载其余引用，避免消息列表滚动卡顿。
 - 增加 loading 状态：检索中、生成中、上传解析中、反馈提交中。
 
 ### 阶段 5：P1/P2 质量与运维升级
@@ -706,6 +710,7 @@ def can_access_document(db, doc, user):
 - JWT 加强：过期刷新、强 `JWT_SECRET`、生产禁用默认密码。
 - Embedding 升级：local-hash -> 高质量 embedding 服务。
 - 增加相关性阈值和低置信度兜底。
+- 检索质量度量：建立 30~50 条人工标注问答集，按 NDCG@5、Recall@5/10、命中率、平均召回片段数、低置信度拒答率、引用点击率、负反馈率评估 embedding 与 score threshold；每次重建索引后记录基线对比。
 - Qdrant 健康状态与索引同步监控。
 - 自动化测试：后端权限测试、RAG fallback 测试、反馈接口测试、前端构建测试。
 - 修复中文乱码文档和源码注释显示问题。
@@ -788,6 +793,20 @@ def can_access_document(db, doc, user):
 - [ ] 关键接口有权限测试。
 - [ ] 数据库迁移可重复执行。
 
+### 12.1 可直接转写为自动化的测试用例模板
+
+| 场景 | 方法与路径 | 请求体/前置条件 | 预期状态码 | 关键断言 |
+|---|---|---|---|---|
+| RAG 有命中并返回引用 | `POST /api/chat` | `{"message":"请概括已上传制度的报销规则","session_id":null}`，用户至少有 1 个已索引文档 | 200 | 响应包含 `answer`、`message_id`/`assistant_message_id`、`sources`；`sources[0]` 含 `document_id`、`filename`、`chunk_id`、`score`、`snippet`、`view_url`/`open_url` |
+| RAG 无命中拒答 | `POST /api/chat` | `{"message":"询问知识库外且无授权片段的问题"}` | 200 或业务约定 422 | 不输出事实型编造答案；返回空 `sources` 或 `low_confidence=true`；前端显示“知识库未找到相关内容”类提示 |
+| 历史会话引用恢复 | `GET /api/chat/sessions/{session_id}` | 使用上一个有引用回答创建的会话 | 200 | assistant 消息保留自身 `sources/citations`，不是全局最近引用；刷新页面后引用仍显示在对应回答下 |
+| 提交回答反馈 | `POST /api/feedback` 或 `/api/chat/feedback` | `{"message_id":"assistant消息ID","rating":"bad","content":"引用不准确"}` | 200/201 | 返回反馈 ID；数据库记录关联用户、会话、assistant message、问题、回答、引用快照 |
+| 管理员查看反馈 | `GET /api/admin/feedback` | 管理员 Token；已存在至少 1 条反馈 | 200 | 列表含 `id/status/rating/content/user/message/session/sources_snapshot/created_at`；普通用户访问返回 403 |
+| 管理员处理反馈 | `PUT /api/admin/feedback/{id}` | `{"status":"resolved","admin_note":"已补充文档"}` | 200 | 状态和备注更新；记录处理人和处理时间；无权限用户返回 403 |
+| 打开引用原文 | `GET /api/documents/{id}/view?chunk_id=...` 或 `open_url` | 文档属于当前用户/可访问范围 | 200 | 返回可预览/下载内容；响应不暴露服务器真实路径；非法 document/chunk 返回 403/404 |
+| 防路径穿越 | `GET /api/documents/{id}/view?path=..%2F..%2Fsecret` | 任意登录用户 | 403/404 | 不返回任意系统文件；日志记录非法访问 |
+| Vue 正式入口回归 | 浏览器访问 README/docker-compose 暴露地址 | docker-compose 已启动 backend+frontend | 200 | 默认入口进入 Vue/Vite 聊天页，能完成“提问->引用->打开->反馈->管理员处理”闭环；若仍进入 backend 内置 HTML，则判定 P0 未通过 |
+
 ---
 
 ## 13. 交付给前后端的最小实现顺序
@@ -810,11 +829,12 @@ def can_access_document(db, doc, user):
 1. **工程边界**：拆分 `main.py`，建议按 `routers/chat.py`、`routers/admin.py`、`services/rag.py`、`services/documents.py`、`services/feedback.py` 组织。
 2. **迁移管理**：引入 Alembic，替代运行时 `ALTER TABLE`。
 3. **前端统一**：选择 Vue 作为长期入口，`docker-compose.yml` 增加 frontend 服务。
-4. **检索质量**：生产禁用 local-hash embedding，改高质量 embedding；增加 score threshold。
-5. **可观测性**：记录 retrieval_backend、top_k、source_count、无答案率、反馈率、负反馈率。
-6. **安全**：密码哈希升级、JWT secret 强校验、接口限流、上传文件病毒扫描或隔离策略。
-7. **文档治理**：增加文档版本号、重解析状态、删除保护、引用快照保留策略。
-8. **测试**：覆盖权限、路径穿越、Qdrant fallback、反馈提交、历史引用恢复。
+4. **检索质量**：生产禁用 local-hash embedding，改高质量 embedding；增加 score threshold；用 NDCG@5、Recall@5/10、命中率、平均召回片段数和低置信度拒答率持续评估。
+5. **可观测性**：记录 retrieval_backend、top_k、source_count、无答案率、反馈率、负反馈率、引用点击率。
+6. **前端性能**：引用卡片支持折叠、懒加载、分页/虚拟滚动，避免长回答携带大量引用时拖慢消息列表。
+7. **安全**：密码哈希升级、JWT secret 强校验、接口限流、上传文件病毒扫描或隔离策略。
+8. **文档治理**：增加文档版本号、重解析状态、删除保护、引用快照保留策略。
+9. **测试**：覆盖权限、路径穿越、Qdrant fallback、反馈提交、历史引用恢复，以及 Vue 入口接入后的端到端集成验证。
 
 ---
 
