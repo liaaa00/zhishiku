@@ -52,6 +52,7 @@ def document_payload(doc, chunk) -> dict:
     return {
         "document_id": doc.id,
         "document_title": doc.title,
+        "filename": doc.filename,
         "chunk_id": chunk.id,
         "page_number": chunk.page_number,
         "chunk_index": chunk.chunk_index,
@@ -128,7 +129,10 @@ def search_chunks(query_vector: List[float], user_id: str, is_admin: bool, group
             {
                 "document_id": payload.get("document_id", ""),
                 "document_title": payload.get("document_title", ""),
+                "filename": payload.get("filename", ""),
+                "chunk_id": payload.get("chunk_id", ""),
                 "page_number": payload.get("page_number"),
+                "chunk_index": payload.get("chunk_index"),
                 "source_type": payload.get("source_type", ""),
                 "content": payload.get("content", ""),
                 "score": item.get("score", 0),

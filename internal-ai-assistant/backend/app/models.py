@@ -119,7 +119,26 @@ class ChatMessage(Base):
     session_id = Column(String, ForeignKey("chat_sessions.id", ondelete="CASCADE"), index=True, nullable=False)
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
+    sources_json = Column(Text, nullable=False, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+    id = Column(String, primary_key=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    username = Column(String(100), nullable=False, default="")
+    session_id = Column(String, ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
+    message_id = Column(String, ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)
+    rating = Column(String(30), nullable=False, default="")
+    content = Column(Text, nullable=False)
+    question_snapshot = Column(Text, nullable=False, default="")
+    answer_snapshot = Column(Text, nullable=False, default="")
+    sources_json = Column(Text, nullable=False, default="[]")
+    status = Column(String(30), nullable=False, default="new", index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_at = Column(DateTime, nullable=True)
+    review_note = Column(Text, nullable=False, default="")
 
 
 class Setting(Base):

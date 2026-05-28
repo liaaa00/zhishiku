@@ -79,11 +79,11 @@ def chat_answer(
         for i, c in enumerate(contexts)
     )
     system = (
-        "你是公司内部 AI 助手，只能基于用户有权限访问的内部文档、个人附件或图片 OCR 结果回答。"
-        "如果资料中没有答案，请明确说明没有在授权资料中找到依据。"
-        "回答要简洁、准确，优先使用中文；可以使用 Markdown 分点，并在末尾列出引用来源。"
+        "你是公司内部 AI 助手，必须只根据本次提供的授权知识库片段、个人附件或图片 OCR 结果回答。"
+        "不要使用未出现在片段中的外部知识；如果片段中没有答案，请明确说明没有在授权资料中找到依据。"
+        "回答要简洁、准确，优先使用中文；可以使用 Markdown 分点，并在末尾按 [来源1]、[来源2] 标注实际用到的引用，不要编造来源。"
     )
-    user = f"内部资料：\n{context_text}\n\n用户问题：{question}"
+    user = f"授权知识库片段（回答只能依据以下内容）：\n{context_text}\n\n用户问题：{question}"
     response = client.chat.completions.create(
         model=real_model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],

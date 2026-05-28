@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import select, text
@@ -32,6 +32,7 @@ from .models import (
     Document,
     DocumentChunk,
     DocumentProcessingStatus,
+    Feedback,
     Group,
     Setting,
     User,
@@ -90,6 +91,18 @@ class ChatRequest(BaseModel):
     top_k: int = 5
 
 
+class FeedbackCreate(BaseModel):
+    session_id: Optional[str] = None
+    message_id: Optional[str] = None
+    rating: Optional[str] = None
+    content: str
+
+
+class FeedbackReview(BaseModel):
+    status: str = "reviewed"
+    review_note: str = ""
+
+
 class ModelConfig(BaseModel):
     api_key: str = ""
     base_url: str = "https://api.deepseek.com"
@@ -133,6 +146,105 @@ def get_model_config(db: Session) -> dict:
 
 def parse_embedding(value: str) -> List[float]:
     return json.loads(value)
+
+
+def parse_json_list(value: str) -> list:
+    try:
+        parsed = json.loads(value or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def snippet_text(text: str, max_len: int = 300) -> str:
+    clean = " ".join((text or "").split())
+    return clean[:max_len]
+
+
+def citation_view_url(document_id: str, chunk_id: Optional[str] = None) -> str:
+    url = f"/api/documents/{document_id}/view"
+    return f"{url}?chunk_id={chunk_id}" if chunk_id else url
+
+
+def can_access_document(db: Session, doc: Document, user: User) -> bool:
+    source_type = str(doc.source_type or "")
+    if source_type.startswith("chat_"):
+        return doc.created_by == user.id or user.is_admin
+    if user.is_admin:
+        return True
+    group_ids = [g.id for g in user.groups]
+    if not group_ids:
+        return False
+    return bool(
+        db.execute(
+            select(document_group_link.c.group_id).where(
+                document_group_link.c.document_id == doc.id,
+                document_group_link.c.group_id.in_(group_ids),
+            )
+        ).first()
+    )
+
+
+def build_citation(context: dict, index: int = 0) -> dict:
+    document_id = context.get("document_id") or ""
+    chunk_id = context.get("chunk_id") or ""
+    filename = context.get("filename") or ""
+    title = context.get("document_title") or filename or "未知文档"
+    page_number = context.get("page_number")
+    chunk_index = context.get("chunk_index")
+    content = context.get("content") or ""
+    citation = {
+        "id": f"{document_id}:{chunk_id or chunk_index or index}",
+        "document_id": document_id,
+        "document_title": title,
+        "title": title,
+        "filename": filename or title,
+        "file_name": filename or title,
+        "page_number": page_number,
+        "page": page_number,
+        "chunk_id": chunk_id or None,
+        "chunk_index": chunk_index,
+        "source_type": context.get("source_type") or "document",
+        "score": context.get("score"),
+        "content": snippet_text(content),
+        "snippet": snippet_text(content),
+        "excerpt": snippet_text(content),
+        "view_url": citation_view_url(document_id, chunk_id or None) if document_id else "",
+        "url": citation_view_url(document_id, chunk_id or None) if document_id else "",
+    }
+    return citation
+
+
+def serialize_sources(contexts: List[dict]) -> List[dict]:
+    return [build_citation(c, i) for i, c in enumerate(contexts)]
+
+
+def message_to_dict(message: ChatMessage) -> dict:
+    sources = parse_json_list(getattr(message, "sources_json", "[]")) if message.role == "assistant" else []
+    return {
+        "id": message.id,
+        "role": message.role,
+        "content": message.content,
+        "created_at": message.created_at.isoformat(),
+        "sources": sources,
+        "citations": sources,
+    }
+
+
+def resolve_document_file_for_user(db: Session, document_id: str, user: User) -> tuple[Document, Path]:
+    doc = db.get(Document, document_id)
+    if not doc or not can_access_document(db, doc, user):
+        raise HTTPException(status_code=404, detail="引用文件不存在或无权访问")
+    try:
+        upload_root = UPLOAD_DIR.resolve()
+        file_path = Path(doc.storage_path).resolve()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="引用文件路径无效") from exc
+    if upload_root != file_path and upload_root not in file_path.parents:
+        raise HTTPException(status_code=403, detail="引用文件路径不允许访问")
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="引用文件已不存在")
+    return doc, file_path
 
 
 def cosine_similarity(a: List[float], b: List[float]) -> float:
@@ -318,11 +430,14 @@ def audit(db: Session, actor: Optional[User], action: str, resource_type: str = 
 
 
 def ensure_runtime_schema():
-    # SQLite 无迁移工具时做最小兼容：给旧库补 is_active 列，新表仍由 create_all 创建。
+    # SQLite 无迁移工具时做最小兼容：给旧库补新增列，新表仍由 create_all 创建。
     with engine.begin() as conn:
-        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)").fetchall()}
-        if "is_active" not in cols:
+        user_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)").fetchall()}
+        if "is_active" not in user_cols:
             conn.exec_driver_sql("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
+        chat_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(chat_messages)").fetchall()}
+        if chat_cols and "sources_json" not in chat_cols:
+            conn.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'")
 
 
 def enqueue_document_task(db: Session, doc: Document, task_type: str, actor: Optional[User]) -> BackgroundTask:
@@ -506,7 +621,7 @@ def get_chat_session(session_id: str, db: Session = Depends(get_db), user: User 
     ).scalars().all()
     return {
         "session": session_payload(db, session),
-        "messages": [{"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at.isoformat()} for m in messages],
+        "messages": [message_to_dict(m) for m in messages],
     }
 
 
@@ -519,6 +634,31 @@ def delete_chat_session(session_id: str, db: Session = Depends(get_db), user: Us
     db.delete(session)
     db.commit()
     return {"ok": True}
+
+
+@app.get("/api/documents/{document_id}/view")
+def view_document_file(document_id: str, chunk_id: Optional[str] = None, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    doc, file_path = resolve_document_file_for_user(db, document_id, user)
+    headers = {"X-Document-Id": doc.id}
+    if chunk_id:
+        chunk = db.get(DocumentChunk, chunk_id)
+        if chunk and chunk.document_id == doc.id:
+            headers["X-Document-Page"] = str(chunk.page_number or "")
+            headers["X-Document-Chunk-Index"] = str(chunk.chunk_index)
+    return FileResponse(path=str(file_path), filename=doc.filename, headers=headers)
+
+
+@app.get("/api/documents/{document_id}/meta")
+def get_document_meta(document_id: str, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    doc, _ = resolve_document_file_for_user(db, document_id, user)
+    return {
+        "id": doc.id,
+        "title": doc.title,
+        "filename": doc.filename,
+        "source_type": doc.source_type,
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        "view_url": citation_view_url(doc.id),
+    }
 
 
 @app.get("/api/documents/status")
@@ -606,6 +746,50 @@ def retry_task(task_id: str, db: Session = Depends(get_db), actor: User = Depend
     audit(db, actor, "task.retry", "task", task.id, {"document_id": task.document_id})
     db.commit()
     return {"ok": True}
+
+
+@app.get("/api/admin/feedback")
+def list_feedback(status: Optional[str] = None, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    stmt = select(Feedback).order_by(Feedback.created_at.desc())
+    if status:
+        stmt = select(Feedback).where(Feedback.status == status).order_by(Feedback.created_at.desc())
+    rows = db.execute(stmt).scalars().all()
+    return [
+        {
+            "id": f.id,
+            "user_id": f.user_id,
+            "username": f.username,
+            "session_id": f.session_id,
+            "message_id": f.message_id,
+            "rating": f.rating,
+            "content": f.content,
+            "question": f.question_snapshot,
+            "answer": f.answer_snapshot,
+            "sources": parse_json_list(f.sources_json),
+            "citations": parse_json_list(f.sources_json),
+            "status": f.status,
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+            "reviewed_at": f.reviewed_at.isoformat() if f.reviewed_at else None,
+            "review_note": f.review_note,
+        }
+        for f in rows[:300]
+    ]
+
+
+@app.put("/api/admin/feedback/{feedback_id}")
+def review_feedback(feedback_id: str, req: FeedbackReview, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
+    item = db.get(Feedback, feedback_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="反馈不存在")
+    status = (req.status or "reviewed").strip().lower()
+    if status not in {"new", "reviewed", "resolved", "ignored"}:
+        raise HTTPException(status_code=400, detail="反馈状态只能是 new/reviewed/resolved/ignored")
+    item.status = status
+    item.review_note = (req.review_note or "").strip()[:1000]
+    item.reviewed_at = datetime.utcnow()
+    audit(db, actor, "feedback.review", "feedback", item.id, {"status": item.status})
+    db.commit()
+    return {"ok": True, "id": item.id, "status": item.status}
 
 
 @app.get("/api/admin/audit-logs")
@@ -898,7 +1082,10 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
                 {
                     "document_id": doc.id,
                     "document_title": doc.title,
+                    "filename": doc.filename,
+                    "chunk_id": chunk.id,
                     "page_number": chunk.page_number,
+                    "chunk_index": chunk.chunk_index,
                     "source_type": source_type,
                     "content": chunk.content,
                     "score": cosine_similarity(q_embedding, parse_embedding(chunk.embedding_json)),
@@ -906,6 +1093,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
             )
         scored.sort(key=lambda x: x["score"], reverse=True)
         contexts = scored[:limit]
+    sources = serialize_sources(contexts)
     if not contexts:
         answer = "没有在你有权限访问的内部文档或个人附件中找到相关内容。你可以换个问法，或先上传 PDF/Word/Excel/CSV/TXT/Markdown/图片附件。"
     else:
@@ -914,25 +1102,82 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
     session_id = req.session_id or new_id()
     if not req.session_id:
         db.add(ChatSession(id=session_id, user_id=user.id))
-    db.add(ChatMessage(id=new_id(), session_id=session_id, role="user", content=question))
-    db.add(ChatMessage(id=new_id(), session_id=session_id, role="assistant", content=answer))
-    audit(db, user, "chat.ask", "chat_session", session_id, {"retrieval_backend": retrieval_backend, "sources": len(contexts)})
+    user_message_id = new_id()
+    assistant_message_id = new_id()
+    db.add(ChatMessage(id=user_message_id, session_id=session_id, role="user", content=question))
+    db.add(ChatMessage(id=assistant_message_id, session_id=session_id, role="assistant", content=answer, sources_json=json.dumps(sources, ensure_ascii=False)))
+    audit(db, user, "chat.ask", "chat_session", session_id, {"retrieval_backend": retrieval_backend, "sources": len(sources)})
     db.commit()
     return {
         "session_id": session_id,
+        "message_id": assistant_message_id,
+        "assistant_message_id": assistant_message_id,
+        "user_message_id": user_message_id,
         "answer": answer,
         "retrieval_backend": retrieval_backend,
-        "sources": [
-            {
-                "document_id": c["document_id"],
-                "document_title": c["document_title"],
-                "page_number": c["page_number"],
-                "source_type": c["source_type"],
-                "content": c["content"][:300],
-            }
-            for c in contexts
-        ],
+        "sources": sources,
+        "citations": sources,
+        "source_count": len(sources),
     }
+
+
+@app.post("/api/chat/feedback")
+def submit_feedback(req: FeedbackCreate, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    content = (req.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="请输入反馈内容")
+    if len(content) > 2000:
+        raise HTTPException(status_code=400, detail="反馈内容不能超过 2000 字")
+    rating = (req.rating or "").strip().lower()
+    if len(rating) > 30:
+        raise HTTPException(status_code=400, detail="反馈类型过长")
+    session = None
+    if req.session_id:
+        session = db.get(ChatSession, req.session_id)
+        if not session or session.user_id != user.id:
+            raise HTTPException(status_code=404, detail="会话不存在")
+    message = None
+    if req.message_id:
+        message = db.get(ChatMessage, req.message_id)
+        if not message or message.role != "assistant":
+            raise HTTPException(status_code=404, detail="要反馈的回答不存在")
+        msg_session = db.get(ChatSession, message.session_id)
+        if not msg_session or msg_session.user_id != user.id:
+            raise HTTPException(status_code=404, detail="要反馈的回答不存在")
+        if session and message.session_id != session.id:
+            raise HTTPException(status_code=400, detail="反馈消息不属于当前会话")
+        session = msg_session
+    question_snapshot = ""
+    answer_snapshot = message.content if message else ""
+    sources = parse_json_list(getattr(message, "sources_json", "[]")) if message else []
+    if session:
+        previous_messages = db.execute(
+            select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at.asc())
+        ).scalars().all()
+        if message:
+            before = [m for m in previous_messages if m.created_at <= message.created_at]
+            question_snapshot = next((m.content for m in reversed(before) if m.role == "user"), "")
+        else:
+            question_snapshot = next((m.content for m in reversed(previous_messages) if m.role == "user"), "")
+            answer_snapshot = next((m.content for m in reversed(previous_messages) if m.role == "assistant"), "")
+            last_assistant = next((m for m in reversed(previous_messages) if m.role == "assistant"), None)
+            sources = parse_json_list(getattr(last_assistant, "sources_json", "[]")) if last_assistant else []
+    item = Feedback(
+        id=new_id(),
+        user_id=user.id,
+        username=user.username,
+        session_id=session.id if session else None,
+        message_id=message.id if message else None,
+        rating=rating,
+        content=content,
+        question_snapshot=question_snapshot[:4000],
+        answer_snapshot=answer_snapshot[:8000],
+        sources_json=json.dumps(sources, ensure_ascii=False),
+    )
+    db.add(item)
+    audit(db, user, "feedback.submit", "feedback", item.id, {"session_id": item.session_id, "message_id": item.message_id, "rating": item.rating})
+    db.commit()
+    return {"ok": True, "id": item.id, "status": item.status, "message": "反馈已提交给管理员"}
 
 
 CHAT_HTML = r'''
