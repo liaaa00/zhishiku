@@ -632,7 +632,7 @@ def can_access_document(db, doc, user):
 
 ### 阶段 1：P0 可信回答与引用持久化
 
-> 本轮返工补充：上一轮内容评审已达到 9.45/10，主要改进项集中在 QA 可直接转写的测试模板、检索质量指标、前端大引用列表性能方案，以及 Vue 入口接入后的集成验证里程碑。以下阶段计划已补齐这些内容；integration worktree 缺失属于团队集成基础设施阻断，本文档已在 Git HEAD `b8fe4f6` 中落地，当前本地可见的 integration 备份引用均指向同一提交。
+> 本轮返工补充：上一轮内容评审已达到 9.45/10，主要改进项集中在 QA 可直接转写的测试模板、检索质量指标、前端大引用列表性能方案，以及 Vue 入口接入后的集成验证里程碑。以下阶段计划已补齐这些内容；integration worktree 缺失属于团队集成基础设施阻断，该阻断已在本轮再次复核：当前 integration worktree 已恢复到 `.spectrai-worktrees/integrations/e67c4d14-e561-4cf0-afcb-75c7573485d5`，分支 `team/e67c4d14-e561-4cf0-afcb-75c7573485d5/integration` 与 `master` 均指向 `bfb95ba`，本任务文档可在 integration 视图直接审查。
 
 后端：
 
@@ -848,3 +848,44 @@ def can_access_document(db, doc, user):
 | adherence | 未修改业务代码，仅新增架构交付文档 |
 | innovation | 给出 P0/P1 分层、回滚策略、入口统一、引用模型权衡与安全策略 |
 | integration_review_blocked | 文档已纳入仓库 `docs/`，且仓库根可由 `git rev-parse` 解析 |
+
+---
+
+## 16. 集成视图恢复后的补充验证记录
+
+本轮返工时再次检查团队 integration worktree，当前已不再只有备份引用，实际可审查的集成工作树已经存在：
+
+```text
+integration worktree: .spectrai-worktrees/integrations/e67c4d14-e561-4cf0-afcb-75c7573485d5
+integration branch: team/e67c4d14-e561-4cf0-afcb-75c7573485d5/integration
+integration HEAD: bfb95ba fix: harden backend citations feedback review
+master HEAD: bfb95ba fix: harden backend citations feedback review
+```
+
+在该 integration worktree 中，本任务相关架构文档均可直接读取：
+
+```text
+docs/architect-rag-citations-feedback-file-access-plan.md
+docs/architect-final-entry-api-consistency-review.md
+docs/architect-final-review-incremental-after-frontend-backend-submissions.md
+```
+
+其中 `docs/architect-rag-citations-feedback-file-access-plan.md` 已在 integration 视图中包含上一轮评审建议对应内容：
+
+| 评审建议 | integration 文档位置/关键词 | 状态 |
+|---|---|---|
+| 补充更细化前后端测试用例模板 | `## 12.1 可直接转写为自动化的测试用例模板`，包含请求体、状态码、关键断言 | 已补齐 |
+| 补充检索质量指标 | `NDCG@5`、`Recall@5/10`、命中率、平均召回片段数、低置信度拒答率、引用点击率、负反馈率 | 已补齐 |
+| 前端引用列表虚拟滚动/性能 | `大引用列表性能`、`折叠 + 分页/虚拟滚动`、`首屏只渲染 Top 5` | 已补齐 |
+| 增加集成验证里程碑 | `集成验证里程碑`：登录 -> RAG 无命中拒答 -> 有命中带逐条引用 -> 打开原文/片段 -> 提交反馈 -> 管理员处理 -> 历史会话恢复引用 | 已补齐 |
+| 明确 integration 阻断性质 | 本节记录当前 integration 已恢复，并给出 worktree 路径、分支与 HEAD | 已更新 |
+
+因此，Reviewer 可直接在 integration worktree 下执行以下只读验证：
+
+```bash
+git -C .spectrai-worktrees/integrations/e67c4d14-e561-4cf0-afcb-75c7573485d5 log --oneline -6
+git -C .spectrai-worktrees/integrations/e67c4d14-e561-4cf0-afcb-75c7573485d5 grep -n "可直接转写为自动化的测试用例模板\|NDCG@5\|虚拟滚动\|集成验证里程碑" -- docs/architect-rag-citations-feedback-file-access-plan.md
+git -C .spectrai-worktrees/integrations/e67c4d14-e561-4cf0-afcb-75c7573485d5 diff --name-only --diff-filter=U
+```
+
+本节不改变原架构结论，只补充集成证据源恢复后的可审查路径，便于本任务重新进入 Reviewer Pool 时不再因 `integration_worktree_missing/not_initialized` 被阻断。
