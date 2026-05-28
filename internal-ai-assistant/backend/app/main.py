@@ -1239,9 +1239,9 @@ def submit_feedback(req: FeedbackCreate, db: Session = Depends(get_db), user: Us
     if len(content) > 2000:
         raise HTTPException(status_code=400, detail="反馈内容不能超过 2000 字")
     rating = (req.rating or "").strip().lower()
-    allowed_ratings = {"", "helpful", "unhelpful", "wrong", "unsafe", "other"}
+    allowed_ratings = {"", "helpful", "unhelpful", "wrong", "unsafe", "other", "user_feedback"}
     if len(rating) > 30 or rating not in allowed_ratings:
-        raise HTTPException(status_code=400, detail="反馈类型只能是 helpful/unhelpful/wrong/unsafe/other")
+        raise HTTPException(status_code=400, detail="反馈类型只能是 helpful/unhelpful/wrong/unsafe/other/user_feedback")
     session = None
     if req.session_id:
         session = db.get(ChatSession, req.session_id)
