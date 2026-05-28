@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: ./backend
+    env_file: .env
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/data/uploads:/app/data/uploads
+    depends_on:
+      - qdrant
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+volumes:
+  qdrant_storage:

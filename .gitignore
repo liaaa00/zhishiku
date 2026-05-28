@@ -1,0 +1,19 @@
+# Runtime and local secrets
+.env
+internal-ai-assistant/.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node build/dependencies
+node_modules/
+dist/
+
+# Runtime data and uploads
+internal-ai-assistant/backend/data/
+
+# Archives and external source dumps
+*.zip
+MaxKB-src/
