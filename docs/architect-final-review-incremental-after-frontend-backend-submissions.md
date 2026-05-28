@@ -45,7 +45,7 @@
 - `internal-ai-assistant/docker-compose.yml` 仍只启动 `backend + qdrant`；
 - `internal-ai-assistant/README.md` 仍把用户入口写成 `http://localhost:8080/chat` 与 `/admin`；
 - `backend/app/main.py` 仍暴露后端内嵌 `@app.get('/chat')` 与 `@app.get('/admin')` 页面；
-- 但前端最新提交已经把“消息级引用、反馈按钮、引用打开、管理员反馈处理”等关键体验能力放在 Vue 页面中实现。
+- 但 **integration committed 前端并未实现** “消息级引用、反馈按钮、引用打开、管理员反馈处理”等关键体验；这些能力仅在当前成员工作区未提交 diff/计划中可见，不能视为已集成。
 
 所以，**如果不切换正式入口到 Vue，当前代码会出现“能力在 Vue，但默认用户入口在内嵌 HTML”的 P0 级交付不一致**。
 
@@ -111,13 +111,23 @@
 
 ## 3. 基于前后端最新提交的 P0 再判断
 
+### 3.0 当前集成状态边界
+
+| 能力 | 后端 committed | 前端 committed（integration） | 工作区未提交 diff / planned | 当前可交付判断 |
+|---|---:|---:|---:|---|
+| `/api/chat` 返回 `message_id + sources/citations` | 是 | 仅全局展示 `sources` | 计划/未提交中可见逐消息引用实现 | 不可按目标验收 |
+| `/api/chat/feedback` | 是 | 否 | 计划/未提交中可见提交 UI | 阻塞反馈提交验收 |
+| `/api/admin/feedback` | 是 | 否 | 计划/未提交中可见管理面板 | 阻塞管理员闭环验收 |
+| 引用打开 `view_url/content_url` | 是 | 否 | 计划/未提交中可见打开逻辑 | 阻塞点击打开验收 |
+| Vue 正式入口 | 否（docker/README 未接入） | 否 | 待部署改造 | 阻塞正式交付 |
+
 ### P0-1：正式入口不一致
 
-**状态：仍是最高优先级 P0。**
+**状态：阻塞交付 P0。**
 
 - 用户默认入口仍由 README/docker-compose 指向后端 `/chat` `/admin`；
-- 但最新前端提交把关键体验放在 Vue；
-- 如果不切正式入口，交付体验与实现能力不一致。
+- integration committed 前端没有消费 `/api/chat/feedback`、`/api/admin/feedback`，也没有逐消息引用/openSourceFile 消费逻辑；
+- 因此当前集成状态不是“交付风险”，而是“后端接口已就绪但前端消费者未集成”的阻塞项。
 
 **最小修复建议：**
 
@@ -129,25 +139,25 @@
 
 **状态：若默认入口仍是后端内嵌 chat，则仍可能 P0。**
 
-- Vue 聊天页已按消息级处理 `sources/citations`；
-- 但后端内嵌 HTML 仍是全局引用抽屉心智；
-- 因此正式入口若不切 Vue，该风险依旧存在。
+- integration committed Vue 聊天页仅有全局 `sources` 展示，尚未按消息级处理 `sources/citations`；
+- 后端内嵌 HTML 也仍是全局引用抽屉心智；
+- 因此前端逐消息引用实现合入 integration 前，该风险应视为 P0 未修复。
 
 ### P0-3：反馈不可管理
 
-**状态：Vue 管理端方向已具备，正式入口未切时仍存在交付风险。**
+**状态：后端接口已就绪，integration committed 前端未实现，阻塞反馈闭环验收。**
 
 - 后端已有管理员反馈列表/处理接口；
-- Vue 管理页已有反馈列表与状态处理逻辑；
-- 若用户最终仍主要访问后端内嵌 admin，而该页没有同等反馈管理区，则闭环不完整。
+- integration committed Vue 管理页没有反馈列表与状态处理逻辑；
+- 因此前端反馈管理面板合入 integration 前，管理员反馈闭环不可交付。
 
 ### P0-4：管理员无法核查引用原文
 
 **状态：P1，可按产品要求上调为 P0。**
 
-- 当前聊天页已有 `openSourceFile`；
-- 管理页已展示 `sources/citations` 快照；
-- 但本轮只读复核未看到管理页已明确复用“打开原文/片段”的完整逻辑。
+- integration committed 聊天页尚无 `openSourceFile`；
+- integration committed 管理页也没有反馈 `sources/citations` 快照展示；
+- 相关能力必须等待前端工作区改动提交并合入后再复核。
 
 若业务要求“管理员处理反馈时必须能打开原文确认”，则应升级为 P0，并在反馈详情对话框中复用聊天页相同的文件打开逻辑。
 
@@ -166,7 +176,7 @@
 ### 4.2 聊天层
 
 1. 连续两轮提问，检查每条 assistant 回答下是否显示自己的引用；
-2. 检查 `message_id/assistant_message_id` 是否能支撑对具体回答提交反馈；
+2. 检查 `message_id/assistant_message_id` 是否能支撑对具体回答提交反馈；**前提：前端必须先合入 feedback 提交 UI，否则该项只能验证后端契约，不能判定用户端闭环通过**；
 3. 刷新后重开历史会话，确认旧引用仍在对应回答下。
 
 ### 4.3 文件层
@@ -184,6 +194,10 @@
 ---
 
 ## 5. 本轮对 Reviewer 新失败点的直接回应
+
+### 5.0 quality_degraded 修正声明
+
+本轮修订已将所有前端能力评估从“已具备/已实现”改为按状态区分：**后端 committed 已就绪，frontend committed 未实现，工作区未提交 diff/planned 中可见雏形**。因此当前集成状态下，反馈按钮、逐消息引用、引用打开、管理员反馈面板均不得被视为可交付能力；P0-1 已升级为阻塞交付项。
 
 | Reviewer 新问题 | 本轮回应 |
 |---|---|
