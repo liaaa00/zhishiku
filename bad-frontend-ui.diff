@@ -1,0 +1,5023 @@
+Backup generated: 2026-06-03T11:25:40.4505911+08:00
+Repository: D:\ai\speceappdate\知识库\internal-ai-assistant
+
+===== git diff --binary -- frontend =====
+diff --git a/internal-ai-assistant/frontend/nginx.conf b/internal-ai-assistant/frontend/nginx.conf
+index 4034429..d84dca6 100644
+--- a/internal-ai-assistant/frontend/nginx.conf
++++ b/internal-ai-assistant/frontend/nginx.conf
+@@ -10,9 +10,25 @@ server {
+     proxy_set_header Host $host;
+     proxy_set_header X-Real-IP $remote_addr;
+     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    add_header Cache-Control "no-store" always;
++  }
++
++  location /assets/ {
++    try_files $uri =404;
++    add_header Cache-Control "public, max-age=31536000, immutable" always;
++  }
++
++  location ~* \.(?:js|css|woff2?|png|jpg|jpeg|gif|svg|ico)$ {
++    try_files $uri =404;
++    add_header Cache-Control "public, max-age=31536000, immutable" always;
++  }
++
++  location = /index.html {
++    add_header Cache-Control "no-cache" always;
+   }
+ 
+   location / {
+     try_files $uri $uri/ /index.html;
++    add_header Cache-Control "no-cache" always;
+   }
+ }
+diff --git a/internal-ai-assistant/frontend/package.json b/internal-ai-assistant/frontend/package.json
+index 6dfad9b..dfb4728 100644
+--- a/internal-ai-assistant/frontend/package.json
++++ b/internal-ai-assistant/frontend/package.json
+@@ -16,6 +16,7 @@
+     "vue-router": "^4.4.5"
+   },
+   "devDependencies": {
++    "@types/node": "^20.17.10",
+     "@vitejs/plugin-vue": "^5.2.1",
+     "typescript": "^5.7.2",
+     "vite": "^6.0.3"
+diff --git a/internal-ai-assistant/frontend/src/api.ts b/internal-ai-assistant/frontend/src/api.ts
+index add63b5..0323402 100644
+--- a/internal-ai-assistant/frontend/src/api.ts
++++ b/internal-ai-assistant/frontend/src/api.ts
+@@ -1,4 +1,5 @@
+ import axios from 'axios'
++import router from './router'
+ 
+ const http = axios.create({ baseURL: '/api' })
+ 
+@@ -8,4 +9,16 @@ http.interceptors.request.use((config) => {
+   return config
+ })
+ 
++http.interceptors.response.use(
++  (response) => response,
++  (error) => {
++    if (error.response?.status === 401 && router.currentRoute.value.path !== '/login') {
++      localStorage.removeItem('token')
++      localStorage.removeItem('user')
++      router.push('/login')
++    }
++    return Promise.reject(error)
++  },
++)
++
+ export default http
+diff --git a/internal-ai-assistant/frontend/src/main.ts b/internal-ai-assistant/frontend/src/main.ts
+index 9ad904c..c824f81 100644
+--- a/internal-ai-assistant/frontend/src/main.ts
++++ b/internal-ai-assistant/frontend/src/main.ts
+@@ -1,9 +1,10 @@
+ import { createApp } from 'vue'
+-import ElementPlus from 'element-plus'
+-import 'element-plus/dist/index.css'
+ import { createPinia } from 'pinia'
+ import App from './App.vue'
+ import router from './router'
+ import './style.css'
++import { applyTheme, getTheme } from './theme'
+ 
+-createApp(App).use(createPinia()).use(router).use(ElementPlus).mount('#app')
++applyTheme(getTheme())
++
++createApp(App).use(createPinia()).use(router).mount('#app')
+diff --git a/internal-ai-assistant/frontend/src/router.ts b/internal-ai-assistant/frontend/src/router.ts
+index bdd756a..3b3bd5f 100644
+--- a/internal-ai-assistant/frontend/src/router.ts
++++ b/internal-ai-assistant/frontend/src/router.ts
+@@ -1,14 +1,67 @@
+-import { createRouter, createWebHistory } from 'vue-router'
+-import LoginView from './views/login/index.vue'
+-import ChatView from './views/chat/index.vue'
+-import AdminView from './views/admin/index.vue'
++import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+ 
+-export default createRouter({
++const routes: RouteRecordRaw[] = [
++  { path: '/', redirect: '/chat' },
++  { path: '/login', component: () => import('./views/login/index.vue'), meta: { requiresAuth: false } },
++  { path: '/chat', component: () => import('./views/chat/index.vue'), meta: { requiresAuth: true } },
++  { path: '/admin', component: () => import('./views/admin/index.vue'), meta: { requiresAuth: true, requiresAdmin: true } },
++]
++
++const router = createRouter({
+   history: createWebHistory(),
+-  routes: [
+-    { path: '/', redirect: '/chat' },
+-    { path: '/login', component: LoginView },
+-    { path: '/chat', component: ChatView },
+-    { path: '/admin', component: AdminView },
+-  ],
++  routes,
++})
++
++function clearAuth() {
++  localStorage.removeItem('token')
++  localStorage.removeItem('user')
++}
++
++function cachedUserIsAdmin() {
++  const userRaw = localStorage.getItem('user')
++  if (!userRaw) return false
++  try {
++    return !!JSON.parse(userRaw)?.is_admin
++  } catch {
++    localStorage.removeItem('user')
++    return false
++  }
++}
++
++async function verifyUserWithServer(token: string) {
++  const response = await fetch('/api/me', { headers: { Authorization: `Bearer ${token}` } })
++  if (!response.ok) throw new Error('unauthorized')
++  const user = await response.json()
++  localStorage.setItem('user', JSON.stringify(user))
++  return user
++}
++
++router.beforeEach(async (to) => {
++  const token = localStorage.getItem('token')
++  if (to.meta.requiresAuth && !token) return '/login'
++
++  if (to.path === '/login' && token) {
++    try {
++      await verifyUserWithServer(token)
++      return '/chat'
++    } catch {
++      clearAuth()
++      return true
++    }
++  }
++
++  if (!to.meta.requiresAdmin) return true
++  if (!token) return '/login'
++  if (!cachedUserIsAdmin()) return '/chat'
++
++  try {
++    const user = await verifyUserWithServer(token)
++    if (!user?.is_admin) return '/chat'
++  } catch {
++    clearAuth()
++    return '/login'
++  }
++  return true
+ })
++
++export default router
+diff --git a/internal-ai-assistant/frontend/src/style.css b/internal-ai-assistant/frontend/src/style.css
+index 2d3d394..1626358 100644
+--- a/internal-ai-assistant/frontend/src/style.css
++++ b/internal-ai-assistant/frontend/src/style.css
+@@ -1,12 +1,82 @@
+-html, body, #app { height: 100%; margin: 0; font-family: Arial, Helvetica, sans-serif; }
+-.page-center { min-height: 100%; display: flex; align-items: center; justify-content: center; background: #f5f7fb; }
+-.card { width: 420px; }
+-.tip { margin-top: 12px; color: #888; font-size: 12px; }
+-.chat-shell { max-width: 960px; margin: 0 auto; padding: 24px; }
+-.chat-header { margin-bottom: 16px; }
+-.chat-body { display: flex; flex-direction: column; gap: 12px; min-height: 320px; }
+-.msg.user { align-self: flex-end; background: #e8f3ff; }
+-.msg.assistant { align-self: flex-start; background: #fff; }
+-.chat-input { display: grid; gap: 12px; margin-top: 16px; }
+-.source-card { margin-bottom: 8px; }
+-.admin-page { max-width: 960px; margin: 0 auto; padding: 24px; }
++:root {
++  /* 暖色浅色设计令牌 */
++  --bg: #f4f3ee;
++  --surface: #ffffff;
++  --surface-alt: #faf9f5;
++  --surface-sunken: #f0efe8;
++  --text: #1f1e1d;
++  --text-muted: #6b6760;
++  --text-subtle: #93908a;
++  --border: #e9e6dd;
++  --border-strong: #ddd9cd;
++  --accent: #c9643f;
++  --accent-hover: #b1542f;
++  --accent-soft: #f6e9e1;
++  --radius: 16px;
++  --radius-sm: 10px;
++  --shadow-sm: 0 1px 2px rgba(40, 35, 30, 0.05);
++  --shadow: 0 6px 24px rgba(40, 35, 30, 0.07);
++  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Songti SC", "STSong", serif;
++  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
++
++  /* Element Plus 主色覆盖为陶土橙 */
++  --el-color-primary: #c9643f;
++  --el-color-primary-light-3: #d68a6c;
++  --el-color-primary-light-5: #e0a48c;
++  --el-color-primary-light-7: #ebc3b3;
++  --el-color-primary-light-8: #f1d5ca;
++  --el-color-primary-light-9: #f6e9e1;
++  --el-color-primary-dark-2: #b1542f;
++  --el-border-radius-base: 10px;
++  --el-text-color-primary: #1f1e1d;
++  --el-text-color-regular: #45423d;
++}
++
++/* 黑白主题 */
++[data-theme="mono"],
++[data-theme="gpt"] {
++  --bg: #ffffff;
++  --surface: #ffffff;
++  --surface-alt: #f7f7f8;
++  --surface-sunken: #ececec;
++  --text: #0d0d0d;
++  --text-muted: #565869;
++  --text-subtle: #8e8ea0;
++  --border: #e5e5e5;
++  --border-strong: #d4d4d4;
++  --accent: #0d0d0d;
++  --accent-hover: #2f2f2f;
++  --accent-soft: #ececf1;
++  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
++  --shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
++  --serif: var(--sans);
++
++  --el-color-primary: #0d0d0d;
++  --el-color-primary-light-3: #5a5a5a;
++  --el-color-primary-light-5: #8a8a8a;
++  --el-color-primary-light-7: #bdbdbd;
++  --el-color-primary-light-8: #d6d6d6;
++  --el-color-primary-light-9: #ececf1;
++  --el-color-primary-dark-2: #000000;
++  --el-text-color-primary: #0d0d0d;
++  --el-text-color-regular: #2f2f2f;
++}
++
++html, body, #app {
++  height: 100%;
++  margin: 0;
++  font-family: var(--sans);
++  color: var(--text);
++  background: var(--bg);
++  -webkit-font-smoothing: antialiased;
++}
++
++* { box-sizing: border-box; }
++
++.page-center {
++  min-height: 100%;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  background: var(--bg);
++}
+diff --git a/internal-ai-assistant/frontend/src/views/admin/index.vue b/internal-ai-assistant/frontend/src/views/admin/index.vue
+index ac01164..2dbc77f 100644
+--- a/internal-ai-assistant/frontend/src/views/admin/index.vue
++++ b/internal-ai-assistant/frontend/src/views/admin/index.vue
+@@ -1,45 +1,104 @@
+ <template>
+   <div class="admin-page">
+-    <h2>后台管理</h2>
+-    <p>这里不是平台，只保留员工、岗位组、文档和文档权限。</p>
+-    <el-tabs>
+-      <el-tab-pane label="岗位组">
+-        <el-input v-model="groupName" placeholder="岗位组名称" style="max-width: 240px" />
+-        <el-button type="primary" @click="createGroup">新增</el-button>
+-        <ul><li v-for="g in groups" :key="g.id">{{ g.name }}</li></ul>
++    <div class="page-header">
++      <div>
++        <h2>后台管理</h2>
++        <p>集中维护岗位组、员工权限、文档授权，并处理用户对 AI 回答的反馈。</p>
++      </div>
++      <div class="header-actions">
++        <ThemeSwitcher />
++        <el-button plain @click="router.push('/chat')">前台页面</el-button>
++        <el-button type="primary" plain @click="loadAll">刷新全部</el-button>
++      </div>
++    </div>
++
++    <div class="stat-grid">
++      <div class="stat-card">
++        <span class="stat-label">员工</span>
++        <strong class="stat-value">{{ users.length }}</strong>
++        <span class="stat-hint">在册账号</span>
++      </div>
++      <div class="stat-card">
++        <span class="stat-label">岗位组</span>
++        <strong class="stat-value">{{ groups.length }}</strong>
++        <span class="stat-hint">权限分组</span>
++      </div>
++      <div class="stat-card">
++        <span class="stat-label">知识库文档</span>
++        <strong class="stat-value">{{ docs.length }}</strong>
++        <span class="stat-hint">已向量化</span>
++      </div>
++      <div class="stat-card" :class="{ alert: feedbackSummary.new > 0 }">
++        <span class="stat-label">待处理反馈</span>
++        <strong class="stat-value">{{ feedbackSummary.new }}</strong>
++        <span class="stat-hint">共 {{ feedbackSummary.total }} 条</span>
++      </div>
++    </div>
++
++    <el-alert
++      v-if="pageError"
++      class="page-alert"
++      type="error"
++      :title="pageError"
++      show-icon
++      :closable="true"
++      @close="pageError = ''"
++    />
++
++    <el-tabs v-model="activeTab" class="admin-tabs" tab-position="left">
++      <el-tab-pane label="岗位组" name="groups">
++        <div class="toolbar">
++          <el-input v-model="groupName" placeholder="岗位组名称" style="max-width: 240px" @keyup.enter="createGroup" />
++          <el-button type="primary" @click="createGroup">新增</el-button>
++        </div>
++        <el-empty v-if="!groups.length" description="暂无岗位组，请先新增。" :image-size="72" />
++        <ul v-else class="simple-list">
++          <li v-for="g in groups" :key="g.id">{{ g.name }}</li>
++        </ul>
+       </el-tab-pane>
+ 
+-      <el-tab-pane label="员工">
+-        <el-input v-model="user.username" placeholder="用户名" style="max-width: 160px" />
+-        <el-input v-model="user.password" placeholder="密码" style="max-width: 160px" />
+-        <el-select v-model="user.group_ids" multiple placeholder="所属岗位组" style="width: 260px">
+-          <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+-        </el-select>
+-        <el-checkbox v-model="user.is_admin">管理员</el-checkbox>
+-        <el-button type="primary" @click="createUser">新增员工</el-button>
+-        <el-table :data="users" style="margin-top: 16px">
++      <el-tab-pane label="员工" name="users">
++        <div class="toolbar wrap">
++          <el-input v-model="user.username" placeholder="用户名" style="max-width: 160px" />
++          <el-input v-model="user.password" type="password" show-password placeholder="密码" style="max-width: 160px" />
++          <el-select v-model="user.group_ids" multiple placeholder="所属岗位组" style="width: 260px">
++            <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
++          </el-select>
++          <el-checkbox v-model="user.is_admin">管理员</el-checkbox>
++          <el-button type="primary" @click="createUser">新增员工</el-button>
++        </div>
++        <el-table :data="users" row-key="id" empty-text="暂无员工数据" style="margin-top: 16px">
+           <el-table-column prop="username" label="用户名" />
+           <el-table-column label="岗位组">
+-            <template #default="scope">{{ scope.row.groups.map((g:any) => g.name).join('、') }}</template>
++            <template #default="scope">{{ formatGroupNames(scope.row.groups) }}</template>
+           </el-table-column>
+-          <el-table-column label="管理员">
+-            <template #default="scope">{{ scope.row.is_admin ? '是' : '否' }}</template>
++          <el-table-column label="管理员" width="120">
++            <template #default="scope">
++              <el-tag :type="scope.row.is_admin ? 'success' : 'info'" effect="light">
++                {{ scope.row.is_admin ? '是' : '否' }}
++              </el-tag>
++            </template>
+           </el-table-column>
+         </el-table>
+       </el-tab-pane>
+ 
+-      <el-tab-pane label="文档与权限">
+-        <el-upload :auto-upload="false" :show-file-list="false" :on-change="handleFile">
+-          <el-button type="primary">选择 PDF 上传</el-button>
+-        </el-upload>
+-        <el-table :data="docs" style="margin-top: 16px">
+-          <el-table-column prop="title" label="文档" />
+-          <el-table-column prop="filename" label="文件名" />
++      <el-tab-pane label="文档与权限" name="documents">
++        <div class="toolbar wrap">
++          <el-upload :auto-upload="false" :show-file-list="false" accept=".pdf,.docx,.xlsx,.csv,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp,.gif" :on-change="handleFile">
++     <el-button type="primary">选择文件上传</el-button>
++  </el-upload>
++          <span class="muted-text">支持 PDF、Word(.docx)、Excel(.xlsx)、CSV、TXT、Markdown、图片(PNG/JPG，自动 OCR)；上传后可直接为文档分配可访问的岗位组。</span>
++        </div>
++        <el-table :data="docs" row-key="id" empty-text="暂无文档数据" style="margin-top: 16px">
++          <el-table-column prop="title" label="文档" min-width="180" />
++          <el-table-column prop="filename" label="文件名" min-width="180" />
+           <el-table-column label="可访问岗位组" min-width="300">
+             <template #default="scope">
+               <el-select
+                 v-model="docGroupMap[scope.row.id]"
+                 multiple
++                collapse-tags
++                collapse-tags-tooltip
+                 placeholder="选择岗位组"
+                 style="width: 100%"
+                 @change="saveDocPermission(scope.row.id)"
+@@ -48,55 +107,1180 @@
+               </el-select>
+             </template>
+           </el-table-column>
++          <el-table-column label="切片" width="120" fixed="right">
++            <template #default="scope">
++              <el-button size="small" text type="primary" @click="openChunkDialog(scope.row)">查看切片</el-button>
++            </template>
++          </el-table-column>
++        </el-table>
++      </el-tab-pane>
++
++      <el-tab-pane label="检索测试" name="search">
++        <div class="toolbar wrap">
++          <el-input v-model="searchQuery" placeholder="输入一个问题，测试知识库能检索到哪些片段" style="max-width: 420px" @keyup.enter="runSearchTest" />
++          <el-button type="primary" :loading="searchLoading" @click="runSearchTest">测试检索</el-button>
++        <span v-if="searchResult" class="muted-text">命中 {{ searchResult.source_count }} 条 · 检索后端：{{ searchResult.retrieval_backend }}</span>
++        </div>
++        <el-empty v-if="searchResult && !searchResult.sources.length" description="没有检索到相关片段，换个问法或检查知识库授权。" :image-size="72" />
++        <div v-else-if="searchResult" class="source-list">
++       <article v-for="(source, index) in searchResult.sources" :key="sourceKey(source, index)" class="source-card">
++            <div class="source-card-head">
++              <strong>{{ index + 1 }}. {{ sourceTitle(source) }}</strong>
++   <span>{{ sourcePage(source) }}</span>
++            </div>
++            <pre>{{ sourceSnippet(source) || '未返回片段内容。' }}</pre>
++          </article>
++        </div>
++        <el-empty v-else description="输入问题后点击“测试检索”，查看知识库命中情况。" :image-size="72" />
++      </el-tab-pane>
++
++      <el-tab-pane label="用户反馈" name="feedback">
++        <div class="feedback-summary">
++          <div class="summary-card">
++            <span>反馈总数</span>
++            <strong>{{ feedbackSummary.total }}</strong>
++          </div>
++          <div class="summary-card">
++            <span>待处理</span>
++            <strong>{{ feedbackSummary.new }}</strong>
++          </div>
++          <div class="summary-card">
++            <span>已查看</span>
++            <strong>{{ feedbackSummary.reviewed }}</strong>
++          </div>
++          <div class="summary-card">
++            <span>已解决</span>
++            <strong>{{ feedbackSummary.resolved }}</strong>
++          </div>
++        </div>
++
++        <div class="toolbar wrap">
++          <el-select v-model="feedbackFilter" style="width: 180px" @change="loadFeedback">
++            <el-option label="全部状态" value="all" />
++            <el-option v-for="item in feedbackStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
++          </el-select>
++          <el-select v-model="feedbackCategoryFilter" style="width: 200px" @change="loadFeedback">
++            <el-option label="全部分类" value="all" />
++            <el-option v-for="item in feedbackCategoryOptions" :key="item.value" :label="item.label" :value="item.value" />
++          </el-select>
++          <el-input
++            v-model="feedbackKeyword"
++            clearable
++            placeholder="按用户、分类、反馈内容、问题或回答搜索"
++            style="max-width: 340px"
++          />
++          <el-button :loading="feedbackLoading" @click="loadFeedback">刷新反馈</el-button>
++          <span class="muted-text">当前显示 {{ filteredFeedbacks.length }} 条，接口最多返回最近 300 条反馈。</span>
++        </div>
++
++        <el-alert
++          v-if="feedbackError"
++          class="page-alert"
++          type="warning"
++          :title="feedbackError"
++          show-icon
++          :closable="true"
++          @close="feedbackError = ''"
++        />
++
++        <el-empty v-if="!feedbackLoading && !filteredFeedbacks.length" description="暂无匹配的用户反馈。" :image-size="72" />
++
++        <el-table v-else :data="filteredFeedbacks" row-key="id" empty-text="暂无用户反馈" style="margin-top: 16px">
++          <el-table-column label="提交用户" width="140">
++            <template #default="scope">
++              <div class="cell-stack">
++                <strong>{{ scope.row.username || '未知用户' }}</strong>
++                <span class="muted-text">{{ scope.row.user_id || '无用户 ID' }}</span>
++              </div>
++            </template>
++          </el-table-column>
++
++          <el-table-column label="提交时间" width="180">
++            <template #default="scope">{{ formatDate(scope.row.created_at) }}</template>
++          </el-table-column>
++
++          <el-table-column label="反馈内容" min-width="240">
++            <template #default="scope">
++              <div class="feedback-content-cell">
++                <div class="tag-row">
++                  <el-tag v-if="scope.row.rating" size="small" effect="light">{{ ratingLabel(scope.row.rating) }}</el-tag>
++                  <el-tag size="small" effect="plain" :type="categoryTagType(scope.row.category)">{{ categoryLabel(scope.row.category) }}</el-tag>
++                </div>
++                <p class="snapshot-text">{{ scope.row.content || '未填写反馈内容' }}</p>
++              </div>
++            </template>
++          </el-table-column>
++
++          <el-table-column label="问题快照" min-width="220">
++            <template #default="scope">
++              <p class="snapshot-text">{{ scope.row.question || '未记录提问内容' }}</p>
++            </template>
++          </el-table-column>
++
++          <el-table-column label="回答快照" min-width="260">
++            <template #default="scope">
++              <p class="snapshot-text">{{ scope.row.answer || '未记录回答内容' }}</p>
++            </template>
++          </el-table-column>
++
++          <el-table-column label="引用来源" min-width="220">
++            <template #default="scope">
++              <div v-if="scope.row.sources.length" class="source-chip-list">
++                <el-tag v-for="(source, index) in scope.row.sources.slice(0, 2)" :key="sourceKey(source, index)" size="small" effect="plain">
++                  {{ sourceTitle(source) }}
++                </el-tag>
++                <span v-if="scope.row.sources.length > 2" class="muted-text">+{{ scope.row.sources.length - 2 }} 条</span>
++              </div>
++              <span v-else class="muted-text">无引用快照</span>
++            </template>
++          </el-table-column>
++
++          <el-table-column label="状态" width="120">
++            <template #default="scope">
++              <el-tag :type="statusTagType(scope.row.status)" effect="light">{{ statusLabel(scope.row.status) }}</el-tag>
++            </template>
++          </el-table-column>
++
++          <el-table-column label="操作" width="190" fixed="right">
++            <template #default="scope">
++              <div class="feedback-actions">
++                <el-button size="small" type="primary" text @click="openFeedbackDialog(scope.row)">查看 / 处理</el-button>
++                <el-button v-if="scope.row.status === 'new'" size="small" text @click="quickUpdateFeedback(scope.row, 'reviewed')">
++                  标记已查看
++                </el-button>
++              </div>
++            </template>
++          </el-table-column>
+         </el-table>
+       </el-tab-pane>
++
++      <el-tab-pane label="模型配置" name="model">
++        <div class="model-config-section">
++          <h3>模型配置</h3>
++          <el-form label-position="top" class="model-form" @submit.prevent>
++            <el-form-item label="API Base URL">
++              <el-input v-model="modelForm.base_url" placeholder="https://api.deepseek.com" clearable />
++            </el-form-item>
++            <el-form-item label="模型名称">
++              <el-input v-model="modelForm.model" placeholder="deepseek-chat" clearable />
++            </el-form-item>
++            <el-form-item label="API Key">
++              <el-input
++                v-model="modelForm.api_key"
++                type="password"
++                show-password
++                clearable
++                :placeholder="modelConfig.api_key_set ? '已配置，留空则不修改' : '请输入 API Key'"
++                autocomplete="new-password"
++              />
++            </el-form-item>
++          </el-form>
++          <div class="config-item">
++            <span class="config-label">当前状态：</span>
++            <span class="config-value">{{ modelConfig.api_key_set ? 'API Key 已配置' : 'API Key 未配置' }}</span>
++          </div>
++          <div class="config-actions">
++            <el-button type="primary" :loading="modelSaving" @click="saveModelConfig">保存配置</el-button>
++            <el-button :loading="modelTestLoading" @click="testModelConnection">测试连接</el-button>
++            <el-button @click="loadModelConfig">刷新配置</el-button>
++          </div>
++          <el-alert
++            v-if="modelTestResult"
++            :type="modelTestResult.ok ? 'success' : 'error'"
++            :title="modelTestResult.message"
++            show-icon
++            style="margin-top: 16px"
++            :closable="true"
++            @close="modelTestResult = null"
++          />
++          <div class="config-hint">
++            <p>配置会保存到后台数据库。API Key 留空保存时不会覆盖已有 Key。</p>
++          </div>
++        </div>
++      </el-tab-pane>
+     </el-tabs>
++
++    <el-dialog v-model="reviewDialogVisible" title="处理用户反馈" width="min(960px, 96vw)" destroy-on-close>
++      <template v-if="selectedFeedback">
++        <div class="dialog-meta">
++          <el-tag :type="statusTagType(selectedFeedback.status)" effect="light">{{ statusLabel(selectedFeedback.status) }}</el-tag>
++          <el-tag :type="categoryTagType(selectedFeedback.category)" effect="plain">{{ categoryLabel(selectedFeedback.category) }}</el-tag>
++          <span>反馈用户：{{ selectedFeedback.username || '未知用户' }}</span>
++          <span>提交时间：{{ formatDate(selectedFeedback.created_at) }}</span>
++          <span v-if="selectedFeedback.reviewed_at">最近处理：{{ formatDate(selectedFeedback.reviewed_at) }}</span>
++        </div>
++
++        <div class="detail-grid">
++          <section class="detail-card">
++            <h3>反馈内容</h3>
++            <p class="detail-text">{{ selectedFeedback.content || '未填写反馈内容' }}</p>
++          </section>
++
++          <section class="detail-card">
++            <h3>处理备注</h3>
++            <p class="detail-text">{{ selectedFeedback.review_note || '暂无管理员备注' }}</p>
++          </section>
++
++          <section class="detail-card full">
++            <h3>问题快照</h3>
++            <p class="detail-text">{{ selectedFeedback.question || '未记录提问内容' }}</p>
++          </section>
++
++          <section class="detail-card full">
++            <h3>回答快照</h3>
++            <p class="detail-text">{{ selectedFeedback.answer || '未记录回答内容' }}</p>
++          </section>
++
++          <section class="detail-card full">
++            <div class="detail-card-head">
++              <h3>引用来源</h3>
++              <span>{{ selectedFeedback.sources.length }} 条</span>
++            </div>
++
++            <el-empty v-if="!selectedFeedback.sources.length" description="该反馈未记录引用快照。" :image-size="68" />
++
++            <div v-else class="source-list">
++              <article v-for="(source, index) in selectedFeedback.sources" :key="sourceKey(source, index)" class="source-card">
++                <div class="source-card-head">
++                  <strong>{{ sourceTitle(source) }}</strong>
++                  <span>{{ sourcePage(source) }}</span>
++                </div>
++                <p v-if="sourceType(source)" class="source-type">{{ sourceType(source) }}</p>
++                <pre>{{ sourceSnippet(source) || '未返回引用片段。' }}</pre>
++              </article>
++            </div>
++          </section>
++        </div>
++
++        <el-form label-position="top" class="review-form">
++          <el-form-item label="处理状态">
++            <el-select v-model="reviewForm.status" style="max-width: 220px">
++              <el-option v-for="item in feedbackStatusOptions" :key="item.value" :label="item.label" :value="item.value" />
++            </el-select>
++          </el-form-item>
++          <el-form-item label="管理员备注">
++            <el-input
++              v-model="reviewForm.review_note"
++              type="textarea"
++              :rows="4"
++              maxlength="1000"
++              show-word-limit
++              placeholder="记录处理结论、跟进动作或补充说明。"
++            />
++          </el-form-item>
++        </el-form>
++      </template>
++
++      <template #footer>
++        <el-button @click="reviewDialogVisible = false">取消</el-button>
++        <el-button type="primary" :loading="reviewSaving" @click="saveFeedbackReview">保存处理结果</el-button>
++      </template>
++    </el-dialog>
++
++    <el-dialog v-model="chunkDialogVisible" :title="`切片查看 · ${chunkDocTitle}`" width="min(860px, 96vw)" destroy-on-close>
++      <p class="muted-text chunk-tip">每个切片是知识库检索的最小单位。修改后保存会自动重新向量化该切片。</p>
++      <el-empty v-if="chunkLoading" description="正在加载切片…" :image-size="68" />
++ <el-empty v-else-if="!chunks.length" description="该文档暂无切片。" :image-size="68" />
++      <div v-else class="chunk-list">
++        <article v-for="chunk in chunks" :key="chunk.id" class="chunk-card">
++          <div class="chunk-head">
++          <strong>切片 #{{ chunk.chunk_index + 1 }}</strong>
++   <span v-if="chunk.page_number">第 {{ chunk.page_number }} 页</span>
++        </div>
++          <el-input v-model="chunk.content" type="textarea" :autosize="{ minRows: 3, maxRows: 12 }" />
++          <div class="chunk-actions">
++            <el-button size="small" type="primary" :loading="chunkSavingId === chunk.id" @click="saveChunk(chunk)">保存并重新向量化</el-button>
++          </div>
++   </article>
++      </div>
++    </el-dialog>
+   </div>
+ </template>
+ 
+ <script setup lang="ts">
+-import { onMounted, reactive, ref } from 'vue'
+-import { ElMessage } from 'element-plus'
++import { computed, onMounted, reactive, ref } from 'vue'
++import { useRouter } from 'vue-router'
++import { ElAlert } from 'element-plus/es/components/alert/index'
++import { ElButton } from 'element-plus/es/components/button/index'
++import { ElCheckbox } from 'element-plus/es/components/checkbox/index'
++import { ElDialog } from 'element-plus/es/components/dialog/index'
++import { ElEmpty } from 'element-plus/es/components/empty/index'
++import { ElForm, ElFormItem } from 'element-plus/es/components/form/index'
++import { ElInput } from 'element-plus/es/components/input/index'
++import { ElMessage } from 'element-plus/es/components/message/index'
++import { ElSelect, ElOption } from 'element-plus/es/components/select/index'
++import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index'
++import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index'
++import { ElTag } from 'element-plus/es/components/tag/index'
++import { ElUpload } from 'element-plus/es/components/upload/index'
++import 'element-plus/es/components/alert/style/css'
++import 'element-plus/es/components/button/style/css'
++import 'element-plus/es/components/checkbox/style/css'
++import 'element-plus/es/components/dialog/style/css'
++import 'element-plus/es/components/empty/style/css'
++import 'element-plus/es/components/form/style/css'
++import 'element-plus/es/components/form-item/style/css'
++import 'element-plus/es/components/input/style/css'
++import 'element-plus/es/components/message/style/css'
++import 'element-plus/es/components/select/style/css'
++import 'element-plus/es/components/table/style/css'
++import 'element-plus/es/components/tabs/style/css'
++import 'element-plus/es/components/tag/style/css'
++import 'element-plus/es/components/upload/style/css'
+ import http from '../../api'
++import ThemeSwitcher from '../../components/ThemeSwitcher.vue'
++import {
++  normalizeSourceList,
++  pickFirstArray,
++  sourceKey,
++  sourcePage,
++  sourceSnippet,
++  sourceTitle,
++  sourceType,
++  type SourceItem,
++} from '../../utils/source-utils'
++
++type FeedbackStatus = 'new' | 'reviewed' | 'resolved' | 'ignored'
++type FeedbackCategory = 'incorrect' | 'missing_source' | 'not_helpful' | 'other'
++
++interface GroupItem {
++  id: string
++  name: string
++}
++
++interface UserItem {
++  id: string
++  username: string
++  is_admin: boolean
++  groups: GroupItem[]
++}
+ 
+-const groups = ref<any[]>([])
+-const users = ref<any[]>([])
+-const docs = ref<any[]>([])
++interface DocumentItem {
++  id: string
++  title: string
++  filename: string
++  groups: GroupItem[]
++}
++
++interface FeedbackItem {
++  id: string
++  user_id?: string
++  username?: string
++  session_id?: string
++  message_id?: string
++  rating?: string
++  category: FeedbackCategory
++  content: string
++  question: string
++  answer: string
++  sources: SourceItem[]
++  citations: SourceItem[]
++  status: FeedbackStatus
++  created_at?: string
++  reviewed_at?: string
++  review_note?: string
++}
++
++const router = useRouter()
++
++const activeTab = ref('groups')
++const searchQuery = ref('')
++const searchLoading = ref(false)
++const searchResult = ref<{ retrieval_backend: string; source_count: number; sources: SourceItem[] } | null>(null)
++const chunkDialogVisible = ref(false)
++const chunkLoading = ref(false)
++const chunkSavingId = ref('')
++const chunkDocId = ref('')
++const chunkDocTitle = ref('')
++const chunks = ref<Array<{ id: string; page_number?: number; chunk_index: number; content: string }>>([])
++const pageError = ref('')
++const groups = ref<GroupItem[]>([])
++const users = ref<UserItem[]>([])
++const docs = ref<DocumentItem[]>([])
+ const docGroupMap = reactive<Record<string, string[]>>({})
+ const groupName = ref('')
+ const user = reactive({ username: '', password: '', is_admin: false, group_ids: [] as string[] })
+ 
+-async function load() {
+-  groups.value = (await http.get('/admin/groups')).data
+-  users.value = (await http.get('/admin/users')).data
+-  docs.value = (await http.get('/admin/documents')).data
+-  docs.value.forEach((d: any) => {
+-    docGroupMap[d.id] = d.groups.map((g: any) => g.id)
++const feedbacks = ref<FeedbackItem[]>([])
++const feedbackLoading = ref(false)
++const feedbackError = ref('')
++const feedbackFilter = ref<'all' | FeedbackStatus>('all')
++const feedbackCategoryFilter = ref<'all' | FeedbackCategory>('all')
++const feedbackKeyword = ref('')
++const reviewDialogVisible = ref(false)
++const reviewSaving = ref(false)
++const selectedFeedback = ref<FeedbackItem | null>(null)
++const reviewForm = reactive<{ status: FeedbackStatus; review_note: string }>({ status: 'reviewed', review_note: '' })
++
++const modelConfig = ref<{ base_url: string; model: string; api_key_set: boolean }>({ base_url: '', model: '', api_key_set: false })
++const modelForm = reactive({ base_url: 'https://api.deepseek.com', model: 'deepseek-chat', api_key: '' })
++const modelSaving = ref(false)
++const modelTestLoading = ref(false)
++const modelTestResult = ref<{ ok: boolean; message: string } | null>(null)
++
++const feedbackStatusOptions: Array<{ value: FeedbackStatus; label: string }> = [
++  { value: 'new', label: '待处理' },
++  { value: 'reviewed', label: '已查看' },
++  { value: 'resolved', label: '已解决' },
++  { value: 'ignored', label: '忽略' },
++]
++
++const feedbackCategoryOptions: Array<{ value: FeedbackCategory; label: string }> = [
++  { value: 'incorrect', label: '回答不准确' },
++  { value: 'missing_source', label: '缺少依据/引用' },
++  { value: 'not_helpful', label: '没有帮助' },
++  { value: 'other', label: '其他' },
++]
++
++const feedbackSummary = computed(() => {
++  const summary = { total: feedbacks.value.length, new: 0, reviewed: 0, resolved: 0, ignored: 0 }
++  for (const item of feedbacks.value) {
++    if (item.status in summary) summary[item.status as keyof typeof summary] += 1
++  }
++  return summary
++})
++
++const filteredFeedbacks = computed(() => {
++  const keyword = feedbackKeyword.value.trim().toLowerCase()
++  const category = feedbackCategoryFilter.value
++  return feedbacks.value.filter((item) => {
++    if (category !== 'all' && item.category !== category) return false
++    if (!keyword) return true
++    const haystack = [
++      item.username,
++      item.user_id,
++      item.rating,
++      categoryLabel(item.category),
++      item.category,
++      item.content,
++      item.question,
++      item.answer,
++      item.review_note,
++    ]
++      .filter(Boolean)
++      .join('\n')
++      .toLowerCase()
++    return haystack.includes(keyword)
++  })
++})
++
++function getErrorDetail(error: any, fallback: string) {
++  return error?.response?.data?.detail || error?.message || fallback
++}
++
++function formatGroupNames(value: GroupItem[] = []) {
++  return value.map((g) => g.name).join('、') || '未分配'
++}
++
++function formatDate(value?: string) {
++  if (!value) return '未记录'
++  const date = new Date(value)
++  if (Number.isNaN(date.getTime())) return value
++  return date.toLocaleString()
++}
++
++function statusLabel(status: string) {
++  return feedbackStatusOptions.find((item) => item.value === status)?.label || status || '未知'
++}
++
++function statusTagType(status: string) {
++  if (status === 'new') return 'warning'
++  if (status === 'reviewed') return 'info'
++  if (status === 'resolved') return 'success'
++  if (status === 'ignored') return 'danger'
++  return 'info'
++}
++
++function categoryLabel(category?: string) {
++  return feedbackCategoryOptions.find((item) => item.value === category)?.label || '其他'
++}
++
++function categoryTagType(category?: string) {
++  if (category === 'incorrect') return 'danger'
++  if (category === 'missing_source') return 'warning'
++  if (category === 'not_helpful') return 'info'
++  return 'info'
++}
++
++function ratingLabel(rating?: string) {
++  const map: Record<string, string> = {
++    helpful: '有帮助',
++    unhelpful: '不够好',
++    wrong: '不准确',
++    unsafe: '不安全',
++    other: '其他',
++    user_feedback: '文字反馈',
++  }
++  return rating ? map[rating] || rating : '未选择'
++}
++
++function normalizeFeedbackItem(raw: any): FeedbackItem {
++  const sources = normalizeSourceList(raw?.sources, raw?.citations)
++  return {
++    id: String(raw?.id || ''),
++    user_id: raw?.user_id || '',
++    username: raw?.username || '',
++    session_id: raw?.session_id || '',
++    message_id: raw?.message_id || '',
++    rating: raw?.rating || '',
++    category: (raw?.category || raw?.feedback_category || 'other') as FeedbackCategory,
++    content: raw?.content || '',
++    question: raw?.question || '',
++    answer: raw?.answer || '',
++    sources,
++    citations: sources,
++    status: (raw?.status || 'new') as FeedbackStatus,
++    created_at: raw?.created_at || '',
++    reviewed_at: raw?.reviewed_at || '',
++    review_note: raw?.review_note || '',
++  }
++}
++
++async function loadCoreData() {
++  groups.value = (await http.get('/admin/groups')).data || []
++  users.value = (await http.get('/admin/users')).data || []
++  docs.value = (await http.get('/admin/documents')).data || []
++  for (const key of Object.keys(docGroupMap)) delete docGroupMap[key]
++  docs.value.forEach((d) => {
++    docGroupMap[d.id] = (d.groups || []).map((g) => g.id)
+   })
+ }
++
++async function loadFeedback() {
++  feedbackLoading.value = true
++  feedbackError.value = ''
++  try {
++    const params: Record<string, string> = {}
++    if (feedbackFilter.value !== 'all') params.status = feedbackFilter.value
++    if (feedbackCategoryFilter.value !== 'all') params.category = feedbackCategoryFilter.value
++    const response = await http.get('/admin/feedback', { params })
++    const list = pickFirstArray(response.data, response.data?.items, response.data?.data, response.data?.feedbacks)
++    feedbacks.value = list.map(normalizeFeedbackItem)
++  } catch (error: any) {
++    feedbackError.value = getErrorDetail(error, '用户反馈加载失败，请稍后重试')
++    throw error
++  } finally {
++    feedbackLoading.value = false
++  }
++}
++
++async function runSearchTest() {
++  const question = searchQuery.value.trim()
++  if (!question) return
++  searchLoading.value = true
++  try {
++    const { data } = await http.post('/admin/search-test', { question })
++    searchResult.value = { retrieval_backend: data.retrieval_backend || '', source_count: data.source_count || 0, sources: normalizeSourceList(data.sources, data.citations) }
++  } catch (error: any) {
++    ElMessage.error(getErrorDetail(error, '检索测试失败'))
++  } finally {
++  searchLoading.value = false
++  }
++}
++
++async function openChunkDialog(doc: DocumentItem) {
++  chunkDocId.value = doc.id
++  chunkDocTitle.value = doc.title || doc.filename
++  chunkDialogVisible.value = true
++  chunkLoading.value = true
++  chunks.value = []
++  try {
++  const { data } = await http.get(`/admin/documents/${doc.id}/chunks`)
++    chunks.value = (data?.chunks || []).map((c: any) => ({
++      id: String(c.id),
++      page_number: c.page_number,
++      chunk_index: c.chunk_index,
++      content: c.content || '',
++    }))
++  } catch (error: any) {
++    ElMessage.error(getErrorDetail(error, '切片加载失败'))
++  } finally {
++    chunkLoading.value = false
++  }
++}
++
++async function saveChunk(chunk: { id: string; content: string }) {
++  const content = chunk.content.trim()
++  if (!content) {
++    ElMessage.warning('切片内容不能为空')
++    return
++  }
++  chunkSavingId.value = chunk.id
++  try {
++    await http.put(`/admin/documents/${chunkDocId.value}/chunks/${chunk.id}`, { content })
++    ElMessage.success('切片已保存并重新向量化')
++  } catch (error: any) {
++    ElMessage.error(getErrorDetail(error, '切片保存失败'))
++  } finally {
++    chunkSavingId.value = ''
++  }
++}
++
++async function loadModelConfig() {
++  try {
++    const { data } = await http.get('/admin/model')
++    modelConfig.value = data
++    modelForm.base_url = data?.base_url || 'https://api.deepseek.com'
++    modelForm.model = data?.model || 'deepseek-chat'
++    modelForm.api_key = ''
++  } catch (error: any) {
++    console.error('加载模型配置失败', error)
++  }
++}
++
++async function saveModelConfig() {
++  const baseUrl = modelForm.base_url.trim() || 'https://api.deepseek.com'
++  const model = modelForm.model.trim() || 'deepseek-chat'
++  modelSaving.value = true
++  try {
++    await http.put('/admin/model', { base_url: baseUrl, model, api_key: modelForm.api_key.trim() })
++    ElMessage.success('模型配置已保存')
++    await loadModelConfig()
++  } catch (error: any) {
++    ElMessage.error(getErrorDetail(error, '保存模型配置失败'))
++  } finally {
++    modelSaving.value = false
++  }
++}
++
++async function testModelConnection() {
++  modelTestLoading.value = true
++  modelTestResult.value = null
++  try {
++    const { data } = await http.post('/admin/model/test')
++    modelTestResult.value = data
++    if (data.ok) {
++      ElMessage.success('模型连接测试成功')
++    } else {
++      ElMessage.error('模型连接测试失败')
++    }
++  } catch (error: any) {
++    modelTestResult.value = { ok: false, message: getErrorDetail(error, '测试连接时发生错误') }
++    ElMessage.error('测试连接时发生错误')
++  } finally {
++    modelTestLoading.value = false
++  }
++}
++
++async function loadAll() {
++  pageError.value = ''
++  const results = await Promise.allSettled([loadCoreData(), loadFeedback(), loadModelConfig()])
++  const failed = results.find((result) => result.status === 'rejected')
++  if (failed?.status === 'rejected') {
++    pageError.value = getErrorDetail(failed.reason, '部分管理数据加载失败，请刷新后重试')
++  }
++}
++
+ async function createGroup() {
+-  await http.post('/admin/groups', { name: groupName.value })
++  const name = groupName.value.trim()
++  if (!name) return
++  await http.post('/admin/groups', { name })
+   groupName.value = ''
+-  await load()
++  ElMessage.success('岗位组已新增')
++  await loadCoreData()
+ }
++
+ async function createUser() {
++  if (!user.username.trim() || !user.password) {
++    ElMessage.warning('请填写用户名和密码')
++    return
++  }
+   await http.post('/admin/users', user)
+   user.username = ''
+   user.password = ''
+   user.is_admin = false
+   user.group_ids = []
+-  await load()
++  ElMessage.success('员工已新增')
++  await loadCoreData()
+ }
++
+ async function handleFile(file: any) {
+   const fd = new FormData()
+   fd.append('file', file.raw)
+   await http.post('/admin/documents', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+   ElMessage.success('文档上传并向量化完成')
+-  await load()
++  await loadCoreData()
+ }
++
+ async function saveDocPermission(documentId: string) {
+   await http.put(`/admin/documents/${documentId}/permissions`, { group_ids: docGroupMap[documentId] || [] })
+   ElMessage.success('文档权限已保存')
+ }
+-onMounted(load)
++
++async function openFeedbackDialog(item: FeedbackItem) {
++  try {
++    const response = await http.get(`/admin/feedback/${item.id}`)
++    selectedFeedback.value = normalizeFeedbackItem(response.data)
++  } catch (error: any) {
++    selectedFeedback.value = item
++    ElMessage.warning(getErrorDetail(error, '反馈详情加载失败，已展示列表快照'))
++  }
++  reviewForm.status = selectedFeedback.value.status || 'reviewed'
++  reviewForm.review_note = selectedFeedback.value.review_note || ''
++  reviewDialogVisible.value = true
++}
++
++async function updateFeedback(item: FeedbackItem, status: FeedbackStatus, reviewNote: string) {
++  await http.put(`/admin/feedback/${item.id}`, { status, review_note: reviewNote, review_notes: reviewNote })
++  item.status = status
++  item.review_note = reviewNote
++  item.reviewed_at = new Date().toISOString()
++}
++
++async function quickUpdateFeedback(item: FeedbackItem, status: FeedbackStatus) {
++  try {
++    await updateFeedback(item, status, item.review_note || '')
++    ElMessage.success('反馈状态已更新')
++    await loadFeedback()
++  } catch (error: any) {
++    ElMessage.error(getErrorDetail(error, '更新反馈状态失败'))
++  }
++}
++
++async function saveFeedbackReview() {
++  if (!selectedFeedback.value) return
++  reviewSaving.value = true
++  try {
++    await updateFeedback(selectedFeedback.value, reviewForm.status, reviewForm.review_note)
++    reviewDialogVisible.value = false
++    ElMessage.success('反馈处理结果已保存')
++    await loadFeedback()
++  } catch (error: any) {
++    ElMessage.error(getErrorDetail(error, '保存反馈处理结果失败'))
++  } finally {
++    reviewSaving.value = false
++  }
++}
++
++onMounted(loadAll)
+ </script>
++
++<style scoped>
++.admin-page {
++  max-width: 1180px;
++  margin: 0 auto;
++  padding: 24px;
++}
++
++.page-header {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: 16px;
++  margin-bottom: 16px;
++}
++
++.page-header h2 {
++  margin: 0;
++  font-family: var(--serif);
++  font-weight: 600;
++  font-size: 28px;
++  line-height: 1.2;
++}
++
++.page-header p {
++  margin: 8px 0 0;
++  color: var(--text-muted);
++  line-height: 1.6;
++}
++
++.page-alert {
++  margin-bottom: 16px;
++}
++
++.header-actions {
++  display: flex;
++  align-items: center;
++  gap: 12px;
++}
++
++.stat-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
++  gap: 12px;
++  margin-bottom: 24px;
++}
++
++.stat-card {
++  padding: 18px 20px;
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--surface);
++  box-shadow: var(--shadow-sm);
++}
++
++.stat-card.alert {
++  border-color: var(--accent);
++  background: var(--accent-soft);
++}
++
++.stat-label {
++  color: var(--text-muted);
++  font-size: 13px;
++}
++
++.stat-value {
++  display: block;
++  margin: 8px 0 4px;
++  font-family: var(--serif);
++  font-size: 32px;
++  line-height: 1.1;
++  color: var(--text);
++}
++
++.stat-hint {
++  color: var(--text-subtle);
++  font-size: 12px;
++}
++
++.admin-tabs {
++  background: var(--surface);
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  box-shadow: var(--shadow-sm);
++  overflow: hidden;
++}
++
++.admin-tabs :deep(.el-tabs__header.is-left) {
++  margin: 0;
++  min-width: 176px;
++  padding: 12px;
++  background: var(--surface-alt);
++  border-right: 1px solid var(--border);
++}
++
++.admin-tabs :deep(.el-tabs__nav-wrap.is-left)::after,
++.admin-tabs :deep(.el-tabs__active-bar.is-left) {
++  display: none;
++}
++
++.admin-tabs :deep(.el-tabs__item.is-left) {
++  width: 100%;
++  height: 40px;
++  justify-content: flex-start;
++  padding: 0 14px;
++  margin-bottom: 4px;
++  border-radius: 10px;
++  color: var(--text-muted);
++  font-weight: 600;
++  transition: background 0.15s, color 0.15s;
++}
++
++.admin-tabs :deep(.el-tabs__item.is-left:hover) {
++  color: var(--text);
++}
++
++.admin-tabs :deep(.el-tabs__item.is-left.is-active) {
++  background: var(--accent-soft);
++  color: var(--accent);
++}
++
++.admin-tabs :deep(.el-tabs__content) {
++  padding: 24px;
++}
++
++.toolbar {
++  display: flex;
++  align-items: center;
++  gap: 12px;
++  margin-bottom: 16px;
++}
++
++.toolbar.wrap {
++  flex-wrap: wrap;
++}
++
++.simple-list {
++  margin: 0;
++  padding-left: 20px;
++  color: var(--text);
++  line-height: 1.9;
++}
++
++.muted-text {
++  color: var(--text-subtle);
++  font-size: 13px;
++  line-height: 1.5;
++}
++
++.cell-stack {
++  display: grid;
++  gap: 4px;
++}
++
++.feedback-summary {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
++  gap: 12px;
++  margin-bottom: 16px;
++}
++
++.summary-card {
++  padding: 16px;
++  border: 1px solid var(--border);
++  border-radius: 14px;
++  background: var(--surface);
++}
++
++.summary-card span {
++  display: block;
++  color: var(--text-subtle);
++  font-size: 13px;
++}
++
++.summary-card strong {
++  display: block;
++  margin-top: 8px;
++  font-size: 24px;
++  color: var(--text);
++}
++
++.feedback-content-cell {
++  display: grid;
++  gap: 8px;
++}
++
++.tag-row {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 6px;
++}
++
++.snapshot-text,
++.detail-text {
++  margin: 0;
++  color: var(--text);
++  white-space: pre-wrap;
++  word-break: break-word;
++  line-height: 1.7;
++}
++
++.snapshot-text {
++  display: -webkit-box;
++  overflow: hidden;
++  -webkit-box-orient: vertical;
++  -webkit-line-clamp: 3;
++}
++
++.source-chip-list,
++.feedback-actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++}
++
++.dialog-meta {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 12px;
++  margin-bottom: 16px;
++  color: var(--text-muted);
++  font-size: 13px;
++}
++
++.detail-grid {
++  display: grid;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  gap: 12px;
++}
++
++.detail-card {
++  padding: 16px;
++  border: 1px solid var(--border);
++  border-radius: 14px;
++  background: var(--surface-alt);
++}
++
++.detail-card.full {
++  grid-column: 1 / -1;
++}
++
++.detail-card h3 {
++  margin: 0 0 10px;
++  font-size: 15px;
++  color: var(--text);
++}
++
++.detail-card-head {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 12px;
++  margin-bottom: 10px;
++}
++
++.detail-card-head h3 {
++  margin-bottom: 0;
++}
++
++.source-list {
++  display: grid;
++  gap: 12px;
++  max-height: 320px;
++  overflow: auto;
++  padding-right: 4px;
++}
++
++.source-card {
++  padding: 12px;
++  border: 1px solid var(--border);
++  border-radius: 12px;
++  background: var(--surface);
++}
++
++.source-card-head {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: 12px;
++}
++
++.source-card-head strong {
++  color: var(--text);
++}
++
++.source-card-head span,
++.source-type {
++  color: var(--text-subtle);
++  font-size: 12px;
++}
++
++.source-card pre {
++  margin: 10px 0 0;
++  color: var(--text-muted);
++  white-space: pre-wrap;
++  word-break: break-word;
++  line-height: 1.6;
++  font-size: 13px;
++  font-family: inherit;
++}
++
++.review-form {
++  margin-top: 16px;
++}
++
++.chunk-tip {
++  margin: 0 0 16px;
++}
++
++.chunk-list {
++  display: grid;
++  gap: 12px;
++  max-height: 60vh;
++  overflow: auto;
++  padding-right: 4px;
++}
++
++.chunk-card {
++  padding: 14px;
++  border: 1px solid var(--border);
++  border-radius: 12px;
++  background: var(--surface-alt);
++}
++
++.chunk-head {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  margin-bottom: 8px;
++  color: var(--text);
++}
++
++.chunk-head span {
++  color: var(--text-subtle);
++  font-size: 12px;
++}
++
++.chunk-actions {
++  margin-top: 8px;
++  text-align: right;
++}
++
++@media (max-width: 960px) {
++  .admin-page {
++    padding: 16px;
++  }
++
++  .page-header {
++    flex-direction: column;
++    align-items: stretch;
++  }
++
++  .toolbar,
++  .toolbar.wrap {
++    align-items: stretch;
++    flex-direction: column;
++  }
++
++  .toolbar .el-input,
++  .toolbar .el-select,
++  .toolbar .el-button {
++    max-width: 100% !important;
++    width: 100% !important;
++  }
++
++  .detail-grid {
++    grid-template-columns: 1fr;
++  }
++}
++
++.model-config-section {
++  max-width: 720px;
++}
++
++.model-config-section h3 {
++  margin-top: 0;
++  margin-bottom: 20px;
++  font-size: 18px;
++  font-weight: 600;
++  color: var(--text-primary);
++}
++
++.config-item {
++  display: flex;
++  align-items: baseline;
++  padding: 12px 0;
++  border-bottom: 1px solid var(--border-light);
++}
++
++.config-label {
++  min-width: 140px;
++  font-weight: 500;
++  color: var(--text-secondary);
++}
++
++.config-value {
++  flex: 1;
++  color: var(--text-primary);
++  word-break: break-all;
++}
++
++.config-actions {
++  margin-top: 24px;
++  display: flex;
++  gap: 12px;
++}
++
++.config-hint {
++  margin-top: 32px;
++  padding: 16px;
++  background: var(--bg-secondary);
++  border-radius: 6px;
++  font-size: 14px;
++  line-height: 1.6;
++  color: var(--text-secondary);
++}
++
++.config-hint p {
++  margin: 8px 0;
++}
++
++.config-hint p:first-child {
++  margin-top: 0;
++}
++
++.config-hint p:last-child {
++  margin-bottom: 0;
++}
++</style>
+diff --git a/internal-ai-assistant/frontend/src/views/chat/index.vue b/internal-ai-assistant/frontend/src/views/chat/index.vue
+index fbcf6d5..e24bbdc 100644
+--- a/internal-ai-assistant/frontend/src/views/chat/index.vue
++++ b/internal-ai-assistant/frontend/src/views/chat/index.vue
+@@ -1,54 +1,846 @@
+ <template>
+   <div class="chat-shell">
+     <div class="chat-header">
+-      <h2>公司内部AI助手</h2>
+-      <p>只基于你有权限访问的内部文档回答</p>
++      <div>
++        <h2>公司内部 AI 助手</h2>
++        <p>只基于你有权限访问的内部文档回答；未命中或依据不足时会明确提示。</p>
++      </div>
++      <div class="header-actions">
++        <el-button @click="newConversation">新对话</el-button>
++        <el-button v-if="isAdmin" @click="router.push('/admin')">后台管理</el-button>
++        <el-button @click="logout">退出登录</el-button>
++      </div>
+     </div>
+-    <div class="chat-body">
+-      <el-card v-for="(m, i) in messages" :key="i" :class="['msg', m.role]">
+-        <div v-html="m.content.replace(/\n/g, '<br/>')"></div>
+-      </el-card>
+-    </div>
+-    <div class="chat-input">
+-      <el-input v-model="question" type="textarea" :rows="3" placeholder="请输入你的问题" />
+-      <el-button type="primary" @click="send">发送</el-button>
+-    </div>
+-    <el-divider />
+-    <div v-if="sources.length">
+-      <h4>引用来源</h4>
+-      <el-card v-for="s in sources" :key="s.document_id" class="source-card">
+-        <div>{{ s.document_title }} - 第 {{ s.page_number || '未知' }} 页</div>
+-        <div>{{ s.content }}</div>
+-      </el-card>
++
++    <el-alert
++      v-if="error"
++      class="chat-error"
++      type="error"
++      :title="error"
++      show-icon
++      closable
++      @close="error = ''"
++    />
++
++    <div class="chat-layout">
++      <aside class="session-panel">
++        <div class="session-head">
++          <strong>最近对话</strong>
++          <el-button text size="small" @click="loadSessions">刷新</el-button>
++        </div>
++        <div v-if="sessions.length" class="session-list">
++          <button
++            v-for="item in sessions"
++            :key="item.id"
++            type="button"
++            :class="['session-item', { active: item.id === sessionId }]"
++            @click="openSession(item.id)"
++          >
++            <span>{{ item.title || '新的对话' }}</span>
++            <small>{{ item.preview || '暂无预览' }}</small>
++          </button>
++        </div>
++        <p v-else class="empty-side">还没有历史对话</p>
++      </aside>
++
++      <main class="chat-main">
++        <div ref="chatBodyRef" class="chat-body">
++          <el-card v-for="message in messages" :key="message.id" :class="['msg', message.role]" shadow="never">
++            <template #header>
++              <div class="msg-head">
++                <strong>{{ message.role === 'assistant' ? 'AI 助手' : '我' }}</strong>
++                <small v-if="message.created_at">{{ formatTime(message.created_at) }}</small>
++              </div>
++            </template>
++
++            <div v-if="message.role === 'user'" class="message-content user-text">{{ message.content }}</div>
++            <div v-else class="message-content markdown-body" v-html="renderMarkdown(message.content || message.pendingText || '')" />
++
++            <el-alert
++              v-if="message.role === 'assistant' && groundingWarning(message)"
++              class="grounding-alert"
++              type="warning"
++              :title="groundingWarning(message)"
++              show-icon
++              :closable="false"
++            />
++
++            <section v-if="message.role === 'assistant' && message.sources.length" class="source-summary">
++              <div class="source-summary-title">
++                <strong>{{ sourceSummaryTitle(message) }}</strong>
++                <span>{{ sourceSummaryCount(message) }}</span>
++              </div>
++              <details>
++                <summary>查看来源</summary>
++                <article v-for="(source, index) in message.sources" :key="sourceKey(source, index)" class="source-card">
++                  <strong>{{ index + 1 }}. {{ sourceTitle(source) }}</strong>
++                  <p>{{ sourceSnippet(source) || '该来源未返回片段内容。' }}</p>
++                  <small>{{ sourceType(source) }} · {{ sourceLocation(source) }}</small>
++                </article>
++              </details>
++            </section>
++          </el-card>
++        </div>
++
++        <div class="chat-input">
++          <el-input
++            v-model="question"
++            type="textarea"
++            :autosize="{ minRows: 2, maxRows: 6 }"
++            :disabled="sending"
++            maxlength="2000"
++            resize="none"
++            placeholder="请输入你的问题，Enter 发送，Shift + Enter 换行"
++            @keydown.enter.exact="onEnterKey"
++          />
++          <div class="input-actions">
++            <el-button type="primary" :loading="sending" :disabled="!question.trim() || sending" @click="send">发送</el-button>
++            <el-button v-if="sending" @click="cancelActiveStream('已取消生成。')">取消</el-button>
++          </div>
++        </div>
++      </main>
+     </div>
+   </div>
+ </template>
+ 
+ <script setup lang="ts">
+-import { ref } from 'vue'
++import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+ import { ElMessage } from 'element-plus'
+-import http from '../../api'
+ import { useRouter } from 'vue-router'
++import http from '../../api'
++
++type Role = 'assistant' | 'user'
++
++interface SourceItem {
++  id?: string
++  document_id?: string
++  document_title?: string
++  title?: string
++  filename?: string
++  chunk_id?: string
++  chunk_index?: number
++  page_number?: number | string | null
++  page?: number | string | null
++  content?: string
++  snippet?: string
++  excerpt?: string
++  source_type?: string
++  type?: string
++  score?: number
++}
++
++interface ChatMessageItem {
++  id: string
++  role: Role
++  content: string
++  created_at?: string
++  sources: SourceItem[]
++  pendingText?: string
++  waitStartedAt?: number
++  waitSeconds?: number
++  no_sources?: boolean
++  grounded?: boolean | null
++  confidence?: number | null
++  citation_mode?: string
++  document_count?: number
++  summary_mode?: boolean
++}
++
++interface SessionSummary {
++  id: string
++  title: string
++  preview: string
++  message_count: number
++  created_at: string
++}
+ 
+ const router = useRouter()
++const chatBodyRef = ref<HTMLElement | null>(null)
+ const question = ref('')
+ const sessionId = ref('')
+-const messages = ref<any[]>([{ role: 'assistant', content: '你好，我会基于你有权限的内部文档回答。' }])
+-const sources = ref<any[]>([])
++const sending = ref(false)
++const error = ref('')
++const sessions = ref<SessionSummary[]>([])
++const isAdmin = ref(false)
++const messages = ref<ChatMessageItem[]>([welcomeMessage()])
++let activeStreamController: AbortController | null = null
++let activeAssistantMessage: ChatMessageItem | null = null
++
++function welcomeMessage(): ChatMessageItem {
++  return {
++    id: 'welcome',
++    role: 'assistant',
++    content: '你好，我会基于你有权限访问的内部文档回答。发送问题后会显示检索和模型等待状态。',
++    sources: [],
++    grounded: true,
++  }
++}
++
++function messageId(prefix: string) {
++  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
++}
++
++function getErrorDetail(errorValue: any, fallback: string) {
++  return errorValue?.response?.data?.detail || errorValue?.message || fallback
++}
++
++function escapeHtml(value: string) {
++  return String(value || '').replace(/[&<>'"]/g, (char) => ({
++    '&': '&amp;',
++    '<': '&lt;',
++    '>': '&gt;',
++    "'": '&#39;',
++    '"': '&quot;',
++  }[char] || char))
++}
++
++function renderMarkdown(content: string) {
++  let html = escapeHtml(content)
++  html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
++  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
++  html = html.replace(/^### (.*)$/gm, '<h3>$1</h3>')
++  html = html.replace(/^## (.*)$/gm, '<h2>$1</h2>')
++  html = html.replace(/^- (.*)$/gm, '• $1')
++  return html.replace(/\n/g, '<br/>')
++}
++
++function normalizeSources(...lists: any[]): SourceItem[] {
++  const result: SourceItem[] = []
++  for (const list of lists) {
++    if (!Array.isArray(list)) continue
++    for (const item of list) {
++      if (item && typeof item === 'object') result.push(item)
++    }
++  }
++  const seen = new Set<string>()
++  return result.filter((item, index) => {
++    const key = sourceKey(item, index)
++    if (seen.has(key)) return false
++    seen.add(key)
++    return true
++  })
++}
++
++function sourceKey(source: SourceItem, index: number) {
++  return String(source.id || source.chunk_id || `${source.document_id || source.document_title || 'source'}-${source.chunk_index ?? index}`)
++}
++
++function sourceTitle(source: SourceItem) {
++  return source.document_title || source.title || source.filename || '未命名来源'
++}
++
++function sourceSnippet(source: SourceItem) {
++  return source.snippet || source.excerpt || source.content || ''
++}
++
++function sourceType(source: SourceItem) {
++  const value = String(source.source_type || source.type || '')
++  if (value.startsWith('chat_')) return '个人附件'
++  return value || '知识库文档'
++}
++
++function sourceLocation(source: SourceItem) {
++  const page = source.page_number || source.page
++  const chunk = source.chunk_index
++  if (page) return `第 ${page} 页`
++  if (chunk !== undefined && chunk !== null) return `片段 ${chunk}`
++  return '位置未知'
++}
++
++function isAccessibleDocumentCitation(message: ChatMessageItem) {
++  return message.citation_mode === 'accessible_documents' || message.summary_mode === true
++}
++
++function sourceSummaryTitle(message: ChatMessageItem) {
++  return isAccessibleDocumentCitation(message) ? '可读文档范围' : '引用来源'
++}
++
++function sourceSummaryCount(message: ChatMessageItem) {
++  const count = isAccessibleDocumentCitation(message) ? (message.document_count || message.sources.length) : message.sources.length
++  return `${count} ${isAccessibleDocumentCitation(message) ? '份文档' : '条片段'}`
++}
++
++function groundingWarning(message: ChatMessageItem) {
++  if (message.id === 'welcome' || message.role !== 'assistant' || !message.content) return ''
++  if (message.no_sources || (!message.sources.length && message.grounded === false)) return '未在知识库中找到依据：本次回答没有可引用来源。'
++  if (message.confidence !== null && message.confidence !== undefined && message.confidence < 0.35) return '该回答知识库依据置信度较低，请结合引用片段核验。'
++  return ''
++}
++
++function formatTime(value?: string) {
++  if (!value) return ''
++  const date = new Date(value)
++  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
++}
++
++async function scrollToBottom() {
++  await nextTick()
++  if (chatBodyRef.value) chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
++}
++
++function pendingWithWait(message: ChatMessageItem, text: string) {
++  const seconds = Math.max(0, Math.floor(message.waitSeconds || 0))
++  return seconds > 0 ? `${text}（已等待 ${seconds} 秒）` : text
++}
++
++function abortError() {
++  return new DOMException('Aborted', 'AbortError')
++}
++
++function throwIfAborted(signal?: AbortSignal) {
++  if (signal?.aborted) throw abortError()
++}
++
++function streamFrameDelay(ms: number, signal?: AbortSignal) {
++  return new Promise<void>((resolve, reject) => {
++    if (signal?.aborted) {
++      reject(abortError())
++      return
++    }
++    const timer = window.setTimeout(() => {
++      signal?.removeEventListener('abort', onAbort)
++      resolve()
++    }, ms)
++    function onAbort() {
++      window.clearTimeout(timer)
++      reject(abortError())
++    }
++    signal?.addEventListener('abort', onAbort, { once: true })
++  })
++}
++
++function cancelActiveStream(message = '') {
++  const target = activeAssistantMessage
++  if (message && target) {
++    target.pendingText = ''
++    target.content = target.content ? `${target.content}\n\n${message}` : message
++  }
++  if (activeStreamController) {
++    activeStreamController.abort()
++    activeStreamController = null
++  }
++  activeAssistantMessage = null
++  if (message) sending.value = false
++}
++
++function parseSseBlock(block: string): { event: string; data: any } | null {
++  const trimmed = block.trim()
++  if (!trimmed) return null
++  let event = 'message'
++  const dataLines: string[] = []
++  for (const line of trimmed.split(/\r?\n/)) {
++    if (line.startsWith('event:')) event = line.slice(6).trim()
++    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
++  }
++  if (!dataLines.length) return null
++  const raw = dataLines.join('\n')
++  try {
++    return { event, data: JSON.parse(raw) }
++  } catch {
++    return { event, data: raw }
++  }
++}
++
++function fillAssistantMessage(message: ChatMessageItem, data: any, overwriteAnswer = false) {
++  if (!data || typeof data !== 'object') return
++  const sources = normalizeSources(data.sources, data.citations, data.references)
++  sessionId.value = data.session_id || sessionId.value
++  message.id = data.message_id || data.assistant_message_id || message.id
++  if (overwriteAnswer || !message.content) message.content = data.answer || message.content || ''
++  message.sources = sources
++  message.no_sources = Boolean(data.no_sources || data.noSources || data.source_count === 0 || (!sources.length && data.answer))
++  message.grounded = typeof data.grounded === 'boolean' ? data.grounded : message.no_sources ? false : null
++  const confidence = Number(data.confidence ?? data.grounding_confidence ?? data.score)
++  message.confidence = Number.isFinite(confidence) ? (confidence > 1 ? confidence / 100 : confidence) : null
++  message.citation_mode = data.citation_mode || message.citation_mode || 'matched_chunks'
++  message.document_count = Number(data.document_count || data.interaction_meta?.document_count || sources.length || 0)
++  message.summary_mode = Boolean(data.summary_mode || message.summary_mode)
++}
++
++async function responseErrorMessage(response: Response) {
++  try {
++    const data = await response.json()
++    return data?.detail || data?.message || response.statusText || '请求失败'
++  } catch {
++    try {
++      return (await response.text()) || response.statusText || '请求失败'
++    } catch {
++      return response.statusText || '请求失败'
++    }
++  }
++}
++
++function fallbackToHttpError(reason: string) {
++  const error = new Error(reason)
++  ;(error as any).fallbackToHttp = true
++  return error
++}
++
++async function appendAssistantText(message: ChatMessageItem, piece: string, signal?: AbortSignal) {
++  const text = String(piece || '')
++  if (!text) return
++  message.pendingText = ''
++  let index = 0
++  while (index < text.length) {
++    throwIfAborted(signal)
++    const step = Math.min(12, text.length - index)
++    message.content += text.slice(index, index + step)
++    index += step
++    await scrollToBottom()
++    await streamFrameDelay(index < text.length ? 16 : 8, signal)
++  }
++}
++
++async function applyStreamEvent(event: { event: string; data: any }, assistantMessage: ChatMessageItem, signal?: AbortSignal) {
++  if (event.event === 'status') {
++    const rawMessage = typeof event.data === 'string' ? event.data : String(event.data?.message || '')
++    const message = event.data?.stage === 'generating' ? '已找到可用资料，正在调用模型组织回答…' : rawMessage
++    if (!assistantMessage.content && message) {
++      assistantMessage.pendingText = pendingWithWait(assistantMessage, message)
++      await scrollToBottom()
++    }
++    return false
++  }
++  if (event.event === 'meta') {
++    fillAssistantMessage(assistantMessage, event.data)
++    if (!assistantMessage.content) assistantMessage.pendingText = pendingWithWait(assistantMessage, '已找到可用资料，正在调用模型组织回答…')
++    await scrollToBottom()
++    return false
++  }
++  if (event.event === 'delta') {
++    const piece = typeof event.data === 'string' ? event.data : String(event.data?.delta || '')
++    await appendAssistantText(assistantMessage, piece, signal)
++    return false
++  }
++  if (event.event === 'done') {
++    const finalAnswer = typeof event.data?.answer === 'string' ? event.data.answer : ''
++    if (!assistantMessage.content && finalAnswer) {
++      fillAssistantMessage(assistantMessage, { ...event.data, answer: '' })
++      await appendAssistantText(assistantMessage, finalAnswer, signal)
++    } else {
++      fillAssistantMessage(assistantMessage, event.data, false)
++    }
++    assistantMessage.pendingText = ''
++    await scrollToBottom()
++    return true
++  }
++  return false
++}
++
++async function sendWithStream(text: string, assistantMessage: ChatMessageItem, signal?: AbortSignal) {
++  const token = localStorage.getItem('token')
++  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
++  if (token) headers.Authorization = `Bearer ${token}`
++
++  const response = await fetch('/api/chat/stream', {
++    method: 'POST',
++    headers,
++    body: JSON.stringify({ question: text, session_id: sessionId.value || null }),
++    signal,
++  })
++
++  if (response.status === 401) {
++    const unauthorized = new Error('登录已失效，请重新登录')
++    ;(unauthorized as any).status = 401
++    throw unauthorized
++  }
++  if (response.status === 404 || response.status === 405) throw fallbackToHttpError('/api/chat/stream 当前不可用，回退到 /api/chat')
++  if (!response.ok) throw new Error(await responseErrorMessage(response))
++  if (!response.body) throw fallbackToHttpError('当前浏览器或代理没有提供流式 body，回退到 /api/chat')
++
++  const reader = response.body.getReader()
++  const decoder = new TextDecoder()
++  let buffer = ''
++  let completed = false
++
++  while (true) {
++    throwIfAborted(signal)
++    const { value, done } = await reader.read()
++    if (value) buffer += decoder.decode(value, { stream: !done })
++    buffer = buffer.replace(/\r\n/g, '\n')
++    let index = buffer.indexOf('\n\n')
++    while (index >= 0) {
++      const block = buffer.slice(0, index)
++      buffer = buffer.slice(index + 2)
++      const parsed = parseSseBlock(block)
++      if (parsed && (await applyStreamEvent(parsed, assistantMessage, signal))) completed = true
++      index = buffer.indexOf('\n\n')
++    }
++    if (done) break
++  }
++
++  throwIfAborted(signal)
++  buffer += decoder.decode()
++  buffer = buffer.replace(/\r\n/g, '\n')
++  if (buffer.trim()) {
++    const parsed = parseSseBlock(buffer)
++    if (parsed && (await applyStreamEvent(parsed, assistantMessage, signal))) completed = true
++  }
++  if (!completed) throw new Error('流式响应未完整结束，请检查后端 /api/chat/stream 是否正常返回 done 事件')
++}
++
++async function sendWithHttpFallback(text: string, assistantMessage: ChatMessageItem, signal?: AbortSignal) {
++  if (!assistantMessage.content) assistantMessage.pendingText = pendingWithWait(assistantMessage, '正在检索知识库并组织回答')
++  const { data } = await http.post('/chat', { question: text, session_id: sessionId.value || null }, { signal })
++  fillAssistantMessage(assistantMessage, { ...data, answer: '' })
++  if (assistantMessage.sources.length) {
++    assistantMessage.pendingText = pendingWithWait(assistantMessage, '已找到可用资料，正在调用模型组织回答…')
++    await scrollToBottom()
++    await streamFrameDelay(250, signal)
++  }
++  assistantMessage.pendingText = ''
++  await appendAssistantText(assistantMessage, data.answer || '后端未返回回答内容。', signal)
++}
+ 
+ async function send() {
+-  if (!question.value.trim()) return
+-  const userText = question.value
+-  messages.value.push({ role: 'user', content: userText })
++  const text = question.value.trim()
++  if (!text || sending.value) return
++  error.value = ''
++  const userMessage: ChatMessageItem = { id: messageId('user'), role: 'user', content: text, sources: [], created_at: new Date().toISOString() }
++  const assistantMessage: ChatMessageItem = {
++    id: messageId('assistant'),
++    role: 'assistant',
++    content: '',
++    sources: [],
++    created_at: new Date().toISOString(),
++    waitStartedAt: Date.now(),
++    waitSeconds: 0,
++    pendingText: '正在连接知识库…',
++  }
++  messages.value.push(userMessage, assistantMessage)
+   question.value = ''
++  sending.value = true
++  const streamController = new AbortController()
++  activeStreamController = streamController
++  activeAssistantMessage = assistantMessage
++  await scrollToBottom()
++
++  const waitTimer = window.setInterval(() => {
++    if (assistantMessage.content) {
++      window.clearInterval(waitTimer)
++      return
++    }
++    assistantMessage.waitSeconds = Math.floor((Date.now() - (assistantMessage.waitStartedAt || Date.now())) / 1000)
++    const baseText = (assistantMessage.pendingText || '模型正在运行，请稍候…').replace(/（已等待 \d+ 秒）$/, '')
++    assistantMessage.pendingText = pendingWithWait(assistantMessage, baseText)
++  }, 1000)
++
+   try {
+-    const res = await http.post('/chat', { question: userText, session_id: sessionId.value || null })
+-    sessionId.value = res.data.session_id
+-    messages.value.push({ role: 'assistant', content: res.data.answer })
+-    sources.value = res.data.sources || []
+-  } catch (e: any) {
+-    if (e.response?.status === 401) router.push('/login')
+-    else ElMessage.error(e.response?.data?.detail || '发送失败')
++    try {
++      await sendWithStream(text, assistantMessage, streamController.signal)
++    } catch (streamError: any) {
++      if (streamError?.fallbackToHttp) await sendWithHttpFallback(text, assistantMessage, streamController.signal)
++      else throw streamError
++    }
++    await loadSessions()
++  } catch (requestError: any) {
++    if (requestError?.name === 'AbortError' || requestError?.code === 'ERR_CANCELED') return
++    if (requestError?.status === 401 || requestError?.response?.status === 401) {
++      localStorage.removeItem('token')
++      localStorage.removeItem('user')
++      router.push('/login')
++      return
++    }
++    const detail = getErrorDetail(requestError, '发送失败')
++    error.value = detail
++    assistantMessage.pendingText = ''
++    if (!assistantMessage.content) assistantMessage.content = `发送失败：${detail}`
++    else assistantMessage.content += `\n\n发送中断：${detail}`
++    ElMessage.error(detail)
++  } finally {
++    window.clearInterval(waitTimer)
++    if (activeStreamController === streamController) activeStreamController = null
++    if (activeAssistantMessage === assistantMessage) activeAssistantMessage = null
++    sending.value = false
++    await scrollToBottom()
+   }
+ }
++
++function onEnterKey(event: KeyboardEvent) {
++  if (event.isComposing || (event as any).keyCode === 229) return
++  event.preventDefault()
++  send()
++}
++
++async function loadSessions() {
++  try {
++    sessions.value = (await http.get('/chat/sessions')).data || []
++  } catch {
++    // 历史列表加载失败不阻断聊天主流程。
++  }
++}
++
++async function openSession(id: string) {
++  cancelActiveStream()
++  try {
++    const { data } = await http.get(`/chat/sessions/${id}`)
++    sessionId.value = id
++    messages.value = (data.messages || []).map((item: any) => ({
++      id: item.id || messageId(item.role || 'message'),
++      role: item.role === 'user' ? 'user' : 'assistant',
++      content: item.content || '',
++      created_at: item.created_at,
++      sources: item.role === 'assistant' ? normalizeSources(item.sources, item.citations) : [],
++      no_sources: item.role === 'assistant' ? !(item.sources && item.sources.length) : false,
++      grounded: item.role === 'assistant' ? ((item.sources && item.sources.length) ? null : false) : undefined,
++    }))
++    if (!messages.value.length) messages.value = [welcomeMessage()]
++    await scrollToBottom()
++  } catch (requestError: any) {
++    ElMessage.error(getErrorDetail(requestError, '加载历史会话失败'))
++  }
++}
++
++function newConversation() {
++  cancelActiveStream()
++  sessionId.value = ''
++  error.value = ''
++  messages.value = [welcomeMessage()]
++}
++
++function logout() {
++  cancelActiveStream()
++  localStorage.removeItem('token')
++  localStorage.removeItem('user')
++  router.push('/login')
++}
++
++async function loadCurrentUser() {
++  try {
++    const { data } = await http.get('/me')
++    localStorage.setItem('user', JSON.stringify(data))
++    isAdmin.value = !!data?.is_admin
++  } catch {
++    isAdmin.value = false
++  }
++}
++
++onMounted(() => {
++  loadCurrentUser()
++  loadSessions()
++})
++
++onUnmounted(() => {
++  cancelActiveStream()
++})
+ </script>
++
++<style scoped>
++.chat-shell {
++  max-width: 1180px;
++  min-height: calc(100vh - 48px);
++  margin: 0 auto;
++  padding: 24px;
++  box-sizing: border-box;
++}
++
++.chat-header {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: 16px;
++  margin-bottom: 16px;
++}
++
++.chat-header h2 {
++  margin: 0 0 6px;
++}
++
++.chat-header p {
++  margin: 0;
++  color: #667085;
++}
++
++.header-actions,
++.input-actions {
++  display: flex;
++  gap: 8px;
++  flex-wrap: wrap;
++  justify-content: flex-end;
++}
++
++.chat-error {
++  margin-bottom: 12px;
++}
++
++.chat-layout {
++  display: grid;
++  grid-template-columns: 240px minmax(0, 1fr);
++  gap: 16px;
++}
++
++.session-panel,
++.chat-main {
++  border: 1px solid #e4e7ed;
++  border-radius: 12px;
++  background: #fff;
++}
++
++.session-panel {
++  padding: 12px;
++  align-self: start;
++}
++
++.session-head {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  margin-bottom: 8px;
++}
++
++.session-list {
++  display: grid;
++  gap: 6px;
++}
++
++.session-item {
++  width: 100%;
++  border: 1px solid transparent;
++  border-radius: 8px;
++  padding: 8px;
++  background: #f8fafc;
++  text-align: left;
++  cursor: pointer;
++}
++
++.session-item.active,
++.session-item:hover {
++  border-color: #409eff;
++  background: #ecf5ff;
++}
++
++.session-item span,
++.session-item small {
++  display: block;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.session-item small,
++.empty-side {
++  color: #909399;
++}
++
++.chat-main {
++  min-width: 0;
++  display: flex;
++  flex-direction: column;
++  min-height: 640px;
++}
++
++.chat-body {
++  flex: 1;
++  overflow-y: auto;
++  padding: 16px;
++  display: flex;
++  flex-direction: column;
++  gap: 12px;
++  background: #f5f7fb;
++  border-radius: 12px 12px 0 0;
++}
++
++.msg {
++  max-width: min(760px, 92%);
++}
++
++.msg.user {
++  align-self: flex-end;
++}
++
++.msg.assistant {
++  align-self: flex-start;
++}
++
++.msg.user :deep(.el-card__body) {
++  background: #ecf5ff;
++}
++
++.msg-head {
++  display: flex;
++  justify-content: space-between;
++  gap: 16px;
++  color: #344054;
++}
++
++.msg-head small {
++  color: #98a2b3;
++  font-weight: 400;
++}
++
++.message-content {
++  white-space: pre-wrap;
++  overflow-wrap: anywhere;
++  line-height: 1.75;
++}
++
++.markdown-body :deep(code) {
++  padding: 1px 5px;
++  border-radius: 4px;
++  background: #f2f4f7;
++}
++
++.markdown-body :deep(h2),
++.markdown-body :deep(h3) {
++  margin: 8px 0 4px;
++}
++
++.grounding-alert,
++.source-summary {
++  margin-top: 12px;
++}
++
++.source-summary {
++  border-top: 1px solid #eef0f3;
++  padding-top: 10px;
++}
++
++.source-summary-title {
++  display: flex;
++  justify-content: space-between;
++  gap: 12px;
++  margin-bottom: 8px;
++}
++
++.source-summary-title span {
++  color: #909399;
++}
++
++.source-card {
++  margin-top: 8px;
++  padding: 10px;
++  border: 1px solid #e4e7ed;
++  border-radius: 8px;
++  background: #fafafa;
++}
++
++.source-card p {
++  margin: 6px 0;
++  color: #475467;
++}
++
++.source-card small {
++  color: #98a2b3;
++}
++
++.chat-input {
++  display: grid;
++  gap: 10px;
++  padding: 14px;
++  border-top: 1px solid #e4e7ed;
++}
++
++@media (max-width: 820px) {
++  .chat-layout {
++    grid-template-columns: 1fr;
++  }
++
++  .session-panel {
++    order: 2;
++  }
++
++  .chat-header {
++    flex-direction: column;
++  }
++}
++</style>
+diff --git a/internal-ai-assistant/frontend/src/views/login/index.vue b/internal-ai-assistant/frontend/src/views/login/index.vue
+index ec4ad18..75c1476 100644
+--- a/internal-ai-assistant/frontend/src/views/login/index.vue
++++ b/internal-ai-assistant/frontend/src/views/login/index.vue
+@@ -14,7 +14,17 @@
+ 
+ <script setup lang="ts">
+ import { reactive } from 'vue'
+-import { ElMessage } from 'element-plus'
++import { ElButton } from 'element-plus/es/components/button/index'
++import { ElCard } from 'element-plus/es/components/card/index'
++import { ElForm, ElFormItem } from 'element-plus/es/components/form/index'
++import { ElInput } from 'element-plus/es/components/input/index'
++import { ElMessage } from 'element-plus/es/components/message/index'
++import 'element-plus/es/components/button/style/css'
++import 'element-plus/es/components/card/style/css'
++import 'element-plus/es/components/form/style/css'
++import 'element-plus/es/components/form-item/style/css'
++import 'element-plus/es/components/input/style/css'
++import 'element-plus/es/components/message/style/css'
+ import http from '../../api'
+ import { useRouter } from 'vue-router'
+ 
+@@ -24,6 +34,7 @@ const form = reactive({ username: '', password: '' })
+ async function login() {
+   const res = await http.post('/auth/login', form)
+   localStorage.setItem('token', res.data.token)
++  localStorage.setItem('user', JSON.stringify(res.data.user))
+   ElMessage.success('登录成功')
+   router.push('/chat')
+ }
+diff --git a/internal-ai-assistant/frontend/tsconfig.json b/internal-ai-assistant/frontend/tsconfig.json
+index 93c4ec7..839723d 100644
+--- a/internal-ai-assistant/frontend/tsconfig.json
++++ b/internal-ai-assistant/frontend/tsconfig.json
+@@ -9,6 +9,7 @@
+     "resolveJsonModule": true,
+     "isolatedModules": true,
+     "esModuleInterop": true,
++    "skipLibCheck": true,
+     "lib": ["ES2020", "DOM", "DOM.Iterable"],
+     "types": ["node"]
+   },
+diff --git a/internal-ai-assistant/frontend/vite.config.ts b/internal-ai-assistant/frontend/vite.config.ts
+index 948218a..8f1c0fb 100644
+--- a/internal-ai-assistant/frontend/vite.config.ts
++++ b/internal-ai-assistant/frontend/vite.config.ts
+@@ -3,6 +3,11 @@ import vue from '@vitejs/plugin-vue'
+ 
+ export default defineConfig({
+   plugins: [vue()],
+-  server: { host: '0.0.0.0', port: 5173 },
++  server: {
++    host: '0.0.0.0',
++    port: 5174,
++    strictPort: true,
++    proxy: { '/api': 'http://localhost:8000' },
++  },
+   build: { outDir: 'dist' },
+ })
+
+
+===== untracked frontend files =====
+frontend/dev-server.log
+frontend/package-lock.json
+frontend/src/components/ThemeSwitcher.vue
+frontend/src/theme.ts
+frontend/src/utils/source-utils.ts
+frontend/src/views/chat/components/SourcePreviewDrawer.vue
+frontend/src/vite-env.d.ts
+
+
+===== BEGIN UNTRACKED FILE: frontend/dev-server.log =====
+
+> internal-ai-assistant-frontend@0.1.0 dev
+> vite
+
+Port 5173 is in use, trying another one...
+
+  [32m[1mVITE[22m v6.4.2[39m  [2mready in [0m[1m978[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.26.66:[1m5174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.20.240.1:[1m5174[22m/[39m
+[2m10:59:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m11:00:48[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:49[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:50[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:51[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:53[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:56[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:58[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:00:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:01:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:01:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:01:02[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:01:04[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:01:05[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:01:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:01:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:01:56[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:21[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:26[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:02:53[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:02:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:02:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:02:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:02:57[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:02:57[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:02:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:03:01[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:10:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue, /src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:15:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/main.ts[22m
+[2m11:15:42[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m11:23:46[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m11:23:51[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m11:23:56[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:30:29[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m11:30:52[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m11:30:53[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m11:32:02[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m11:32:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m11:54:30[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m12:01:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m12:01:07[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m14:02:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m14:03:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m14:03:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m14:21:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m14:21:54[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m14:22:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m14:22:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m14:22:52[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+[2m14:45:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m14:48:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue, /src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m14:54:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m15:11:52[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m15:12:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m15:13:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m15:13:23[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue?vue&type=style&index=0&scoped=39a51454&lang.css[22m
+[2m15:53:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m15:53:36[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m15:53:58[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m08:18:16[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/chat/index.vue[22m
+[2m08:22:29[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m08:22:36[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m08:22:51[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m08:23:04[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue[22m
+[2m08:23:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/views/admin/index.vue?vue&type=style&index=0&scoped=2f8eac8e&lang.css[22m
+
+===== END UNTRACKED FILE: frontend/dev-server.log =====
+
+===== BEGIN UNTRACKED FILE: frontend/package-lock.json =====
+{
+  "name": "internal-ai-assistant-frontend",
+  "version": "0.1.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "internal-ai-assistant-frontend",
+      "version": "0.1.0",
+      "dependencies": {
+        "axios": "^1.7.9",
+        "element-plus": "^2.8.8",
+        "pinia": "^2.2.6",
+        "vue": "^3.5.13",
+        "vue-router": "^4.4.5"
+      },
+      "devDependencies": {
+        "@vitejs/plugin-vue": "^5.2.1",
+        "typescript": "^5.7.2",
+        "vite": "^6.0.3"
+      }
+    },
+    "node_modules/@babel/helper-string-parser": {
+      "version": "7.29.7",
+      "resolved": "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-7.29.7.tgz",
+      "integrity": "sha512-Pb5ijPrZ89GDH8223L4UP8i6QApWxs04RbPQJTeWDV0/keR2E36MeKnyr6LYmUUvqRRI+Iv87SuF1W6ErINzYw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/helper-validator-identifier": {
+      "version": "7.29.7",
+      "resolved": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.29.7.tgz",
+      "integrity": "sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/parser": {
+      "version": "7.29.7",
+      "resolved": "https://registry.npmjs.org/@babel/parser/-/parser-7.29.7.tgz",
+      "integrity": "sha512-hnORnjP/1P/zFEndoeX+n+t1RwWRJiJpM/jO7FW32Kn9r5+sJB2JWOdYo4L6k78j15eCwY3Gm/7364B1EMwtNg==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/types": "^7.29.7"
+      },
+      "bin": {
+        "parser": "bin/babel-parser.js"
+      },
+      "engines": {
+        "node": ">=6.0.0"
+      }
+    },
+    "node_modules/@babel/types": {
+      "version": "7.29.7",
+      "resolved": "https://registry.npmjs.org/@babel/types/-/types-7.29.7.tgz",
+      "integrity": "sha512-4zBIxpPzowiZpusoFkyGVwakdRJUyuH5PxQ/PrqghfdFWWasvnCdPfQXHrenDai+gyLARulZjZowCOj6fjT4pA==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/helper-string-parser": "^7.29.7",
+        "@babel/helper-validator-identifier": "^7.29.7"
+      },
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@ctrl/tinycolor": {
+      "version": "4.2.0",
+      "resolved": "https://registry.npmjs.org/@ctrl/tinycolor/-/tinycolor-4.2.0.tgz",
+      "integrity": "sha512-kzyuwOAQnXJNLS9PSyrk0CWk35nWJW/zl/6KvnTBMFK65gm7U1/Z5BqjxeapjZCIhQcM/DsrEmcbRwDyXyXK4A==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=14"
+      }
+    },
+    "node_modules/@element-plus/icons-vue": {
+      "version": "2.3.2",
+      "resolved": "https://registry.npmjs.org/@element-plus/icons-vue/-/icons-vue-2.3.2.tgz",
+      "integrity": "sha512-OzIuTaIfC8QXEPmJvB4Y4kw34rSXdCJzxcD1kFStBvr8bK6X1zQAYDo0CNMjojnfTqRQCJ0I7prlErcoRiET2A==",
+      "license": "MIT",
+      "peerDependencies": {
+        "vue": "^3.2.0"
+      }
+    },
+    "node_modules/@esbuild/aix-ppc64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.25.12.tgz",
+      "integrity": "sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA==",
+      "cpu": [
+        "ppc64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "aix"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/android-arm": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.25.12.tgz",
+      "integrity": "sha512-VJ+sKvNA/GE7Ccacc9Cha7bpS8nyzVv0jdVgwNDaR4gDMC/2TTRc33Ip8qrNYUcpkOHUT5OZ0bUcNNVZQ9RLlg==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/android-arm64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.25.12.tgz",
+      "integrity": "sha512-6AAmLG7zwD1Z159jCKPvAxZd4y/VTO0VkprYy+3N2FtJ8+BQWFXU+OxARIwA46c5tdD9SsKGZ/1ocqBS/gAKHg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/android-x64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.25.12.tgz",
+      "integrity": "sha512-5jbb+2hhDHx5phYR2By8GTWEzn6I9UqR11Kwf22iKbNpYrsmRB18aX/9ivc5cabcUiAT/wM+YIZ6SG9QO6a8kg==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/darwin-arm64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.12.tgz",
+      "integrity": "sha512-N3zl+lxHCifgIlcMUP5016ESkeQjLj/959RxxNYIthIg+CQHInujFuXeWbWMgnTo4cp5XVHqFPmpyu9J65C1Yg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/darwin-x64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.25.12.tgz",
+      "integrity": "sha512-HQ9ka4Kx21qHXwtlTUVbKJOAnmG1ipXhdWTmNXiPzPfWKpXqASVcWdnf2bnL73wgjNrFXAa3yYvBSd9pzfEIpA==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/freebsd-arm64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.25.12.tgz",
+      "integrity": "sha512-gA0Bx759+7Jve03K1S0vkOu5Lg/85dou3EseOGUes8flVOGxbhDDh/iZaoek11Y8mtyKPGF3vP8XhnkDEAmzeg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "freebsd"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/freebsd-x64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.25.12.tgz",
+      "integrity": "sha512-TGbO26Yw2xsHzxtbVFGEXBFH0FRAP7gtcPE7P5yP7wGy7cXK2oO7RyOhL5NLiqTlBh47XhmIUXuGciXEqYFfBQ==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "freebsd"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-arm": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.25.12.tgz",
+      "integrity": "sha512-lPDGyC1JPDou8kGcywY0YILzWlhhnRjdof3UlcoqYmS9El818LLfJJc3PXXgZHrHCAKs/Z2SeZtDJr5MrkxtOw==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-arm64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.25.12.tgz",
+      "integrity": "sha512-8bwX7a8FghIgrupcxb4aUmYDLp8pX06rGh5HqDT7bB+8Rdells6mHvrFHHW2JAOPZUbnjUpKTLg6ECyzvas2AQ==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-ia32": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.25.12.tgz",
+      "integrity": "sha512-0y9KrdVnbMM2/vG8KfU0byhUN+EFCny9+8g202gYqSSVMonbsCfLjUO+rCci7pM0WBEtz+oK/PIwHkzxkyharA==",
+      "cpu": [
+        "ia32"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-loong64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.25.12.tgz",
+      "integrity": "sha512-h///Lr5a9rib/v1GGqXVGzjL4TMvVTv+s1DPoxQdz7l/AYv6LDSxdIwzxkrPW438oUXiDtwM10o9PmwS/6Z0Ng==",
+      "cpu": [
+        "loong64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-mips64el": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.25.12.tgz",
+      "integrity": "sha512-iyRrM1Pzy9GFMDLsXn1iHUm18nhKnNMWscjmp4+hpafcZjrr2WbT//d20xaGljXDBYHqRcl8HnxbX6uaA/eGVw==",
+      "cpu": [
+        "mips64el"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-ppc64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.25.12.tgz",
+      "integrity": "sha512-9meM/lRXxMi5PSUqEXRCtVjEZBGwB7P/D4yT8UG/mwIdze2aV4Vo6U5gD3+RsoHXKkHCfSxZKzmDssVlRj1QQA==",
+      "cpu": [
+        "ppc64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-riscv64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.25.12.tgz",
+      "integrity": "sha512-Zr7KR4hgKUpWAwb1f3o5ygT04MzqVrGEGXGLnj15YQDJErYu/BGg+wmFlIDOdJp0PmB0lLvxFIOXZgFRrdjR0w==",
+      "cpu": [
+        "riscv64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-s390x": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.25.12.tgz",
+      "integrity": "sha512-MsKncOcgTNvdtiISc/jZs/Zf8d0cl/t3gYWX8J9ubBnVOwlk65UIEEvgBORTiljloIWnBzLs4qhzPkJcitIzIg==",
+      "cpu": [
+        "s390x"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/linux-x64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.12.tgz",
+      "integrity": "sha512-uqZMTLr/zR/ed4jIGnwSLkaHmPjOjJvnm6TVVitAa08SLS9Z0VM8wIRx7gWbJB5/J54YuIMInDquWyYvQLZkgw==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/netbsd-arm64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.25.12.tgz",
+      "integrity": "sha512-xXwcTq4GhRM7J9A8Gv5boanHhRa/Q9KLVmcyXHCTaM4wKfIpWkdXiMog/KsnxzJ0A1+nD+zoecuzqPmCRyBGjg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "netbsd"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/netbsd-x64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.25.12.tgz",
+      "integrity": "sha512-Ld5pTlzPy3YwGec4OuHh1aCVCRvOXdH8DgRjfDy/oumVovmuSzWfnSJg+VtakB9Cm0gxNO9BzWkj6mtO1FMXkQ==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "netbsd"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/openbsd-arm64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.25.12.tgz",
+      "integrity": "sha512-fF96T6KsBo/pkQI950FARU9apGNTSlZGsv1jZBAlcLL1MLjLNIWPBkj5NlSz8aAzYKg+eNqknrUJ24QBybeR5A==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "openbsd"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/openbsd-x64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.25.12.tgz",
+      "integrity": "sha512-MZyXUkZHjQxUvzK7rN8DJ3SRmrVrke8ZyRusHlP+kuwqTcfWLyqMOE3sScPPyeIXN/mDJIfGXvcMqCgYKekoQw==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "openbsd"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/openharmony-arm64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/openharmony-arm64/-/openharmony-arm64-0.25.12.tgz",
+      "integrity": "sha512-rm0YWsqUSRrjncSXGA7Zv78Nbnw4XL6/dzr20cyrQf7ZmRcsovpcRBdhD43Nuk3y7XIoW2OxMVvwuRvk9XdASg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "openharmony"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/sunos-x64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.25.12.tgz",
+      "integrity": "sha512-3wGSCDyuTHQUzt0nV7bocDy72r2lI33QL3gkDNGkod22EsYl04sMf0qLb8luNKTOmgF/eDEDP5BFNwoBKH441w==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "sunos"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/win32-arm64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.25.12.tgz",
+      "integrity": "sha512-rMmLrur64A7+DKlnSuwqUdRKyd3UE7oPJZmnljqEptesKM8wx9J8gx5u0+9Pq0fQQW8vqeKebwNXdfOyP+8Bsg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/win32-ia32": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.25.12.tgz",
+      "integrity": "sha512-HkqnmmBoCbCwxUKKNPBixiWDGCpQGVsrQfJoVGYLPT41XWF8lHuE5N6WhVia2n4o5QK5M4tYr21827fNhi4byQ==",
+      "cpu": [
+        "ia32"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@esbuild/win32-x64": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.25.12.tgz",
+      "integrity": "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/@floating-ui/core": {
+      "version": "1.7.5",
+      "resolved": "https://registry.npmjs.org/@floating-ui/core/-/core-1.7.5.tgz",
+      "integrity": "sha512-1Ih4WTWyw0+lKyFMcBHGbb5U5FtuHJuujoyyr5zTaWS5EYMeT6Jb2AuDeftsCsEuchO+mM2ij5+q9crhydzLhQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@floating-ui/utils": "^0.2.11"
+      }
+    },
+    "node_modules/@floating-ui/dom": {
+      "version": "1.7.6",
+      "resolved": "https://registry.npmjs.org/@floating-ui/dom/-/dom-1.7.6.tgz",
+      "integrity": "sha512-9gZSAI5XM36880PPMm//9dfiEngYoC6Am2izES1FF406YFsjvyBMmeJ2g4SAju3xWwtuynNRFL2s9hgxpLI5SQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@floating-ui/core": "^1.7.5",
+        "@floating-ui/utils": "^0.2.11"
+      }
+    },
+    "node_modules/@floating-ui/utils": {
+      "version": "0.2.11",
+      "resolved": "https://registry.npmjs.org/@floating-ui/utils/-/utils-0.2.11.tgz",
+      "integrity": "sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==",
+      "license": "MIT"
+    },
+    "node_modules/@jridgewell/sourcemap-codec": {
+      "version": "1.5.5",
+      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz",
+      "integrity": "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==",
+      "license": "MIT"
+    },
+    "node_modules/@popperjs/core": {
+      "name": "@sxzz/popperjs-es",
+      "version": "2.11.8",
+      "resolved": "https://registry.npmjs.org/@sxzz/popperjs-es/-/popperjs-es-2.11.8.tgz",
+      "integrity": "sha512-wOwESXvvED3S8xBmcPWHs2dUuzrE4XiZeFu7e1hROIJkm02a49N120pmOXxY33sBb6hArItm5W5tcg1cBtV+HQ==",
+      "license": "MIT",
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/popperjs"
+      }
+    },
+    "node_modules/@rollup/rollup-android-arm-eabi": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.61.0.tgz",
+      "integrity": "sha512-dnxczajOqt0gesZlN5pGQ1s1imQVrsmCw5G2Ci4oM+0WvNz3pyRnlWrT7McoZIb8VlFwCawdmbWRmxRn7HI+VQ==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ]
+    },
+    "node_modules/@rollup/rollup-android-arm64": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.61.0.tgz",
+      "integrity": "sha512-Bp3JpGP00Vu3f238ivRrjf7z3xSzVPXqCmaJYA9t2c+c8vKYvOzmXF7LkkeUalTEGd6cZcSWe+PFIP3Vy48fRg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ]
+    },
+    "node_modules/@rollup/rollup-darwin-arm64": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.61.0.tgz",
+      "integrity": "sha512-zaYIpr670mUmmZ1tVzUFplbQbG7h3Gugx3L5FoqhsC2m/YnLlR1a7zVLmXNPy+iY1tFPEbNG+HHBXZGyId0G5w==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ]
+    },
+    "node_modules/@rollup/rollup-darwin-x64": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-x64/-/rollup-darwin-x64-4.61.0.tgz",
+      "integrity": "sha512-+P49fvkv2dSoeevUW+lgZ/I2JHSsJCK1Lyjj7Cu6E4UHG4tS9XIefzIjo5qhgELjAclnen1rLzK2PMKJdo+Dyg==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ]
+    },
+    "node_modules/@rollup/rollup-freebsd-arm64": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-arm64/-/rollup-freebsd-arm64-4.61.0.tgz",
+      "integrity": "sha512-l3FAAOyKJXH2ea6KNFN+MMgC/rnE94YGLXs2ehYqDcCoHt1DpvgWX75BhUJxN38XojP7Ul+4H8PRn7EdyqSDrw==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "freebsd"
+      ]
+    },
+    "node_modules/@rollup/rollup-freebsd-x64": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-x64/-/rollup-freebsd-x64-4.61.0.tgz",
+      "integrity": "sha512-VokPN3TSctKj65cyCNPaUh4vMFA8awxOot/0sp+4J7ZlNRKQEhXhawqPwajoi8H5ZFt61i0ugZJuTKXBjGJ17Q==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "freebsd"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-arm-gnueabihf": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-gnueabihf/-/rollup-linux-arm-gnueabihf-4.61.0.tgz",
+      "integrity": "sha512-DxH0P3wxm+Yzs/p3zrk9dw1rURu8p0Nv5+MRK/L7OtnLNg5rLZraSBFZ8iUXOd9f2BlhJyEpIZUH/emjq4UJ4g==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-arm-musleabihf": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-musleabihf/-/rollup-linux-arm-musleabihf-4.61.0.tgz",
+      "integrity": "sha512-T6ZvMNe84kAz6TBWHC7hGAoEtzP1LWYw/AqayGWEF6uISt3Abk/st06LqRD9THd7Xz3NxzurUpzAuEAUbZf+nw==",
+      "cpu": [
+        "arm"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-arm64-gnu": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-gnu/-/rollup-linux-arm64-gnu-4.61.0.tgz",
+      "integrity": "sha512-q/4hzvQkDs8b4jIBab1pnLiiM0ayTZsN2amBFPDzuyZxjEd4wDwx0UJFYM3cOZzSf5Kw8fnWSprJzIBMkcR44Q==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-arm64-musl": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-musl/-/rollup-linux-arm64-musl-4.61.0.tgz",
+      "integrity": "sha512-vvYWX3akdEAY6km+9wAqFDnk6pQsbJKVnj7xawcvs/+fdlYBGp+U+Qq/lLfpIxYIZvZLHMAKD9HLdacSx/r3dw==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-loong64-gnu": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-gnu/-/rollup-linux-loong64-gnu-4.61.0.tgz",
+      "integrity": "sha512-DePa5cqOxDP/Zp0VOXpeWaGew5iIv5DXp9NYbzkX5PFQyWVX9184WCTh3hvr/7lhXo8ZVlbFLkz8+o/q1dU6gA==",
+      "cpu": [
+        "loong64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-loong64-musl": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-musl/-/rollup-linux-loong64-musl-4.61.0.tgz",
+      "integrity": "sha512-LV8aWMB8UChglMCEzs7RkN0GsH29RJaLLqwm9fCIjlqwxQTiWAqNcc7wjBkH31hV0PU/yVxGYvrYsgfea2qw6g==",
+      "cpu": [
+        "loong64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-ppc64-gnu": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-gnu/-/rollup-linux-ppc64-gnu-4.61.0.tgz",
+      "integrity": "sha512-QoNSnwQtaeNu5grdBbsL0tt1uyl5EnS8DA8Mr3nluMXbhdQNyhN+G4tBax7VCdxLKj8YJ0/4OO9Ho84jMnJtKA==",
+      "cpu": [
+        "ppc64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-ppc64-musl": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-musl/-/rollup-linux-ppc64-musl-4.61.0.tgz",
+      "integrity": "sha512-/zZp5MKapIIApE8trN8qLGNSiRN9TUoaUZ1cmVu4XnVdd5LQLOXTtyi+vtfUbNnT3iyjzpPqYeKXmvJ+gJGYWw==",
+      "cpu": [
+        "ppc64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-riscv64-gnu": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-gnu/-/rollup-linux-riscv64-gnu-4.61.0.tgz",
+      "integrity": "sha512-RbrzcD3aJ1k3UbtMRRBNwojdVVyXjuVAFTfn/xPa6EEl6GE9Sm/akPgFTb9aAC9pMKGJ6CtWxaGrqWcabH+ySg==",
+      "cpu": [
+        "riscv64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-riscv64-musl": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-musl/-/rollup-linux-riscv64-musl-4.61.0.tgz",
+      "integrity": "sha512-ZF+onDsBso8PJf1XaG9lB+O9RnBpKGnY6OrzC4CSHrtC1jb6jWLTKK4bRqdoCXHd22gyr2hiYmEAm8Wns/BOCw==",
+      "cpu": [
+        "riscv64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-s390x-gnu": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-s390x-gnu/-/rollup-linux-s390x-gnu-4.61.0.tgz",
+      "integrity": "sha512-Atk0aSIk5Zx2Wuh9dgRQgLP0Koc8hOeYpbWryMXyk8G8/HmPkwPPkMqIIDhrXHHYqfUzSJA/I7IWSBv8xSmRBA==",
+      "cpu": [
+        "s390x"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-x64-gnu": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.61.0.tgz",
+      "integrity": "sha512-0uMOcf3eZ5K+K4cYHkdxShFMPlPXCOdfDFEFn9dNYAEEd2cVvmOfH7zFgRVoDgmtQ1m9k5q7qfrHzyMAubKYUA==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-linux-x64-musl": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-musl/-/rollup-linux-x64-musl-4.61.0.tgz",
+      "integrity": "sha512-mvFtE4A/t/7hRJ7X8Ozmu8FsIkAUat2nzl12pgU337BRmq87AQUJztwHz2Zv5/tjo9/C95E66CK03SI/ToEDJw==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@rollup/rollup-openbsd-x64": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-openbsd-x64/-/rollup-openbsd-x64-4.61.0.tgz",
+      "integrity": "sha512-z9b9+aTxvt8n2rNltMPvyaUfB8NJ+CVyOrGK/MdIKHx7B+lXmZpm/XbRsU7Rpf3fRqJ2uS6mBJiJveCtq8LHDg==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "openbsd"
+      ]
+    },
+    "node_modules/@rollup/rollup-openharmony-arm64": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-openharmony-arm64/-/rollup-openharmony-arm64-4.61.0.tgz",
+      "integrity": "sha512-jXaXFqKMehsOc+g8R6oo33RRC6w07G9jDBxAE5eAKX7mOcCbZloYIPNhfG9Wl+P9O9IWHFO4OJgPi1Ml2qkt7w==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "openharmony"
+      ]
+    },
+    "node_modules/@rollup/rollup-win32-arm64-msvc": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-arm64-msvc/-/rollup-win32-arm64-msvc-4.61.0.tgz",
+      "integrity": "sha512-OXNWVFocS2IA4+QplhTZZ2a+8hPZR7T8KuozsNmJKK8y7cp83StHvGksfHzPG3wczWTczyWHVQuqeiTUbjiyBg==",
+      "cpu": [
+        "arm64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@rollup/rollup-win32-ia32-msvc": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-ia32-msvc/-/rollup-win32-ia32-msvc-4.61.0.tgz",
+      "integrity": "sha512-AlAbNtBO637LxSldqV43z0FfXoGfl2TW1DgAg/bs7aQswFbDewz2SJm3BUhiGfbOVtW571xbc9p+REdxhyN/Eg==",
+      "cpu": [
+        "ia32"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@rollup/rollup-win32-x64-gnu": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-gnu/-/rollup-win32-x64-gnu-4.61.0.tgz",
+      "integrity": "sha512-QRSrQXyJ1M4tjNXdR0/G/IgV6lzfQQJYBjlWIEYkY2Xs86DRl/iEpQ4blMDjJxSl7n19eDKKXMg0AmuBVYy8pQ==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@rollup/rollup-win32-x64-msvc": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.61.0.tgz",
+      "integrity": "sha512-tkuFxhvKO/HlGd0VsINF6vHSYH8AF8W0TcNxKDK6JZmrehngFj78pToc8iemtnvwilDjs2G/qSzYFhe9U8q+fw==",
+      "cpu": [
+        "x64"
+      ],
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@types/estree": {
+      "version": "1.0.9",
+      "resolved": "https://registry.npmjs.org/@types/estree/-/estree-1.0.9.tgz",
+      "integrity": "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/lodash": {
+      "version": "4.17.24",
+      "resolved": "https://registry.npmjs.org/@types/lodash/-/lodash-4.17.24.tgz",
+      "integrity": "sha512-gIW7lQLZbue7lRSWEFql49QJJWThrTFFeIMJdp3eH4tKoxm1OvEPg02rm4wCCSHS0cL3/Fizimb35b7k8atwsQ==",
+      "license": "MIT"
+    },
+    "node_modules/@types/lodash-es": {
+      "version": "4.17.12",
+      "resolved": "https://registry.npmjs.org/@types/lodash-es/-/lodash-es-4.17.12.tgz",
+      "integrity": "sha512-0NgftHUcV4v34VhXm8QBSftKVXtbkBG3ViCjs6+eJ5a6y6Mi/jiFGPc1sC7QK+9BFhWrURE3EOggmWaSxL9OzQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@types/lodash": "*"
+      }
+    },
+    "node_modules/@types/web-bluetooth": {
+      "version": "0.0.21",
+      "resolved": "https://registry.npmjs.org/@types/web-bluetooth/-/web-bluetooth-0.0.21.tgz",
+      "integrity": "sha512-oIQLCGWtcFZy2JW77j9k8nHzAOpqMHLQejDA48XXMWH6tjCQHz5RCFz1bzsmROyL6PUm+LLnUiI4BCn221inxA==",
+      "license": "MIT"
+    },
+    "node_modules/@vitejs/plugin-vue": {
+      "version": "5.2.4",
+      "resolved": "https://registry.npmjs.org/@vitejs/plugin-vue/-/plugin-vue-5.2.4.tgz",
+      "integrity": "sha512-7Yx/SXSOcQq5HiiV3orevHUFn+pmMB4cgbEkDYgnkUWb0WfeQ/wa2yFv6D5ICiCQOVpjA7vYDXrC7AGO8yjDHA==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": "^18.0.0 || >=20.0.0"
+      },
+      "peerDependencies": {
+        "vite": "^5.0.0 || ^6.0.0",
+        "vue": "^3.2.25"
+      }
+    },
+    "node_modules/@vue/compiler-core": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/compiler-core/-/compiler-core-3.5.35.tgz",
+      "integrity": "sha512-BUmHaR1J+O+CKZ9uJucdVTEr1LHsdyvv7vG3eNRhK3CczEHeMd/LtsHAuD7PbrxvI2envCY2v7HI1vC1aBRzKw==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/parser": "^7.29.3",
+        "@vue/shared": "3.5.35",
+        "entities": "^7.0.1",
+        "estree-walker": "^2.0.2",
+        "source-map-js": "^1.2.1"
+      }
+    },
+    "node_modules/@vue/compiler-dom": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/compiler-dom/-/compiler-dom-3.5.35.tgz",
+      "integrity": "sha512-k+bprkXxuqhVajgTx5mUHuir7TwQzUKOWR40ng1ncAqQRPnrLngGGgqVEEhOnTMlc8btHYVKmrP8s5Qyg0hvYA==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/compiler-core": "3.5.35",
+        "@vue/shared": "3.5.35"
+      }
+    },
+    "node_modules/@vue/compiler-sfc": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/compiler-sfc/-/compiler-sfc-3.5.35.tgz",
+      "integrity": "sha512-G5VPMcXTSywXBgtFOZOnHKBxKSrwXUcvY1iaF5/hRcy7t0J6CH/d8ha9F4nzi00Fax1eLV0QHM7v4mQu68jydw==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/parser": "^7.29.3",
+        "@vue/compiler-core": "3.5.35",
+        "@vue/compiler-dom": "3.5.35",
+        "@vue/compiler-ssr": "3.5.35",
+        "@vue/shared": "3.5.35",
+        "estree-walker": "^2.0.2",
+        "magic-string": "^0.30.21",
+        "postcss": "^8.5.15",
+        "source-map-js": "^1.2.1"
+      }
+    },
+    "node_modules/@vue/compiler-ssr": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/compiler-ssr/-/compiler-ssr-3.5.35.tgz",
+      "integrity": "sha512-rGhAeXgdM7/ffTJGXT69rCCdTmjDewnFuUZfBQQHTdcEBeWdT5HCGY60y2ytLJr9/Dsu7IntUi5z/w0h6Rjnzw==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/compiler-dom": "3.5.35",
+        "@vue/shared": "3.5.35"
+      }
+    },
+    "node_modules/@vue/devtools-api": {
+      "version": "6.6.4",
+      "resolved": "https://registry.npmjs.org/@vue/devtools-api/-/devtools-api-6.6.4.tgz",
+      "integrity": "sha512-sGhTPMuXqZ1rVOk32RylztWkfXTRhuS7vgAKv0zjqk8gbsHkJ7xfFf+jbySxt7tWObEJwyKaHMikV/WGDiQm8g==",
+      "license": "MIT"
+    },
+    "node_modules/@vue/reactivity": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/reactivity/-/reactivity-3.5.35.tgz",
+      "integrity": "sha512-tVc+SsHConvh/Lz64qq1pP3rYArBmK42xonovEcxY74SQtvctZodG/zhq54P5dr38cVuw25d27cPNRdlMidpGQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/shared": "3.5.35"
+      }
+    },
+    "node_modules/@vue/runtime-core": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/runtime-core/-/runtime-core-3.5.35.tgz",
+      "integrity": "sha512-A/xFNX9loIcWDygeQuNCfKuh0CoYBzxhqEMNah5TSFg9Z53DrFYEN2qi5CU9necjM1OWYegYREUTHmXTmhfXtg==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/reactivity": "3.5.35",
+        "@vue/shared": "3.5.35"
+      }
+    },
+    "node_modules/@vue/runtime-dom": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/runtime-dom/-/runtime-dom-3.5.35.tgz",
+      "integrity": "sha512-odrJ1C391dbGnyDRh8U+rnP7J2amIEzfmRk5vXy7xi3aZhEXofTvpi0T4HJb6jlNqQZTNPR5MPHSB3RHNkIORA==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/reactivity": "3.5.35",
+        "@vue/runtime-core": "3.5.35",
+        "@vue/shared": "3.5.35",
+        "csstype": "^3.2.3"
+      }
+    },
+    "node_modules/@vue/server-renderer": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/server-renderer/-/server-renderer-3.5.35.tgz",
+      "integrity": "sha512-NkebSOYdB97wi8OQcO3HqzZSlymJi/aWsN/7h74OSVhRTm6qGs3Jp3e0rCXynmWwSlKeRrnlIug+ilYoHBmQDA==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/compiler-ssr": "3.5.35",
+        "@vue/shared": "3.5.35"
+      },
+      "peerDependencies": {
+        "vue": "3.5.35"
+      }
+    },
+    "node_modules/@vue/shared": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/@vue/shared/-/shared-3.5.35.tgz",
+      "integrity": "sha512-zSbjL7gRXwks2ZQLRGCajBtBXEOXW9Ddhn/HvSdrGkE2dqGnumzW8XtusRrxrE9LvqtiqDXQ+A60Hp6mvdYxfA==",
+      "license": "MIT"
+    },
+    "node_modules/@vueuse/core": {
+      "version": "14.3.0",
+      "resolved": "https://registry.npmjs.org/@vueuse/core/-/core-14.3.0.tgz",
+      "integrity": "sha512-aHfz47g0ZhMtTVHmIzMVpJy8ePhhOy68GY5bv110+5DVtZ+W7BsOx+m61UNQqfrWyPztIHIanWa3E2tib3NFIw==",
+      "license": "MIT",
+      "dependencies": {
+        "@types/web-bluetooth": "^0.0.21",
+        "@vueuse/metadata": "14.3.0",
+        "@vueuse/shared": "14.3.0"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/antfu"
+      },
+      "peerDependencies": {
+        "vue": "^3.5.0"
+      }
+    },
+    "node_modules/@vueuse/metadata": {
+      "version": "14.3.0",
+      "resolved": "https://registry.npmjs.org/@vueuse/metadata/-/metadata-14.3.0.tgz",
+      "integrity": "sha512-BwxmbAzwAVF50+MW57GXOUEV61nFBGnlBvrTqj49PqWJu3uw7hdu72ztXeZ33RdZtDY6kO+bfCAE1PCn88Tktw==",
+      "license": "MIT",
+      "funding": {
+        "url": "https://github.com/sponsors/antfu"
+      }
+    },
+    "node_modules/@vueuse/shared": {
+      "version": "14.3.0",
+      "resolved": "https://registry.npmjs.org/@vueuse/shared/-/shared-14.3.0.tgz",
+      "integrity": "sha512-bZpge9eSXwa4ToSiqJ7j6KRwhAsneMFoSz3LMWKQDkqimm3D/tbFlrklrs/IOqC8tEcYmXQZJ6N0UrjhBirVCg==",
+      "license": "MIT",
+      "funding": {
+        "url": "https://github.com/sponsors/antfu"
+      },
+      "peerDependencies": {
+        "vue": "^3.5.0"
+      }
+    },
+    "node_modules/agent-base": {
+      "version": "6.0.2",
+      "resolved": "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz",
+      "integrity": "sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==",
+      "license": "MIT",
+      "dependencies": {
+        "debug": "4"
+      },
+      "engines": {
+        "node": ">= 6.0.0"
+      }
+    },
+    "node_modules/async-validator": {
+      "version": "4.2.5",
+      "resolved": "https://registry.npmjs.org/async-validator/-/async-validator-4.2.5.tgz",
+      "integrity": "sha512-7HhHjtERjqlNbZtqNqy2rckN/SpOOlmDliet+lP7k+eKZEjPk3DgyeU9lIXLdeLz0uBbbVp+9Qdow9wJWgwwfg==",
+      "license": "MIT"
+    },
+    "node_modules/asynckit": {
+      "version": "0.4.0",
+      "resolved": "https://registry.npmjs.org/asynckit/-/asynckit-0.4.0.tgz",
+      "integrity": "sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==",
+      "license": "MIT"
+    },
+    "node_modules/axios": {
+      "version": "1.16.1",
+      "resolved": "https://registry.npmjs.org/axios/-/axios-1.16.1.tgz",
+      "integrity": "sha512-caYkukvroVPO8KrzuJEb50Hm07KwfBZPEC3VeFHTsqWHvKTsy54hjJz9BS/cdaypROE2rH6xvm9mHX4fgWkr3A==",
+      "license": "MIT",
+      "dependencies": {
+        "follow-redirects": "^1.16.0",
+        "form-data": "^4.0.5",
+        "https-proxy-agent": "^5.0.1",
+        "proxy-from-env": "^2.1.0"
+      }
+    },
+    "node_modules/call-bind-apply-helpers": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+      "integrity": "sha512-Sp1ablJ0ivDkSzjcaJdxEunN5/XvksFJ2sMBFfq6x0ryhQV/2b/KwFe21cMpmHtPOSij8K99/wSfoEuTObmuMQ==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/combined-stream": {
+      "version": "1.0.8",
+      "resolved": "https://registry.npmjs.org/combined-stream/-/combined-stream-1.0.8.tgz",
+      "integrity": "sha512-FQN4MRfuJeHf7cBbBMJFXhKSDq+2kAArBlmRBvcvFE5BB1HZKXtSFASDhdlz9zOYwxh8lDdnvmMOe/+5cdoEdg==",
+      "license": "MIT",
+      "dependencies": {
+        "delayed-stream": "~1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/csstype": {
+      "version": "3.2.3",
+      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
+      "license": "MIT"
+    },
+    "node_modules/dayjs": {
+      "version": "1.11.21",
+      "resolved": "https://registry.npmjs.org/dayjs/-/dayjs-1.11.21.tgz",
+      "integrity": "sha512-98IT+HOahAisibz/yjKbzuOBwYcjJ7BCLPzARyHiyEBmRz4fatF+KPJszEHXsGYjUG234aH/cOjW1wwTbKUZlA==",
+      "license": "MIT"
+    },
+    "node_modules/debug": {
+      "version": "4.4.3",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+      "license": "MIT",
+      "dependencies": {
+        "ms": "^2.1.3"
+      },
+      "engines": {
+        "node": ">=6.0"
+      },
+      "peerDependenciesMeta": {
+        "supports-color": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/delayed-stream": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/delayed-stream/-/delayed-stream-1.0.0.tgz",
+      "integrity": "sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.4.0"
+      }
+    },
+    "node_modules/dunder-proto": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz",
+      "integrity": "sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.1",
+        "es-errors": "^1.3.0",
+        "gopd": "^1.2.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/element-plus": {
+      "version": "2.14.1",
+      "resolved": "https://registry.npmjs.org/element-plus/-/element-plus-2.14.1.tgz",
+      "integrity": "sha512-UFnm1+BckNi+azkKJ7L32q1uXs9ekr99Z9pWTQPeDR05jqEWUwQq51ro4kZMVrANbjknX3Z7ukCZwTi2T6Tr9A==",
+      "license": "MIT",
+      "dependencies": {
+        "@ctrl/tinycolor": "^4.2.0",
+        "@element-plus/icons-vue": "^2.3.2",
+        "@floating-ui/dom": "^1.7.6",
+        "@popperjs/core": "npm:@sxzz/popperjs-es@^2.11.8",
+        "@types/lodash": "^4.17.24",
+        "@types/lodash-es": "^4.17.12",
+        "@vueuse/core": "14.3.0",
+        "async-validator": "^4.2.5",
+        "dayjs": "^1.11.20",
+        "lodash": "^4.18.1",
+        "lodash-es": "^4.18.1",
+        "lodash-unified": "^1.0.3",
+        "memoize-one": "^6.0.0",
+        "normalize-wheel-es": "^1.2.0",
+        "vue-component-type-helpers": "^3.3.1"
+      },
+      "peerDependencies": {
+        "vue": "^3.3.7"
+      }
+    },
+    "node_modules/entities": {
+      "version": "7.0.1",
+      "resolved": "https://registry.npmjs.org/entities/-/entities-7.0.1.tgz",
+      "integrity": "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==",
+      "license": "BSD-2-Clause",
+      "engines": {
+        "node": ">=0.12"
+      },
+      "funding": {
+        "url": "https://github.com/fb55/entities?sponsor=1"
+      }
+    },
+    "node_modules/es-define-property": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/es-define-property/-/es-define-property-1.0.1.tgz",
+      "integrity": "sha512-e3nRfgfUZ4rNGL232gUgX06QNyyez04KdjFrF+LTRoOXmrOgFKDg4BCdsjW8EnT69eqdYGmRpJwiPVYNrCaW3g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-errors": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+      "integrity": "sha512-Zf5H2Kxt2xjTvbJvP2ZWLEICxA6j+hAmMzIlypy4xcBg1vKVnx89Wy0GbS+kf5cwCVFFzdCFh2XSCFNULS6csw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-object-atoms": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.2.tgz",
+      "integrity": "sha512-HWcBoN6NileqtSydK2FqHbS/LoDd2pqrnQHLyJzBj4kOp/ky2MWMN694xOfkK8/SnUsW2DH7EfyVlydKCsm1Zw==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-set-tostringtag": {
+      "version": "2.1.0",
+      "resolved": "https://registry.npmjs.org/es-set-tostringtag/-/es-set-tostringtag-2.1.0.tgz",
+      "integrity": "sha512-j6vWzfrGVfyXxge+O0x5sh6cvxAog0a/4Rdd2K36zCMV5eJ+/+tOAngRO8cODMNWbVRdVlmGZQL2YS3yR8bIUA==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "get-intrinsic": "^1.2.6",
+        "has-tostringtag": "^1.0.2",
+        "hasown": "^2.0.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/esbuild": {
+      "version": "0.25.12",
+      "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.25.12.tgz",
+      "integrity": "sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg==",
+      "dev": true,
+      "hasInstallScript": true,
+      "license": "MIT",
+      "bin": {
+        "esbuild": "bin/esbuild"
+      },
+      "engines": {
+        "node": ">=18"
+      },
+      "optionalDependencies": {
+        "@esbuild/aix-ppc64": "0.25.12",
+        "@esbuild/android-arm": "0.25.12",
+        "@esbuild/android-arm64": "0.25.12",
+        "@esbuild/android-x64": "0.25.12",
+        "@esbuild/darwin-arm64": "0.25.12",
+        "@esbuild/darwin-x64": "0.25.12",
+        "@esbuild/freebsd-arm64": "0.25.12",
+        "@esbuild/freebsd-x64": "0.25.12",
+        "@esbuild/linux-arm": "0.25.12",
+        "@esbuild/linux-arm64": "0.25.12",
+        "@esbuild/linux-ia32": "0.25.12",
+        "@esbuild/linux-loong64": "0.25.12",
+        "@esbuild/linux-mips64el": "0.25.12",
+        "@esbuild/linux-ppc64": "0.25.12",
+        "@esbuild/linux-riscv64": "0.25.12",
+        "@esbuild/linux-s390x": "0.25.12",
+        "@esbuild/linux-x64": "0.25.12",
+        "@esbuild/netbsd-arm64": "0.25.12",
+        "@esbuild/netbsd-x64": "0.25.12",
+        "@esbuild/openbsd-arm64": "0.25.12",
+        "@esbuild/openbsd-x64": "0.25.12",
+        "@esbuild/openharmony-arm64": "0.25.12",
+        "@esbuild/sunos-x64": "0.25.12",
+        "@esbuild/win32-arm64": "0.25.12",
+        "@esbuild/win32-ia32": "0.25.12",
+        "@esbuild/win32-x64": "0.25.12"
+      }
+    },
+    "node_modules/estree-walker": {
+      "version": "2.0.2",
+      "resolved": "https://registry.npmjs.org/estree-walker/-/estree-walker-2.0.2.tgz",
+      "integrity": "sha512-Rfkk/Mp/DL7JVje3u18FxFujQlTNR2q6QfMSMB7AvCBx91NGj/ba3kCfza0f6dVDbw7YlRf/nDrn7pQrCCyQ/w==",
+      "license": "MIT"
+    },
+    "node_modules/fdir": {
+      "version": "6.5.0",
+      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
+      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "peerDependencies": {
+        "picomatch": "^3 || ^4"
+      },
+      "peerDependenciesMeta": {
+        "picomatch": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/follow-redirects": {
+      "version": "1.16.0",
+      "resolved": "https://registry.npmjs.org/follow-redirects/-/follow-redirects-1.16.0.tgz",
+      "integrity": "sha512-y5rN/uOsadFT/JfYwhxRS5R7Qce+g3zG97+JrtFZlC9klX/W5hD7iiLzScI4nZqUS7DNUdhPgw4xI8W2LuXlUw==",
+      "funding": [
+        {
+          "type": "individual",
+          "url": "https://github.com/sponsors/RubenVerborgh"
+        }
+      ],
+      "license": "MIT",
+      "engines": {
+        "node": ">=4.0"
+      },
+      "peerDependenciesMeta": {
+        "debug": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/form-data": {
+      "version": "4.0.5",
+      "resolved": "https://registry.npmjs.org/form-data/-/form-data-4.0.5.tgz",
+      "integrity": "sha512-8RipRLol37bNs2bhoV67fiTEvdTrbMUYcFTiy3+wuuOnUog2QBHCZWXDRijWQfAkhBj2Uf5UnVaiWwA5vdd82w==",
+      "license": "MIT",
+      "dependencies": {
+        "asynckit": "^0.4.0",
+        "combined-stream": "^1.0.8",
+        "es-set-tostringtag": "^2.1.0",
+        "hasown": "^2.0.2",
+        "mime-types": "^2.1.12"
+      },
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/fsevents": {
+      "version": "2.3.3",
+      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
+      "dev": true,
+      "hasInstallScript": true,
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
+      }
+    },
+    "node_modules/function-bind": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+      "integrity": "sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==",
+      "license": "MIT",
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/get-intrinsic": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-1.3.0.tgz",
+      "integrity": "sha512-9fSjSaos/fRIVIp+xSJlE6lfwhES7LNtKaCBIamHsjr2na1BiABJPo0mOjjz8GJDURarmCPGqaiVg5mfjb98CQ==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.2",
+        "es-define-property": "^1.0.1",
+        "es-errors": "^1.3.0",
+        "es-object-atoms": "^1.1.1",
+        "function-bind": "^1.1.2",
+        "get-proto": "^1.0.1",
+        "gopd": "^1.2.0",
+        "has-symbols": "^1.1.0",
+        "hasown": "^2.0.2",
+        "math-intrinsics": "^1.1.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/get-proto": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/get-proto/-/get-proto-1.0.1.tgz",
+      "integrity": "sha512-sTSfBjoXBp89JvIKIefqw7U2CCebsc74kiY6awiGogKtoSGbgjYE/G/+l9sF3MWFPNc9IcoOC4ODfKHfxFmp0g==",
+      "license": "MIT",
+      "dependencies": {
+        "dunder-proto": "^1.0.1",
+        "es-object-atoms": "^1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/gopd": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/gopd/-/gopd-1.2.0.tgz",
+      "integrity": "sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/has-symbols": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/has-symbols/-/has-symbols-1.1.0.tgz",
+      "integrity": "sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/has-tostringtag": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/has-tostringtag/-/has-tostringtag-1.0.2.tgz",
+      "integrity": "sha512-NqADB8VjPFLM2V0VvHUewwwsw0ZWBaIdgo+ieHtK3hasLz4qeCRjYcqfB6AQrBggRKppKF8L52/VqdVsO47Dlw==",
+      "license": "MIT",
+      "dependencies": {
+        "has-symbols": "^1.0.3"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/hasown": {
+      "version": "2.0.4",
+      "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.4.tgz",
+      "integrity": "sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==",
+      "license": "MIT",
+      "dependencies": {
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/https-proxy-agent": {
+      "version": "5.0.1",
+      "resolved": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-5.0.1.tgz",
+      "integrity": "sha512-dFcAjpTQFgoLMzC2VwU+C/CbS7uRL0lWmxDITmqm7C+7F0Odmj6s9l6alZc6AELXhrnggM2CeWSXHGOdX2YtwA==",
+      "license": "MIT",
+      "dependencies": {
+        "agent-base": "6",
+        "debug": "4"
+      },
+      "engines": {
+        "node": ">= 6"
+      }
+    },
+    "node_modules/lodash": {
+      "version": "4.18.1",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.18.1.tgz",
+      "integrity": "sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==",
+      "license": "MIT"
+    },
+    "node_modules/lodash-es": {
+      "version": "4.18.1",
+      "resolved": "https://registry.npmjs.org/lodash-es/-/lodash-es-4.18.1.tgz",
+      "integrity": "sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A==",
+      "license": "MIT"
+    },
+    "node_modules/lodash-unified": {
+      "version": "1.0.3",
+      "resolved": "https://registry.npmjs.org/lodash-unified/-/lodash-unified-1.0.3.tgz",
+      "integrity": "sha512-WK9qSozxXOD7ZJQlpSqOT+om2ZfcT4yO+03FuzAHD0wF6S0l0090LRPDx3vhTTLZ8cFKpBn+IOcVXK6qOcIlfQ==",
+      "license": "MIT",
+      "peerDependencies": {
+        "@types/lodash-es": "*",
+        "lodash": "*",
+        "lodash-es": "*"
+      }
+    },
+    "node_modules/magic-string": {
+      "version": "0.30.21",
+      "resolved": "https://registry.npmjs.org/magic-string/-/magic-string-0.30.21.tgz",
+      "integrity": "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@jridgewell/sourcemap-codec": "^1.5.5"
+      }
+    },
+    "node_modules/math-intrinsics": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/math-intrinsics/-/math-intrinsics-1.1.0.tgz",
+      "integrity": "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/memoize-one": {
+      "version": "6.0.0",
+      "resolved": "https://registry.npmjs.org/memoize-one/-/memoize-one-6.0.0.tgz",
+      "integrity": "sha512-rkpe71W0N0c0Xz6QD0eJETuWAJGnJ9afsl1srmwPrI+yBCkge5EycXXbYRyvL29zZVUWQCY7InPRCv3GDXuZNw==",
+      "license": "MIT"
+    },
+    "node_modules/mime-db": {
+      "version": "1.52.0",
+      "resolved": "https://registry.npmjs.org/mime-db/-/mime-db-1.52.0.tgz",
+      "integrity": "sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/mime-types": {
+      "version": "2.1.35",
+      "resolved": "https://registry.npmjs.org/mime-types/-/mime-types-2.1.35.tgz",
+      "integrity": "sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw==",
+      "license": "MIT",
+      "dependencies": {
+        "mime-db": "1.52.0"
+      },
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "license": "MIT"
+    },
+    "node_modules/nanoid": {
+      "version": "3.3.12",
+      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.12.tgz",
+      "integrity": "sha512-ZB9RH/39qpq5Vu6Y+NmUaFhQR6pp+M2Xt76XBnEwDaGcVAqhlvxrl3B2bKS5D3NH3QR76v3aSrKaF/Kiy7lEtQ==",
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "bin": {
+        "nanoid": "bin/nanoid.cjs"
+      },
+      "engines": {
+        "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
+      }
+    },
+    "node_modules/normalize-wheel-es": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/normalize-wheel-es/-/normalize-wheel-es-1.2.0.tgz",
+      "integrity": "sha512-Wj7+EJQ8mSuXr2iWfnujrimU35R2W4FAErEyTmJoJ7ucwTn2hOUSsRehMb5RSYkxXGTM7Y9QpvPmp++w5ftoJw==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/picocolors": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+      "license": "ISC"
+    },
+    "node_modules/picomatch": {
+      "version": "4.0.4",
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.4.tgz",
+      "integrity": "sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==",
+      "dev": true,
+      "license": "MIT",
+      "engines": {
+        "node": ">=12"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/jonschlinkert"
+      }
+    },
+    "node_modules/pinia": {
+      "version": "2.3.1",
+      "resolved": "https://registry.npmjs.org/pinia/-/pinia-2.3.1.tgz",
+      "integrity": "sha512-khUlZSwt9xXCaTbbxFYBKDc/bWAGWJjOgvxETwkTN7KRm66EeT1ZdZj6i2ceh9sP2Pzqsbc704r2yngBrxBVug==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/devtools-api": "^6.6.3",
+        "vue-demi": "^0.14.10"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/posva"
+      },
+      "peerDependencies": {
+        "typescript": ">=4.4.4",
+        "vue": "^2.7.0 || ^3.5.11"
+      },
+      "peerDependenciesMeta": {
+        "typescript": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/postcss": {
+      "version": "8.5.15",
+      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.15.tgz",
+      "integrity": "sha512-FfR8sjd4em2T6fb3I2MwAJU7HWVMr9zba+enmQeeWFfCbm+UOC/0X4DS8XtpUTMwWMGbjKYP7xjfNekzyGmB3A==",
+      "funding": [
+        {
+          "type": "opencollective",
+          "url": "https://opencollective.com/postcss/"
+        },
+        {
+          "type": "tidelift",
+          "url": "https://tidelift.com/funding/github/npm/postcss"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/ai"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "nanoid": "^3.3.12",
+        "picocolors": "^1.1.1",
+        "source-map-js": "^1.2.1"
+      },
+      "engines": {
+        "node": "^10 || ^12 || >=14"
+      }
+    },
+    "node_modules/proxy-from-env": {
+      "version": "2.1.0",
+      "resolved": "https://registry.npmjs.org/proxy-from-env/-/proxy-from-env-2.1.0.tgz",
+      "integrity": "sha512-cJ+oHTW1VAEa8cJslgmUZrc+sjRKgAKl3Zyse6+PV38hZe/V6Z14TbCuXcan9F9ghlz4QrFr2c92TNF82UkYHA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=10"
+      }
+    },
+    "node_modules/rollup": {
+      "version": "4.61.0",
+      "resolved": "https://registry.npmjs.org/rollup/-/rollup-4.61.0.tgz",
+      "integrity": "sha512-T9mWdbWfQtp0B5lv/HX+wrhYsmXRlcWnXXmJbXqKJhlRaoS6KMhq0gpyzW4UJfclcxrEdLnTgjT2NjruLONu0g==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/estree": "1.0.9"
+      },
+      "bin": {
+        "rollup": "dist/bin/rollup"
+      },
+      "engines": {
+        "node": ">=18.0.0",
+        "npm": ">=8.0.0"
+      },
+      "optionalDependencies": {
+        "@rollup/rollup-android-arm-eabi": "4.61.0",
+        "@rollup/rollup-android-arm64": "4.61.0",
+        "@rollup/rollup-darwin-arm64": "4.61.0",
+        "@rollup/rollup-darwin-x64": "4.61.0",
+        "@rollup/rollup-freebsd-arm64": "4.61.0",
+        "@rollup/rollup-freebsd-x64": "4.61.0",
+        "@rollup/rollup-linux-arm-gnueabihf": "4.61.0",
+        "@rollup/rollup-linux-arm-musleabihf": "4.61.0",
+        "@rollup/rollup-linux-arm64-gnu": "4.61.0",
+        "@rollup/rollup-linux-arm64-musl": "4.61.0",
+        "@rollup/rollup-linux-loong64-gnu": "4.61.0",
+        "@rollup/rollup-linux-loong64-musl": "4.61.0",
+        "@rollup/rollup-linux-ppc64-gnu": "4.61.0",
+        "@rollup/rollup-linux-ppc64-musl": "4.61.0",
+        "@rollup/rollup-linux-riscv64-gnu": "4.61.0",
+        "@rollup/rollup-linux-riscv64-musl": "4.61.0",
+        "@rollup/rollup-linux-s390x-gnu": "4.61.0",
+        "@rollup/rollup-linux-x64-gnu": "4.61.0",
+        "@rollup/rollup-linux-x64-musl": "4.61.0",
+        "@rollup/rollup-openbsd-x64": "4.61.0",
+        "@rollup/rollup-openharmony-arm64": "4.61.0",
+        "@rollup/rollup-win32-arm64-msvc": "4.61.0",
+        "@rollup/rollup-win32-ia32-msvc": "4.61.0",
+        "@rollup/rollup-win32-x64-gnu": "4.61.0",
+        "@rollup/rollup-win32-x64-msvc": "4.61.0",
+        "fsevents": "~2.3.2"
+      }
+    },
+    "node_modules/source-map-js": {
+      "version": "1.2.1",
+      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
+      "license": "BSD-3-Clause",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/tinyglobby": {
+      "version": "0.2.17",
+      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
+      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "fdir": "^6.5.0",
+        "picomatch": "^4.0.4"
+      },
+      "engines": {
+        "node": ">=12.0.0"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/SuperchupuDev"
+      }
+    },
+    "node_modules/typescript": {
+      "version": "5.9.3",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "devOptional": true,
+      "license": "Apache-2.0",
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "engines": {
+        "node": ">=14.17"
+      }
+    },
+    "node_modules/vite": {
+      "version": "6.4.3",
+      "resolved": "https://registry.npmjs.org/vite/-/vite-6.4.3.tgz",
+      "integrity": "sha512-NTKlcQjlAK7MlQoyb6LgaqHc8sso/pVyUJYWMws3jg21uTJw/LddqIFPcPqP6PzpgbIcZyKI85sFE4HBrQDA8A==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "esbuild": "^0.25.0",
+        "fdir": "^6.4.4",
+        "picomatch": "^4.0.2",
+        "postcss": "^8.5.3",
+        "rollup": "^4.34.9",
+        "tinyglobby": "^0.2.13"
+      },
+      "bin": {
+        "vite": "bin/vite.js"
+      },
+      "engines": {
+        "node": "^18.0.0 || ^20.0.0 || >=22.0.0"
+      },
+      "funding": {
+        "url": "https://github.com/vitejs/vite?sponsor=1"
+      },
+      "optionalDependencies": {
+        "fsevents": "~2.3.3"
+      },
+      "peerDependencies": {
+        "@types/node": "^18.0.0 || ^20.0.0 || >=22.0.0",
+        "jiti": ">=1.21.0",
+        "less": "*",
+        "lightningcss": "^1.21.0",
+        "sass": "*",
+        "sass-embedded": "*",
+        "stylus": "*",
+        "sugarss": "*",
+        "terser": "^5.16.0",
+        "tsx": "^4.8.1",
+        "yaml": "^2.4.2"
+      },
+      "peerDependenciesMeta": {
+        "@types/node": {
+          "optional": true
+        },
+        "jiti": {
+          "optional": true
+        },
+        "less": {
+          "optional": true
+        },
+        "lightningcss": {
+          "optional": true
+        },
+        "sass": {
+          "optional": true
+        },
+        "sass-embedded": {
+          "optional": true
+        },
+        "stylus": {
+          "optional": true
+        },
+        "sugarss": {
+          "optional": true
+        },
+        "terser": {
+          "optional": true
+        },
+        "tsx": {
+          "optional": true
+        },
+        "yaml": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/vue": {
+      "version": "3.5.35",
+      "resolved": "https://registry.npmjs.org/vue/-/vue-3.5.35.tgz",
+      "integrity": "sha512-cx89fnr+0kVGHiNFG6y6s0bdjypJRFNZn6x3WPstNdQR1bi1mbB7h4v5IBGTsPJU3nK1+0Iqj3Zf+hZWMieR4Q==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/compiler-dom": "3.5.35",
+        "@vue/compiler-sfc": "3.5.35",
+        "@vue/runtime-dom": "3.5.35",
+        "@vue/server-renderer": "3.5.35",
+        "@vue/shared": "3.5.35"
+      },
+      "peerDependencies": {
+        "typescript": "*"
+      },
+      "peerDependenciesMeta": {
+        "typescript": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/vue-component-type-helpers": {
+      "version": "3.3.3",
+      "resolved": "https://registry.npmjs.org/vue-component-type-helpers/-/vue-component-type-helpers-3.3.3.tgz",
+      "integrity": "sha512-x4nsFpy5Pe8fqPzp/5vkTPeTTDBpAx4WVtV47Ejt0+2FQrq4pRRsJs7JmYRqMFzTu/LW+pCWEjQ3YVCkPV7f9g==",
+      "license": "MIT"
+    },
+    "node_modules/vue-demi": {
+      "version": "0.14.10",
+      "resolved": "https://registry.npmjs.org/vue-demi/-/vue-demi-0.14.10.tgz",
+      "integrity": "sha512-nMZBOwuzabUO0nLgIcc6rycZEebF6eeUfaiQx9+WSk8e29IbLvPU9feI6tqW4kTo3hvoYAJkMh8n8D0fuISphg==",
+      "hasInstallScript": true,
+      "license": "MIT",
+      "bin": {
+        "vue-demi-fix": "bin/vue-demi-fix.js",
+        "vue-demi-switch": "bin/vue-demi-switch.js"
+      },
+      "engines": {
+        "node": ">=12"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/antfu"
+      },
+      "peerDependencies": {
+        "@vue/composition-api": "^1.0.0-rc.1",
+        "vue": "^3.0.0-0 || ^2.6.0"
+      },
+      "peerDependenciesMeta": {
+        "@vue/composition-api": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/vue-router": {
+      "version": "4.6.4",
+      "resolved": "https://registry.npmjs.org/vue-router/-/vue-router-4.6.4.tgz",
+      "integrity": "sha512-Hz9q5sa33Yhduglwz6g9skT8OBPii+4bFn88w6J+J4MfEo4KRRpmiNG/hHHkdbRFlLBOqxN8y8gf2Fb0MTUgVg==",
+      "license": "MIT",
+      "dependencies": {
+        "@vue/devtools-api": "^6.6.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/posva"
+      },
+      "peerDependencies": {
+        "vue": "^3.5.0"
+      }
+    }
+  }
+}
+
+===== END UNTRACKED FILE: frontend/package-lock.json =====
+
+===== BEGIN UNTRACKED FILE: frontend/src/components/ThemeSwitcher.vue =====
+<template>
+  <div class="theme-switcher">
+    <button
+      v-for="item in THEMES"
+      :key="item.value"
+    type="button"
+      class="theme-opt"
+      :class="{ active: current === item.value }"
+      @click="select(item.value)"
+    >
+      {{ item.label }}
+    </button>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref } from 'vue'
+import { THEMES, applyTheme, getTheme, type ThemeName } from '../theme'
+
+const current = ref<ThemeName>(getTheme())
+
+function select(name: ThemeName) {
+  current.value = name
+  applyTheme(name)
+}
+</script>
+
+<style scoped>
+.theme-switcher {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-alt);
+}
+
+.theme-opt {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.theme-opt.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+</style>
+
+===== END UNTRACKED FILE: frontend/src/components/ThemeSwitcher.vue =====
+
+===== BEGIN UNTRACKED FILE: frontend/src/theme.ts =====
+export type ThemeName = 'warm' | 'mono'
+
+export const THEMES: Array<{ value: ThemeName; label: string }> = [
+  { value: 'warm', label: '暖色' },
+  { value: 'mono', label: '黑白' },
+]
+
+const STORAGE_KEY = 'app-theme'
+
+export function getTheme(): ThemeName {
+  const stored = localStorage.getItem(STORAGE_KEY)
+  if (stored === 'mono' || stored === 'gpt') return 'mono'
+  return 'warm'
+}
+
+export function applyTheme(name: ThemeName) {
+  document.documentElement.setAttribute('data-theme', name)
+  localStorage.setItem(STORAGE_KEY, name)
+}
+
+===== END UNTRACKED FILE: frontend/src/theme.ts =====
+
+===== BEGIN UNTRACKED FILE: frontend/src/utils/source-utils.ts =====
+export interface SourceItem {
+  document_id?: string
+  document_title?: string
+  filename?: string
+  chunk_id?: string
+  page_number?: number | string | null
+  chunk_index?: number | string | null
+  source_type?: string
+  content?: string
+  snippet?: string
+  excerpt?: string
+  view_url?: string
+  content_url?: string
+  url?: string
+  score?: number | string | null
+  relevance_score?: number | string | null
+  similarity?: number | string | null
+  confidence?: number | string | null
+  match_reason?: string
+  reason?: string
+  hit_reason?: string
+  location?: string
+  file_path?: string
+  section_title?: string
+  page_label?: string
+  match_text?: string
+  highlighted_text?: string
+  highlight?: string
+  summary_source?: boolean
+  chunks_used?: number | string | null
+  total_chunks?: number | string | null
+  [key: string]: unknown
+}
+
+export interface TextSegment {
+  text: string
+  hit: boolean
+}
+
+export function pickFirstArray(...values: unknown[]): SourceItem[] {
+  for (const value of values) {
+    if (Array.isArray(value)) return value.filter(Boolean) as SourceItem[]
+  }
+  return []
+}
+
+export function normalizeSourceList(...values: unknown[]): SourceItem[] {
+  return pickFirstArray(...values).map((source) => ({
+    ...source,
+    document_title: source.document_title || source.filename || source.document_id || '未知来源',
+    content: source.content || source.snippet || source.excerpt || '',
+    view_url: source.view_url || source.url || '',
+    content_url: source.content_url || '',
+  }))
+}
+
+export function sourceTitle(source: SourceItem): string {
+  return String(source.document_title || source.filename || source.document_id || '未知来源')
+}
+
+export function sourceSnippet(source: SourceItem): string {
+  return String(source.content || source.snippet || source.excerpt || source.highlighted_text || '')
+}
+
+export function sourcePage(source: SourceItem): string {
+  if (source.page_label) return String(source.page_label)
+  if (source.page_number === 0 || source.page_number) return `第 ${source.page_number} 页`
+  if (source.chunk_index === 0 || source.chunk_index) return `片段 ${source.chunk_index}`
+  return '页码未知'
+}
+
+export function sourceLocation(source: SourceItem): string {
+  const parts = [sourcePage(source)]
+  if (source.section_title) parts.push(String(source.section_title))
+  if (source.location) parts.push(String(source.location))
+  if (source.file_path && !parts.includes(String(source.file_path))) parts.push(String(source.file_path))
+  return parts.filter(Boolean).join(' · ')
+}
+
+export function sourceType(source: SourceItem): string {
+  const type = String(source.source_type || '')
+  if (type.startsWith('chat_')) return '个人附件'
+  if (type) return type
+  return '知识库文件'
+}
+
+export function sourceScoreValue(source: SourceItem): number | null {
+  const raw = source.relevance_score ?? source.score ?? source.similarity ?? source.confidence
+  if (raw === null || raw === undefined || raw === '') return null
+  const score = Number(raw)
+  if (Number.isNaN(score)) return null
+  return score > 1 ? Math.min(score, 100) : Math.max(score, 0) * 100
+}
+
+export function sourceScoreLabel(source: SourceItem): string {
+  const score = sourceScoreValue(source)
+  return score === null ? '相关度未知' : `相关度 ${Math.round(score)}%`
+}
+
+export function sourceMatchReason(source: SourceItem): string {
+  const reason = source.match_reason || source.hit_reason || source.reason
+  if (reason) return String(reason)
+  if (source.match_text || source.highlight || source.highlighted_text) return '命中片段与问题关键词相近'
+  return '检索结果与问题语义相关'
+}
+
+export function sourceHighlightNeedle(source: SourceItem): string {
+  return String(source.match_text || source.highlight || '')
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export function sourceHighlightSegments(source: SourceItem, textOverride?: string): TextSegment[] {
+  const text = textOverride || sourceSnippet(source)
+  const needle = sourceHighlightNeedle(source).trim()
+  if (!text) return []
+  if (!needle || !text.toLowerCase().includes(needle.toLowerCase())) return [{ text, hit: false }]
+
+  const segments: TextSegment[] = []
+  const regex = new RegExp(escapeRegExp(needle), 'ig')
+  let lastIndex = 0
+  for (const match of text.matchAll(regex)) {
+    const index = match.index ?? 0
+    if (index > lastIndex) segments.push({ text: text.slice(lastIndex, index), hit: false })
+    segments.push({ text: text.slice(index, index + match[0].length), hit: true })
+    lastIndex = index + match[0].length
+  }
+  if (lastIndex < text.length) segments.push({ text: text.slice(lastIndex), hit: false })
+  return segments.length ? segments : [{ text, hit: false }]
+}
+
+export function sourceKey(source: SourceItem, index: number): string {
+  return String(source.chunk_id || source.document_id || source.view_url || source.content_url || index)
+}
+
+export function sourceOpenUrl(source: SourceItem): string {
+  return String(source.view_url || source.url || source.content_url || '')
+}
+
+export function sourcePreviewUrl(source: SourceItem): string {
+  return String(source.content_url || source.view_url || source.url || '')
+}
+
+export function absoluteApiUrl(url: string): string {
+  if (!url) return ''
+  if (/^https?:\/\//i.test(url)) return url
+  return url.startsWith('/') ? url : `/${url}`
+}
+
+===== END UNTRACKED FILE: frontend/src/utils/source-utils.ts =====
+
+===== BEGIN UNTRACKED FILE: frontend/src/views/chat/components/SourcePreviewDrawer.vue =====
+<template>
+  <el-drawer v-model="visible" size="min(560px, 94vw)" title="引用文件预览">
+    <template v-if="source">
+      <div class="drawer-source-head">
+        <h2>{{ sourceTitle(source) }}</h2>
+        <p>{{ sourceType(source) }} · {{ sourceLocation(source) }}</p>
+      </div>
+      <div class="drawer-evidence">
+        <el-tag size="small" effect="light">{{ sourceScoreLabel(source) }}</el-tag>
+        <span>{{ sourceMatchReason(source) }}</span>
+      </div>
+      <el-alert v-if="previewError" class="drawer-alert" type="warning" :title="previewError" show-icon :closable="false" />
+      <section class="drawer-source-content">
+        <h3>命中片段上下文</h3>
+        <div ref="previewBoxRef" class="preview-box">
+          <template v-if="displaySegments.length">
+            <span v-for="(segment, index) in displaySegments" :key="index" :class="{ 'hit-mark': segment.hit }">{{ segment.text }}</span>
+          </template>
+          <template v-else>该引用未返回片段内容。</template>
+        </div>
+      </section>
+      <div class="drawer-actions">
+        <el-button type="primary" @click="openSourceFile(source)">打开知识库文件</el-button>
+        <el-button plain @click="loadPreview(source)">重新加载预览</el-button>
+      </div>
+    </template>
+  </el-drawer>
+</template>
+
+<script setup lang="ts">
+import { computed, nextTick, ref, watch } from 'vue'
+import { ElAlert } from 'element-plus/es/components/alert/index'
+import { ElButton } from 'element-plus/es/components/button/index'
+import { ElDrawer } from 'element-plus/es/components/drawer/index'
+import { ElMessage } from 'element-plus/es/components/message/index'
+import { ElTag } from 'element-plus/es/components/tag/index'
+import 'element-plus/es/components/alert/style/css'
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/drawer/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/tag/style/css'
+import http from '../../../api'
+import {
+  absoluteApiUrl,
+  sourceHighlightSegments,
+  sourceLocation,
+  sourceMatchReason,
+  sourceOpenUrl,
+  sourcePreviewUrl,
+  sourceScoreLabel,
+  sourceSnippet,
+  sourceTitle,
+  sourceType,
+  type SourceItem,
+} from '../../../utils/source-utils'
+
+const visible = defineModel<boolean>('visible', { default: false })
+const source = defineModel<SourceItem | null>('source', { default: null })
+const previewText = defineModel<string>('previewText', { default: '' })
+const previewError = defineModel<string>('previewError', { default: '' })
+const previewBoxRef = ref<HTMLElement | null>(null)
+
+const displaySegments = computed(() => (source.value ? sourceHighlightSegments(source.value, previewText.value || sourceSnippet(source.value)) : []))
+
+function getErrorDetail(errorValue: any, fallback: string) {
+  return errorValue?.response?.data?.detail || errorValue?.message || fallback
+}
+
+async function scrollToHit() {
+  await nextTick()
+  const box = previewBoxRef.value
+  if (!box) return
+  const hit = box.querySelector('.hit-mark') as HTMLElement | null
+  if (hit) {
+    box.scrollTop = Math.max(hit.offsetTop - 72, 0)
+  }
+}
+
+async function loadPreview(currentSource: SourceItem) {
+  const url = absoluteApiUrl(sourcePreviewUrl(currentSource))
+  if (!url) {
+    previewText.value = sourceSnippet(currentSource)
+    await scrollToHit()
+    return
+  }
+  try {
+    const response = await http.get(url.replace(/^\/api/, ''))
+    const data = response.data
+    const content = data?.content || data?.snippet || data?.excerpt || ''
+    if (Array.isArray(data?.chunks)) {
+      previewText.value = data.chunks.map((chunk: any) => chunk.content || chunk.text).filter(Boolean).join('\n\n') || content
+    } else {
+      previewText.value = content || sourceSnippet(currentSource)
+    }
+  } catch (requestError: any) {
+    previewText.value = sourceSnippet(currentSource)
+    previewError.value = getErrorDetail(requestError, '预览加载失败，可尝试直接打开文件')
+  } finally {
+    await scrollToHit()
+  }
+}
+
+function openSourceFile(currentSource: SourceItem) {
+  const url = absoluteApiUrl(sourceOpenUrl(currentSource))
+  if (!url) {
+    ElMessage.warning('该引用未提供可打开的文件地址')
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+watch(
+  () => [visible.value, source.value] as const,
+  ([isVisible, currentSource]) => {
+    if (!isVisible || !currentSource) return
+    previewText.value = ''
+    previewError.value = ''
+    loadPreview(currentSource)
+  },
+)
+</script>
+
+<style scoped>
+.drawer-source-head h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.drawer-source-head p {
+  margin: 0;
+  color: #64748b;
+}
+
+.drawer-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.drawer-alert {
+  margin: 14px 0;
+}
+
+.drawer-source-content {
+  margin-top: 18px;
+}
+
+.drawer-source-content h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.preview-box {
+  margin: 0;
+  max-height: 56vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.75;
+  color: #243044;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.hit-mark {
+  border-radius: 4px;
+  background: #fef08a;
+  color: #854d0e;
+  font-weight: 700;
+  padding: 0 2px;
+}
+
+.drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+</style>
+
+===== END UNTRACKED FILE: frontend/src/views/chat/components/SourcePreviewDrawer.vue =====
+
+===== BEGIN UNTRACKED FILE: frontend/src/vite-env.d.ts =====
+/// <reference types="vite/client" />
+
+declare module '*.vue' {
+  import type { DefineComponent } from 'vue'
+  const component: DefineComponent<Record<string, unknown>, Record<string, unknown>, unknown>
+  export default component
+}
+
+===== END UNTRACKED FILE: frontend/src/vite-env.d.ts =====
