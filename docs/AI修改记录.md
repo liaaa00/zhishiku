@@ -70,9 +70,21 @@
 - `python tests/qa_final_regression_other_rating.py`：通过。
 - `npm run build`（`internal-ai-assistant/frontend`）：通过；存在 Vite chunk size warning 和 VueUse 注释 warning，不阻断发布。
 - `http://127.0.0.1:8000/api/health`：200。
-- `127.0.0.1:5174` 未监听，`5174/api/health`、`5174/chat`、`5174/admin` 无法连接；未启动或操作 5173。由于 5174 服务未运行且无有效浏览器登录态，本轮未覆盖登录态页面深度 smoke，作为发布风险记录。
+- `127.0.0.1:5174` 首轮未监听，`5174/api/health`、`5174/chat`、`5174/admin` 无法连接；未启动或操作 5173。该项经评审判定为发布门禁不足，已执行发布后纠偏补验，见下方记录。
 
 ### 提交范围计划
 
 - 纳入：已 accepted/merged 的后端源码与测试、前端源码、README、docs、scripts、`.gitignore`、`.env.example`、`requirements-pageindex.txt`、`bad-frontend-ui-status.txt` 与 `bad-frontend-ui.diff` 的删除状态。
 - 排除：`internal-ai-assistant/.env`、真实密钥、`.claude/`、`.runtime/`、`.runlogs/`、`backend/data/`、`third_party/PageIndex/`、`node_modules/`、`dist/`、`__pycache__/`、`*.pyc`、`.pytest_cache/`、`MaxKB-src/`、`*.zip`、`.spectrai-worktrees/`、Vite smoke 日志/截图和其他临时调试文件。
+
+### 发布后 5174 smoke 纠偏补验
+
+- 时间：2026-06-08 14:25 +08:00。
+- 远程发布提交：`2ee882e7bd1bd3fd8d7bc51eb1135fc920064e12`。
+- 操作：仅在本项目 `internal-ai-assistant/frontend` 启动 Vite 5174（`npm run dev -- --host 0.0.0.0 --port 5174 --strictPort`），未停止、占用或操作 5173。
+- `http://127.0.0.1:8000/api/health`：200。
+- `http://127.0.0.1:5174/api/health`：200。
+- `http://127.0.0.1:5174/login`：200。
+- `http://127.0.0.1:5174/chat`：200。
+- `http://127.0.0.1:5174/admin`：200。
+- 结论：5174 基础页面/代理 smoke 已补验通过；仍未执行需要真实浏览器登录态的深度交互验证。
