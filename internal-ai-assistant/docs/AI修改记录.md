@@ -43,6 +43,41 @@
 
 ---
 
+## 2026-06-08：恢复 6 月 5 日现代聊天前端
+
+### 背景
+
+用户反馈当前页面退回到原始简陋版，要求恢复 2026-06-05 最后修改后的前端版本。经确认，该版本不是 Git commit，而是历史会话中的未提交工作区状态。
+
+### 恢复内容
+
+- 恢复 `frontend/src/views/chat/index.vue` 的现代聊天页结构：
+  - 左侧 `Knowledge Copilot` 品牌栏
+  - 顶部 `Enterprise Knowledge Assistant`
+  - Hero 文案 `今天想了解什么？`
+  - 附件上传按钮
+  - 来源面板 / 来源卡片
+  - 回答分段与反馈弹窗
+- 恢复 `frontend/src/style.css` 中聊天页现代布局所需样式，并补齐 composer 输入区排版。
+
+### 验证
+
+- 已执行 `npm run build`，构建通过。
+- 已用 Playwright 打开 `http://127.0.0.1:5174/chat` 验证页面实际显示：
+  - `Knowledge Copilot`
+  - `Enterprise Knowledge Assistant`
+  - `今天想了解什么？`
+  - `上传图片或文件`
+  - 输入框与发送按钮布局正常
+- 未操作 `5173`。
+
+### 注意
+
+- 本次恢复尚未 commit / push。
+- 恢复来源主要是 2026-06-08 会话日志中保留的 2026-06-05 现代前端片段，而不是 Git 分支。
+
+---
+
 ## 近期重要问题记录：端口与进程
 
 ### 现象
@@ -362,3 +397,33 @@ ValueError: invalid literal for int() with base 10: 'pageindex:0000'
 - 门禁 GO，可仅暂存合规文件后 commit/push 到 `master`。
 - 远程已配置到目标仓库 `https://github.com/liaaa00/zhishiku.git`。
 - 继续遵守端口规则：只操作本项目 `8000` / `5174`，不操作 `5173`.
+
+---
+
+## 2026-06-08：恢复 6 月 5 日现代聊天前端并准备提交
+
+### 问题定位
+
+- 用户截图确认 `5174/chat` 曾显示为极简原始页面：只有标题、单个欢迎卡片、输入框和发送按钮。
+- 目标版本不是当前 Git 分支上的某个明确分支切换结果，而是从历史会话中重建出的 2026-06-05 最后现代聊天前端状态。
+
+### 本次实际恢复范围
+
+- 本次准备提交的恢复文件仅包括：
+  - `frontend/src/views/chat/index.vue`
+  - `frontend/src/style.css`
+  - `docs/AI修改记录.md`
+- 恢复后聊天页应包含：`Knowledge Copilot`、`Enterprise Knowledge Assistant`、`今天想了解什么？`、附件上传按钮、现代输入区、来源面板/来源卡片和反馈弹窗。
+- `frontend/src/api.ts`、`frontend/src/router.ts` 当前虽有工作区改动，但不纳入本次“恢复 6 月 5 日现代前端”提交，避免混入无关变更。
+- 未操作 `5173`。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- Playwright 已打开 `http://127.0.0.1:5174/chat` 验证现代页面元素存在。
+- `origin/master` 与本地 HEAD 提交同步，提交前未发现远程领先。
+
+### 后续注意
+
+- 不要再把简版 `chat/index.vue` 当成正确前端。
+- 若用户认为视觉仍不一致，优先用 Playwright 截图比对具体元素和样式，再做 CSS/组件微调，不再猜测分支。
