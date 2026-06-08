@@ -9,4 +9,30 @@ html, body, #app { height: 100%; margin: 0; font-family: Arial, Helvetica, sans-
 .msg.assistant { align-self: flex-start; background: #fff; }
 .chat-input { display: grid; gap: 12px; margin-top: 16px; }
 .source-card { margin-bottom: 8px; }
+.source-head { display: flex; justify-content: space-between; gap: 12px; color: #606266; }
+.source-actions { margin-top: 8px; }
+.inline-error { color: #c45656; margin: 8px 0; }
 .admin-page { max-width: 960px; margin: 0 auto; padding: 24px; }
+.admin-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.doc-status-cell { display: grid; gap: 4px; font-size: 13px; line-height: 1.5; }
+html.admin-scroll-page,
+html.admin-scroll-page body,
+html.admin-scroll-page body #app,
+body.admin-scroll-page,
+body.admin-scroll-page #app {
+  height: auto !important;
+  min-height: 100vh !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+body.admin-scroll-page .admin-page {
+  min-height: 100vh;
+  height: auto;
+  overflow: visible;
+  padding-bottom: 40px;
+}
+body.admin-scroll-page .el-tabs,
+body.admin-scroll-page .el-tabs__content,
+body.admin-scroll-page .el-tab-pane {
+  overflow: visible !important;
+}

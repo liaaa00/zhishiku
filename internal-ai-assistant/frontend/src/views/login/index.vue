@@ -21,10 +21,28 @@ import { useRouter } from 'vue-router'
 const router = useRouter()
 const form = reactive({ username: '', password: '' })
 
+function readableLoginError(err: any) {
+  const detail = err?.response?.data?.detail || err?.message || '登录失败'
+  if (/failed to fetch|network error/i.test(String(detail))) {
+    return '登录失败：无法连接到服务，请确认前端 5174 与后端 8000 正常运行后重试。'
+  }
+  return String(detail || '登录失败')
+}
+
 async function login() {
-  const res = await http.post('/auth/login', form)
-  localStorage.setItem('token', res.data.token)
-  ElMessage.success('登录成功')
-  router.push('/chat')
+  try {
+    const res = await http.post('/auth/login', form)
+    localStorage.setItem('token', res.data.token)
+    try {
+      const me = await http.get('/me')
+      localStorage.setItem('user', JSON.stringify(me.data || {}))
+    } catch {
+      localStorage.removeItem('user')
+    }
+    ElMessage.success('登录成功')
+    router.push('/chat')
+  } catch (err: any) {
+    ElMessage.error(readableLoginError(err))
+  }
 }
 </script>

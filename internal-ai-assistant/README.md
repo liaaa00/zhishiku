@@ -34,6 +34,27 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - 接口地址：`https://api.deepseek.com`
 - 文档检索默认使用本地哈希向量，不依赖 DeepSeek embedding
 
+## PageIndex 高级结构索引
+
+系统默认会为 PDF / Markdown 生成内置轻量结构树，并在聊天检索时与原有 chunk / Qdrant 检索混合使用。
+
+如需启用官方 VectifyAI/PageIndex：
+
+```powershell
+.\scripts\install-pageindex.ps1
+```
+
+然后在 `.env` 中配置：
+
+```env
+PAGEINDEX_ENABLED=1
+PAGEINDEX_REPO_PATH=D:\path\to\internal-ai-assistant\third_party\PageIndex
+# 可选：强制继续使用内置轻量结构树
+# PAGEINDEX_FORCE_LIGHTWEIGHT=1
+```
+
+官方 PageIndex 不是标准 pip 包，因此项目将其作为可选源码路径加载；未安装依赖或未配置路径时，会自动回退到内置轻量结构树，不影响原知识库使用。
+
 ## 说明
 
 如果你后面希望我继续把前端做得更像公司内部助手，我可以再简化 UI。

@@ -1,0 +1,9 @@
+# Optional dependencies for official VectifyAI/PageIndex integration.
+# Install only when you want to use the official PageIndexClient instead of the built-in lightweight fallback.
+# The PageIndex repository itself is not a standard pip package; set PAGEINDEX_REPO_PATH to a local clone.
+
+litellm==1.83.7
+pymupdf==1.26.4
+PyPDF2==3.0.1
+python-dotenv==1.0.1
+pyyaml==6.0.2

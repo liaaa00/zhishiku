@@ -2,6 +2,10 @@
 .env
 internal-ai-assistant/.env
 
+# Local assistant/tool settings
+.claude/
+.claude/settings.local.json
+
 # Python cache
 __pycache__/
 *.py[cod]
@@ -11,9 +15,19 @@ __pycache__/
 node_modules/
 dist/
 
+# SpectrAI local integration worktrees
+.spectrai-worktrees/
+
+# Runtime logs and local launch artifacts
+internal-ai-assistant/.runlogs/
+internal-ai-assistant/.runtime/
+
 # Runtime data and uploads
 internal-ai-assistant/backend/data/
 
 # Archives and external source dumps
 *.zip
 MaxKB-src/
+internal-ai-assistant/third_party/
+internal-ai-assistant/third_party/PageIndex/
+

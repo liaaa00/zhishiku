@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import math
 import mimetypes
 import re
@@ -7,6 +8,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from openai import OpenAI
+
+from .structured_digest import build_structured_digest, should_use_structured_digest
 
 from .config import (
     CHAT_MODEL,
@@ -38,7 +41,7 @@ def _openai_client(api_key: Optional[str] = None, base_url: Optional[str] = None
     real_base_url = base_url or OPENAI_BASE_URL or "https://api.deepseek.com"
     if not real_key:
         raise ValueError("还没有配置模型 API Key。请先到后台的模型配置中填写。")
-    return OpenAI(api_key=real_key, base_url=real_base_url)
+    return OpenAI(api_key=real_key, base_url=real_base_url, timeout=120.0, max_retries=1)
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
@@ -64,14 +67,42 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
 def extractive_fallback_answer(question: str, contexts: List[dict], reason: str = "") -> str:
     if not contexts:
         return "没有在授权知识库中找到相关内容，因此不能脱离资料泛答。"
-    lines = ["当前模型服务不可用，下面仅根据已命中的授权知识库片段提取可核验信息："]
-    for i, context in enumerate(contexts[:5], 1):
-        content = " ".join(str(context.get("content") or "").split())[:420]
-        title = context.get("document_title") or context.get("filename") or "未知文档"
-        page = context.get("page_number") or "未知"
-        lines.append(f"- [来源{i}] {title}（页码：{page}）：{content}")
+
+    structured = build_structured_digest(question, contexts, summary_mode=True)
+    if structured:
+        lines = [
+            "## 本地兜底整理（模型暂不可用）",
+            "当前没有拿到 AI 模型的最终回答，下面只是把命中证据做本地清洗和整理，供临时核验；不是原始切片直出，也不是完整 AI 分析结论。",
+            "",
+            structured,
+        ]
+    else:
+        docs: list[str] = []
+        highlights: list[str] = []
+        for context in contexts[:8]:
+            title = context.get("document_title") or context.get("filename") or "未知文档"
+            if title not in docs:
+                docs.append(title)
+            content = " ".join(str(context.get("content") or "").split())
+            content = re.sub(r"(?:[A-Z]{1,3}\d+\s*[:：]\s*)", "", content)
+            content = re.sub(r"\[数据结果\]", "", content).strip(" |")
+            if content:
+                highlights.append(content[:180])
+        lines = [
+            "## 本地兜底整理（模型暂不可用）",
+            f"- 命中文档：{'、'.join(docs[:8]) or '未知文档'}",
+            f"- 命中片段数：{len(contexts)}",
+            "",
+            "## 关键信息",
+        ]
+        if highlights:
+            lines.extend(f"- {item}" for item in highlights[:6])
+        else:
+            lines.append("- 当前命中内容较少，暂无法稳定提炼字段。")
+        lines.extend(["", "## 建议追问", "- 让系统按字段、流程、风险点重新整理。", "- 指定某个文档或某条记录继续展开。"])
+
     if reason:
-        lines.append(f"\n说明：模型生成失败或未配置（{reason}），已避免脱离知识库生成答案。")
+        lines.append(f"\n> 说明：模型生成失败或未配置（{reason[:160]}），已避免把原始切分片段直接输出。")
     return "\n".join(lines)
 
 
@@ -80,7 +111,8 @@ def chat_answer(
     contexts: List[dict],
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
-    model: Optional[str] = None,
+       model: Optional[str] = None,
+    history: Optional[List[dict]] = None,
 ) -> str:
     try:
         client = _openai_client(api_key, base_url)
@@ -95,19 +127,252 @@ def chat_answer(
     system = (
         "你是公司内部 AI 助手，必须只根据本次提供的授权知识库片段、个人附件或图片 OCR 结果回答。"
         "不要使用未出现在片段中的外部知识；如果片段中没有答案，请明确说明没有在授权资料中找到依据。"
-        "回答要简洁、准确，优先使用中文；可以使用 Markdown 分点，并在末尾按 [来源1]、[来源2] 标注实际用到的引用，不要编造来源。"
+        "回答要简洁、准确，优先使用中文；可以使用 Markdown 分点。不要在正文或末尾输出 [来源1]、[来源2] 这类标记；引用来源会由系统在独立来源面板展示，不要编造来源。"
     )
     user = f"授权知识库片段（回答只能依据以下内容）：\n{context_text}\n\n用户问题：{question}"
     try:
         response = client.chat.completions.create(
             model=real_model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            messages=[{"role": "system", "content": system}, *[{"role": h["role"], "content": h["content"]} for h in (history or [])], {"role": "user", "content": user}],
             temperature=0.2,
         )
         return response.choices[0].message.content or "未生成回答。"
     except Exception as exc:
         return extractive_fallback_answer(question, contexts, str(exc)[:200])
 
+
+def classify_chat_intent(
+    question: str,
+    history: Optional[List[dict]] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
+    """Use the configured chat model as a lightweight router for ambiguous questions.
+
+    Returns a conservative dict with:
+    - intent: chat | knowledge | summary | followup
+    - should_retrieve: bool
+    - reason: short human-readable reason
+    If the classifier is unavailable or returns invalid JSON, callers can fall back to rules.
+    """
+    result = {"intent": "unknown", "should_retrieve": None, "reason": "classifier_unavailable", "confidence": 0.0}
+    text = (question or "").strip()
+    if not text:
+        return {"intent": "chat", "should_retrieve": False, "reason": "empty_question", "confidence": 1.0}
+    try:
+        client = _openai_client(api_key, base_url)
+    except ValueError:
+        return result
+
+    real_model = model or CHAT_MODEL or "deepseek-chat"
+    recent = []
+    for item in (history or [])[-4:]:
+        role = item.get("role")
+        content = str(item.get("content") or "")[:300]
+        if role in {"user", "assistant"} and content:
+            recent.append({"role": role, "content": content})
+
+    system = (
+        "你是内部知识库问答系统的意图分类器，只能输出 JSON，不要输出解释文本。"
+        "判断用户当前问题是否需要检索知识库/附件/公司资料。"
+        "分类标准："
+        "1. chat：寒暄、问你是谁、你能做什么、如何使用你、普通闲聊、无需公司资料的通用表达。should_retrieve=false。"
+        "2. knowledge：询问公司制度、流程、权限、报销、年假、合同、数据、文档内容、附件内容等，需要授权资料。should_retrieve=true。"
+        "3. summary：要求总结/列出当前可读文档、知识库有什么、全部资料概览。should_retrieve=true。"
+        "4. followup：明显追问上一轮来源/上面内容/继续展开/引用来源。通常 should_retrieve=true。"
+        "如果不确定，要保守：只有看起来确实需要公司资料、知识库、附件或文档时才 should_retrieve=true；普通闲聊和询问助手能力应为 false。"
+        "输出格式必须是：{\"intent\":\"chat|knowledge|summary|followup\",\"should_retrieve\":true|false,\"reason\":\"...\",\"confidence\":0到1}"
+    )
+    user = json.dumps({"question": text, "recent_history": recent}, ensure_ascii=False)
+    try:
+        response = client.chat.completions.create(
+            model=real_model,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.0,
+            max_tokens=160,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        match = re.search(r"\{.*\}", content, re.S)
+        parsed = json.loads(match.group(0) if match else content)
+        intent = str(parsed.get("intent") or "unknown").lower()
+        if intent not in {"chat", "knowledge", "summary", "followup"}:
+            intent = "unknown"
+        should = parsed.get("should_retrieve")
+        if not isinstance(should, bool):
+            should = None
+        try:
+            confidence = float(parsed.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return {
+            "intent": intent,
+            "should_retrieve": should,
+            "reason": str(parsed.get("reason") or "model_classified")[:240],
+            "confidence": max(0.0, min(confidence, 1.0)),
+        }
+    except Exception as exc:
+        return {"intent": "unknown", "should_retrieve": None, "reason": f"classifier_error: {str(exc)[:160]}", "confidence": 0.0}
+
+
+def _build_conversation_messages(question: str, history: Optional[List[dict]] = None) -> list[dict]:
+    system = (
+        "你是公司内部 AI 助手。用户发来的任何普通问题都要自然回答，不要因为没有知识库上下文就沉默。"
+        "对于问候、感谢、闲聊、写作、改写、整理成表格、翻译、解释、追问上一轮回答等请求，可以直接结合对话上下文作答。"
+        "如果用户要求整理、改写、总结某段内容，但当前对话里没有提供可整理的原文，就请用户把内容粘贴或上传，并可给出一个表格模板示例。"
+        "只有当用户明确询问具体公司制度、数据、流程或文档事实，而你没有获得任何可依据的资料时，才说明没有在知识库中找到依据，并建议上传或授权相关文档；绝不要编造公司事实。"
+        "优先使用中文，简洁作答。"
+    )
+    messages = [{"role": "system", "content": system}]
+    for h in (history or []):
+        if h.get("role") in {"user", "assistant"} and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
+def conversational_answer(
+    question: str,
+    history: Optional[List[dict]] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    try:
+        client = _openai_client(api_key, base_url)
+    except ValueError:
+        return "可以。请把需要整理的具体内容发给我，我可以帮你整理成表格、清单或摘要；如果是公司文档内容，也可以先上传或授权相关资料。"
+    real_model = model or CHAT_MODEL or "deepseek-chat"
+    try:
+        response = client.chat.completions.create(model=real_model, messages=_build_conversation_messages(question, history), temperature=0.3)
+        return response.choices[0].message.content or "未生成回答。"
+    except Exception:
+        return "抱歉，我暂时无法回答这条消息，请稍后再试。"
+
+
+def stream_conversational_answer(
+    question: str,
+    history: Optional[List[dict]] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+):
+    fallback = "你好，我是公司内部知识助手。我可以基于你有权限访问的文档回答问题；这条消息没有匹配到知识库内容。"
+    try:
+        client = _openai_client(api_key, base_url)
+    except ValueError:
+        for i in range(0, len(fallback), 80):
+            yield fallback[i : i + 80]
+        return
+    real_model = model or CHAT_MODEL or "deepseek-chat"
+    try:
+        stream = client.chat.completions.create(
+            model=real_model,
+            messages=_build_conversation_messages(question, history),
+            temperature=0.3,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
+            if delta:
+                yield delta
+    except Exception:
+        error_text = "抱歉，我暂时无法回答这条消息，请稍后再试。"
+        for i in range(0, len(error_text), 80):
+            yield error_text[i : i + 80]
+
+
+def _build_knowledge_messages(question: str, contexts: List[dict], history: Optional[List[dict]] = None, structured_digest: str = "") -> list[dict]:
+    context_text = "\n\n".join(
+        f"[来源{i + 1}] 文档：{c.get('document_title') or c.get('filename') or '未知文档'}；页码：{c.get('page_number') or '未知'}；类型：{c.get('source_type') or 'document'}\n{c.get('content') or ''}"
+        for i, c in enumerate(contexts)
+    )
+    system = (
+        "你是公司内部 AI 助手。你的任务是基于授权资料进行理解、归纳、判断和表达，最终答案必须由你重新组织，不能直接粘贴检索片段。"
+        "证据预处理包只用于帮你看懂资料：它可能包含跨 chunk 合并、表格行列还原、字段分组和去重结果，但它不是最终答案模板。"
+        "原始引用片段只用于核验和标注来源；不要把 A1/B1 单元格、[数据结果]、chunk 截断文本或大段原文展示给用户。"
+        "回答风格要像清晰的业务分析报告：先给结论，再按需要用小标题、项目符号或 Markdown 表格整理，最后列出风险/需要核验项和引用。"
+        "如果用户问的是表格/Excel/CSV，优先基于证据预处理包中的合并记录回答；不要把切片造成的字段断裂误判为缺失。"
+        "如果资料不足，要明确说不足在哪里；不要使用未出现在授权资料中的外部事实。"
+        "少客套，不要以‘好的，根据您提供的……’开头。"
+    )
+    evidence_block = f"\n\n【证据预处理包（给 AI 理解资料用，不要照抄为最终答案）】\n{structured_digest}" if structured_digest else ""
+    user = (
+        f"用户问题：{question}\n\n"
+        "请基于下面证据回答。你需要自己完成二次分析、归纳、排序和排版。\n"
+        f"{evidence_block}\n\n"
+        f"【原始引用片段（只用于核验和引用标注，禁止原样直出）】\n{context_text}\n\n"
+        "最终输出要求：\n"
+        "1. 不要展示原始切分片段、单元格坐标或 chunk 痕迹；\n"
+        "2. 根据问题选择合适结构，不要机械套固定模板；\n"
+        "3. 能表格化就用 Markdown 表格，但只放用户真正需要的信息；\n"
+        "4. 不要在正文或末尾输出 [来源1]、[来源2] 这类标记；引用依据会由系统在右侧/底部来源面板展示。"
+    )
+    return [
+        {"role": "system", "content": system},
+        *[{"role": h["role"], "content": h["content"]} for h in (history or [])],
+        {"role": "user", "content": user},
+    ]
+
+
+def chat_answer_v2(
+    question: str,
+    contexts: List[dict],
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    history: Optional[List[dict]] = None,
+    structured_digest: str = "",
+) -> str:
+    try:
+        client = _openai_client(api_key, base_url)
+    except ValueError as exc:
+        fallback = structured_digest.strip() or extractive_fallback_answer(question, contexts, str(exc))
+        return fallback
+    real_model = model or CHAT_MODEL or "deepseek-chat"
+    try:
+        response = client.chat.completions.create(
+            model=real_model,
+            messages=_build_knowledge_messages(question, contexts, history, structured_digest),
+            temperature=0.2,
+        )
+        return response.choices[0].message.content or "未生成回答。"
+    except Exception as exc:
+        return structured_digest.strip() or extractive_fallback_answer(question, contexts, str(exc)[:200])
+
+
+def stream_chat_answer_v2(
+    question: str,
+    contexts: List[dict],
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    history: Optional[List[dict]] = None,
+    structured_digest: str = "",
+):
+    try:
+        client = _openai_client(api_key, base_url)
+    except ValueError as exc:
+        fallback = structured_digest.strip() or extractive_fallback_answer(question, contexts, str(exc))
+        for i in range(0, len(fallback), 80):
+            yield fallback[i : i + 80]
+        return
+    real_model = model or CHAT_MODEL or "deepseek-chat"
+    try:
+        stream = client.chat.completions.create(
+            model=real_model,
+            messages=_build_knowledge_messages(question, contexts, history, structured_digest),
+            temperature=0.2,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
+            if delta:
+                yield delta
+    except Exception as exc:
+        fallback = structured_digest.strip() or extractive_fallback_answer(question, contexts, str(exc)[:200])
+        for i in range(0, len(fallback), 80):
+            yield fallback[i : i + 80]
 
 def image_to_text(
     file_path: str,

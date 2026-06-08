@@ -41,6 +41,34 @@ def _xml_text(xml_bytes: bytes) -> str:
     return " ".join(p.strip() for p in parts if p and p.strip())
 
 
+def _slide_number(name: str) -> int:
+    match = re.search(r"slide(\d+)\.xml$", name)
+    return int(match.group(1)) if match else 0
+
+
+def _extract_openxml_slides(zf: zipfile.ZipFile) -> List[PageText]:
+    names = zf.namelist()
+    slide_files = sorted(
+        (n for n in names if re.match(r"ppt/slides/slide\d+\.xml$", n)),
+        key=_slide_number,
+    )
+    pages: list[PageText] = []
+    for idx, name in enumerate(slide_files, start=1):
+        try:
+            root = ET.fromstring(zf.read(name))
+        except ET.ParseError:
+            continue
+        parts: list[str] = []
+        for elem in root.iter():
+            if elem.text:
+                text = elem.text.strip()
+                if text:
+                    parts.append(text)
+        if parts:
+            pages.append((idx, " ".join(parts)))
+    return pages
+
+
 def extract_docx_text(file_path: str) -> List[PageText]:
     """Extract text from modern Word .docx files using the OpenXML zip structure."""
     path = Path(file_path)
@@ -54,6 +82,24 @@ def extract_docx_text(file_path: str) -> List[PageText]:
                 label = "正文" if name == "word/document.xml" else Path(name).stem
                 texts.append(f"[{label}] {text}")
     return [(None, "\n".join(texts))]
+
+
+def extract_pptx_text(file_path: str) -> List[PageText]:
+    """Extract visible text from modern PowerPoint .pptx files."""
+    path = Path(file_path)
+    with zipfile.ZipFile(path) as zf:
+        pages = _extract_openxml_slides(zf)
+        if pages:
+            return pages
+        # Fallback: extract any text runs from slide notes or masters if slides are empty.
+        fallback_parts: list[str] = []
+        for name in sorted(n for n in zf.namelist() if n.startswith("ppt/" ) and n.endswith(".xml")):
+            text = _xml_text(zf.read(name))
+            if text:
+                fallback_parts.append(f"[{Path(name).stem}] {text}")
+        if fallback_parts:
+            return [(None, "\n".join(fallback_parts))]
+    return []
 
 
 def _xlsx_shared_strings(zf: zipfile.ZipFile) -> list[str]:
@@ -149,6 +195,8 @@ def extract_supported_document(file_path: str) -> List[PageText]:
         return extract_pdf_text(str(path))
     if ext == ".docx":
         return extract_docx_text(str(path))
+    if ext == ".pptx":
+        return extract_pptx_text(str(path))
     if ext == ".xlsx":
         return extract_xlsx_text(str(path))
     if ext == ".csv":

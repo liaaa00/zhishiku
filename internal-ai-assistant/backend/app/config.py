@@ -6,17 +6,35 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+PAGEINDEX_DIR = DATA_DIR / "pageindex"
+PAGEINDEX_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "app.db"
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH.as_posix()}")
-JWT_SECRET = os.getenv("JWT_SECRET", "please-change-this-secret")
+INSECURE_JWT_SECRET = "please-change-this-secret"
+JWT_SECRET = os.getenv("JWT_SECRET", INSECURE_JWT_SECRET)
 JWT_ALGORITHM = "HS256"
+
+# CORS 允许的来源列表，逗号分隔。生产部署时通过环境变量传入实际域名。
+# 示例：CORS_ORIGINS=http://your-domain.com,https://your-domain.com
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:8080,http://localhost:5174").split(",")
+    if origin.strip()
+]
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "") or None
 CHAT_MODEL = os.getenv("CHAT_MODEL", "deepseek-chat")
 
-# 文档上传限制：默认 30MB，可通过 MAX_UPLOAD_MB 调整。
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "30"))
+PAGEINDEX_ENABLED = os.getenv("PAGEINDEX_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
+PAGEINDEX_MIN_CHARS = int(os.getenv("PAGEINDEX_MIN_CHARS", "1"))
+PAGEINDEX_REPO_PATH = os.getenv("PAGEINDEX_REPO_PATH", "").strip()
+
+PDF_OCR_MAX_PAGES = int(os.getenv("PDF_OCR_MAX_PAGES", "20"))
+PDF_OCR_ZOOM = float(os.getenv("PDF_OCR_ZOOM", "2.0"))
+
+# 文档上传限制：默认 200MB，可通过 MAX_UPLOAD_MB 调整。
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 # 向量库后端：local 使用 SQLite 内本地向量；qdrant 使用独立向量数据库。
@@ -33,4 +51,21 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "internal_ai_chunks")
 
 DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
-DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "change-this-admin-password")
+INSECURE_ADMIN_PASSWORD = "change-this-admin-password"
+DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", INSECURE_ADMIN_PASSWORD)
+
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+IS_PRODUCTION = APP_ENV in {"production", "prod"}
+
+
+def validate_security() -> None:
+    """生产环境（APP_ENV=production）下拒绝使用默认密钥/口令启动。"""
+    if not IS_PRODUCTION:
+        return
+    problems = []
+    if JWT_SECRET == INSECURE_JWT_SECRET:
+        problems.append("JWT_SECRET 仍为默认值，请改为高强度随机密钥")
+    if DEFAULT_ADMIN_PASSWORD == INSECURE_ADMIN_PASSWORD:
+        problems.append("DEFAULT_ADMIN_PASSWORD 仍为默认值，请改为强口令")
+    if problems:
+        raise RuntimeError("生产环境安全检查未通过：\n- " + "\n- ".join(problems))

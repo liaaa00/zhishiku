@@ -51,6 +51,7 @@ class Document(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     groups = relationship("Group", secondary=document_group_link, back_populates="documents")
     chunks = relationship("DocumentChunk", cascade="all, delete-orphan", back_populates="document")
+    page_index = relationship("DocumentPageIndex", cascade="all, delete-orphan", back_populates="document", uselist=False)
 
 
 class DocumentChunk(Base):
@@ -62,6 +63,23 @@ class DocumentChunk(Base):
     content = Column(Text, nullable=False)
     embedding_json = Column(Text, nullable=False)
     document = relationship("Document", back_populates="chunks")
+
+
+class DocumentPageIndex(Base):
+    __tablename__ = "document_page_indexes"
+    document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
+    status = Column(String(30), nullable=False, default="not_built")  # not_built/pending/processing/ready/failed
+    index_type = Column(String(30), nullable=False, default="pageindex")
+    engine = Column(String(80), nullable=False, default="")
+    workspace_doc_id = Column(String(120), nullable=False, default="")
+    index_path = Column(String(500), nullable=False, default="")
+    doc_description = Column(Text, nullable=False, default="")
+    page_count = Column(Integer, nullable=False, default=0)
+    node_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    document = relationship("Document", back_populates="page_index")
 
 
 class DocumentProcessingStatus(Base):
@@ -120,6 +138,7 @@ class ChatMessage(Base):
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
     sources_json = Column(Text, nullable=False, default="[]")
+    mode = Column(String(20), nullable=False, default="knowledge")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -131,6 +150,7 @@ class Feedback(Base):
     session_id = Column(String, ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     message_id = Column(String, ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)
     rating = Column(String(30), nullable=False, default="")
+    category = Column(String(50), nullable=False, default="other", index=True)
     content = Column(Text, nullable=False)
     question_snapshot = Column(Text, nullable=False, default="")
     answer_snapshot = Column(Text, nullable=False, default="")
@@ -139,6 +159,10 @@ class Feedback(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     reviewed_at = Column(DateTime, nullable=True)
     review_note = Column(Text, nullable=False, default="")
+    admin_note = Column(Text, nullable=False, default="")
+    handled_by_user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    handled_by_username = Column(String(100), nullable=False, default="")
+    handled_at = Column(DateTime, nullable=True)
 
 
 class Setting(Base):
