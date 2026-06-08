@@ -8,15 +8,13 @@
     <div class="chat-body">
       <el-card v-for="(m, i) in messages" :key="i" :class="['msg', m.role]">
         <div v-if="m.role === 'assistant'">
-          <div class="message-content" v-html="renderMessage(m.content)"></div>
+          <div v-if="m.content" class="message-content" v-html="renderMessage(m.content)"></div>
+          <div v-else class="message-content">{{ assistantPlaceholder(i) }}</div>
           <div v-if="m.sources?.length" class="source-actions">
             <el-button size="small" @click="openSources(m)">{{ sourceTriggerLabel(m) }}</el-button>
           </div>
         </div>
         <div v-else class="message-content">{{ m.content }}</div>
-      </el-card>
-      <el-card v-if="waiting" class="msg assistant">
-        <div>{{ waitText }}</div>
       </el-card>
     </div>
 
@@ -99,6 +97,12 @@ function escapeHtml(value: string) {
 
 function renderMessage(value: string) {
   return escapeHtml(stripInlineSourceMarkers(value)).replace(/\n/g, '<br/>')
+}
+
+function assistantPlaceholder(index: number) {
+  const isLatest = index === messages.value.length - 1
+  if (waiting.value && isLatest) return waitText.value
+  return '服务端暂未返回可显示内容，请稍后重试。'
 }
 
 function normalizeSources(...values: unknown[]) {

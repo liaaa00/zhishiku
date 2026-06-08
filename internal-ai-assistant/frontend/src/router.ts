@@ -21,11 +21,11 @@ router.beforeEach((to) => {
 
   try {
     const rawUser = localStorage.getItem('user')
-    if (!rawUser) return true
+    if (!rawUser) return '/chat'
     const user = JSON.parse(rawUser)
     return user?.is_admin ? true : '/chat'
   } catch {
-    return true
+    return '/chat'
   }
 })
 

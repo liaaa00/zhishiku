@@ -88,3 +88,65 @@
 - `http://127.0.0.1:5174/chat`：200。
 - `http://127.0.0.1:5174/admin`：200。
 - 结论：5174 基础页面/代理 smoke 已补验通过；仍未执行需要真实浏览器登录态的深度交互验证。
+
+### QA 独立 5174 smoke 补验证据
+
+- QA 任务：`3f1274b9-3484-4c3c-818f-f18a7deeb6e9`，Leader 已确认其无代码 integration 冲突可跳过，结论可直接纳入阶段 B 返工证据。
+- 时间：2026-06-08 14:29 +08:00。
+- 未操作 5173。
+- Vite 配置：`port=5174` 且 `strictPort=true`。
+- 监听来源：`8000` 由 Python uvicorn 监听；`5174` 由本项目 `frontend/node_modules/.bin/vite` 监听，启动参数包含 `--port 5174 --strictPort`。
+- `8000 /api/health`：200，`{ok:true, version:0.9.0}`。
+- `5174 /api/health`：200，`application/json`，`{ok:true, version:0.9.0}`。
+- `5174 /login`：200，HTML length=368，`hasApp=True`，`hasModule=True`。
+- `5174 /chat`：200，HTML length=368，`hasApp=True`，`hasModule=True`。
+- `5174 /admin`：200，HTML length=368，`hasApp=True`，`hasModule=True`。
+- 无可用账号，未读取 `.env`；未登录态 `/api/me` 返回 401，符合鉴权预期。
+- 结论：5174 基础 smoke 阻断已关闭；剩余风险仅为未覆盖真实账号登录后的深度交互路径。
+
+---
+
+## 2026-06-08：前端聊天/后台复核与空白卡片最小修复
+
+### 复核范围
+
+- 已按要求先阅读根目录与 `internal-ai-assistant/docs/` 下三份规则文档。
+- 重新检查当前工作区 `git status --short` 与 `internal-ai-assistant/frontend` 差异，不假设上一轮已完成。
+- 复核 `vite.config.ts`：前端端口保持 `5174`，`strictPort: true`，代理指向后端 `8000`。
+- 在前端源码中排除 `5173` 引用；本轮未停止、占用或操作 `5173`。
+
+### 本轮前端修复
+
+- `internal-ai-assistant/frontend/src/views/chat/index.vue`：发送问题后不再先插入空白 AI 卡片再额外显示等待卡，而是让当前 AI 消息卡在无内容时显示等待/兜底文案。
+- 保留流式优先、404/405/无 body 时 JSON 回退、来源标记剥离、来源面板按钮和 Failed to fetch 可读错误提示。
+
+### 验证结果
+
+- `npm run build`（`internal-ai-assistant/frontend`）：通过；仍存在 VueUse PURE 注释 warning 与 chunk size warning，不阻断。
+- 端口/代理 smoke：`8000/api/health` 200，`5174/api/health` 200，`5174/login` 200，`5174/chat` 200，`5174/admin` 200。
+- 静态复核：`查看来源`、`查看文档清单`、`相关来源`、登录/聊天网络错误兜底、后台 `admin-scroll-page`、上传/解析状态、PageIndex 状态、结构树与重建高级索引入口均存在。
+
+### 遗留风险
+
+- 本轮无可用真实账号，未覆盖登录后的浏览器深度交互、真实上传文件和真实 PageIndex 重建流程。
+
+## 2026-06-08：本轮最终验证、范围收口与发布准备
+
+### 已完成验证
+
+- `python -m compileall app`（`internal-ai-assistant/backend`）：通过。
+- `npm run build`（`internal-ai-assistant/frontend`）：通过；存在 Vite chunk size warning 和 VueUse PURE 注释 warning，不阻断发布。
+- QA 5174 smoke（任务 `3f1274b9-3484-4c3c-818f-f18a7deeb6e9`）：GO，确认 `8000/api/health`、`5174/api/health`、`5174/login`、`5174/chat`、`5174/admin` 均可用，未登录态 `/api/me` 返回 401，且未操作 5173。
+- 后端复核：RAG / PageIndex / structured digest / 路由判定与 `pageindex:0000` 来源序列化通过，只读确认未改后端代码。
+- 前端复核：`internal-ai-assistant/frontend/src/views/chat/index.vue` 仅保留最小空内容兜底/等待文案修复；`internal-ai-assistant/frontend/src/router.ts` 的 admin 守卫仅将未登录/解析异常回退到 `/chat`，属于同一前端收口范围；`vite.config.ts` 仍保持 `5174` + `strictPort`；静态复核确认后台滚动、来源入口与 PageIndex 入口仍存在。
+
+### 最终范围判断
+
+- 合规纳入：`docs/AI修改记录.md`、`internal-ai-assistant/docs/AI修改记录.md`、`internal-ai-assistant/frontend/src/views/chat/index.vue`。
+- 排除：`internal-ai-assistant/.env`、`.claude/`、`.runtime/`、`.runlogs/`、`backend/data/`、`third_party/PageIndex/`、`node_modules/`、`dist/`、`__pycache__/`、`*.pyc`、`.pytest_cache/`、`MaxKB-src/`、`*.zip`、`.spectrai-worktrees/`，以及根目录两份历史止损报告（默认不纳入本轮提交）。
+
+### 发布结论
+
+- 门禁 GO，可仅暂存合规文件后 commit/push 到 `master`。
+- 远程已配置到目标仓库 `https://github.com/liaaa00/zhishiku.git`。
+- 继续遵守端口规则：只操作本项目 `8000` / `5174`，不操作 `5173`.
