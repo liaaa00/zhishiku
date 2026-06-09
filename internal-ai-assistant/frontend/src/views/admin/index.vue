@@ -98,13 +98,59 @@
           </div>
           <div class="admin-index-note">高级索引：{{ pageIndexEngineText }} · {{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</div>
 
-          <el-table :data="docs" class="admin-table admin-doc-table">
-            <el-table-column prop="title" label="文档" min-width="180" />
-            <el-table-column prop="filename" label="文件名" min-width="180" />
-            <el-table-column label="解析状态" min-width="260">
+          <div v-if="docs.length" class="admin-doc-toolbar">
+            <label class="admin-search-box admin-doc-search-box">
+              <span>搜索文档</span>
+              <el-input
+                v-model="docSearch"
+                clearable
+                placeholder="按文档名、文件名、说明或岗位组搜索"
+                class="admin-input-search"
+              />
+            </label>
+            <div class="admin-filter-row" aria-label="文档状态筛选">
+              <button :class="{ active: docStatusFilter === 'all' }" type="button" @click="docStatusFilter = 'all'">
+                全部 {{ docs.length }}
+              </button>
+              <button :class="{ active: docStatusFilter === 'ready' }" type="button" @click="docStatusFilter = 'ready'">
+                已完成 {{ docReadyCount }}
+              </button>
+              <button :class="{ active: docStatusFilter === 'processing' }" type="button" @click="docStatusFilter = 'processing'">
+                处理中 {{ docProcessingCount }}
+              </button>
+              <button :class="{ active: docStatusFilter === 'waiting' }" type="button" @click="docStatusFilter = 'waiting'">
+                等待中 {{ docWaitingCount }}
+              </button>
+              <button :class="{ active: docStatusFilter === 'failed' }" type="button" @click="docStatusFilter = 'failed'">
+                失败 {{ docFailedCount }}
+              </button>
+            </div>
+            <div class="admin-doc-summary">当前显示 {{ filteredDocs.length }} / {{ docs.length }} 份文档</div>
+          </div>
+
+          <div v-if="docs.length && !filteredDocs.length" class="admin-dialog-empty admin-doc-empty">没有匹配的文档。可以清空搜索词或切换状态筛选。</div>
+
+          <el-table :data="filteredDocs" class="admin-table admin-doc-table">
+            <el-table-column label="文档" min-width="240">
               <template #default="scope">
-                <div class="doc-status-cell">
-                  <strong>{{ statusText(scope.row.status) }} · {{ stageText(scope.row.stage) }}</strong>
+                <div class="admin-doc-cell">
+                  <div class="admin-doc-cell-head">
+                    <strong>{{ docTitle(scope.row) }}</strong>
+                    <span class="admin-doc-file">{{ docFilename(scope.row) }}</span>
+                  </div>
+                  <p>{{ docDescription(scope.row) }}</p>
+                  <div class="admin-doc-cell-meta">
+                    <span>{{ docGroupsText(scope.row) }}</span>
+                    <span>ID {{ scope.row.id }}</span>
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="解析状态" min-width="280">
+              <template #default="scope">
+                <div class="admin-doc-status">
+                  <span :class="['admin-status-pill', docStatusKind(scope.row)]">{{ docStatusLabel(scope.row) }}</span>
+                  <strong>{{ docStageLabel(scope.row) }}</strong>
                   <span>{{ scope.row.message || '暂无说明' }}</span>
                   <span>片段 {{ scope.row.chunks || 0 }} · {{ scope.row.searchable ? '可检索' : '未检索' }}</span>
                   <span>高级索引：{{ pageIndexStatusText(scope.row.page_index) }}</span>
@@ -163,10 +209,14 @@ const pageIndexStatus = ref<any | null>(null)
 const docGroupMap = reactive<Record<string, string[]>>({})
 const groupName = ref('')
 const user = reactive({ username: '', password: '', is_admin: false, group_ids: [] as string[] })
+type DocStatusFilter = 'all' | 'ready' | 'processing' | 'waiting' | 'failed'
+
 const pageIndexDialogVisible = ref(false)
 const pageIndexLoading = ref(false)
 const pageIndexPayload = ref<any | null>(null)
 const pageIndexDoc = ref<any | null>(null)
+const docSearch = ref('')
+const docStatusFilter = ref<DocStatusFilter>('all')
 
 const pageIndexEngineText = computed(() => {
   if (!pageIndexStatus.value?.enabled) return '已关闭'
@@ -174,6 +224,74 @@ const pageIndexEngineText = computed(() => {
   return '轻量结构树兜底'
 })
 const pageIndexFlatNodes = computed(() => flattenPageIndexNodes(pageIndexPayload.value?.structure || []))
+const filteredDocs = computed(() => {
+  const keyword = normalizeText(docSearch.value).trim()
+  return docs.value.filter((doc: any) => {
+    if (docStatusFilter.value !== 'all' && docStatusKind(doc) !== docStatusFilter.value) return false
+    if (!keyword) return true
+    const haystack = normalizeText([
+      docTitle(doc),
+      docFilename(doc),
+      docDescription(doc),
+      docGroupsText(doc),
+      statusText(doc.status),
+      stageText(doc.stage),
+      pageIndexStatusText(doc.page_index),
+    ].join(' '))
+    return haystack.includes(keyword)
+  })
+})
+const docReadyCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'ready').length)
+const docProcessingCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'processing').length)
+const docWaitingCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'waiting').length)
+const docFailedCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'failed').length)
+
+function normalizeText(value: string) {
+  return String(value || '').toLowerCase()
+}
+
+function docTitle(doc: any) {
+  const title = String(doc?.title || '')
+  const filename = String(doc?.filename || '')
+  const id = String(doc?.id || '')
+  const titleLooksLikeId = Boolean(title && /^\d{6,}$/.test(title.trim()))
+  const filenameBase = filename.includes('.') ? filename.split('.').slice(0, -1).join('.') : filename
+  if (filename && (!title || titleLooksLikeId || title === filenameBase)) return filename
+  return title || filename || id || '未命名文档'
+}
+
+function docFilename(doc: any) {
+  return String(doc?.filename || doc?.title || doc?.id || '未知文件')
+}
+
+function docDescription(doc: any) {
+  if (doc?.message) return String(doc.message)
+  if (doc?.stage) return stageText(doc.stage)
+  if (doc?.status) return statusText(doc.status)
+  return '暂无说明'
+}
+
+function docGroupsText(doc: any) {
+  return String((doc?.groups || []).map((g: any) => g?.name).filter(Boolean).join('、') || '未分配')
+}
+
+function docStatusKind(doc: any): DocStatusFilter {
+  const status = normalizeText(doc?.status || '')
+  const stage = normalizeText(doc?.stage || '')
+  if (status === 'failed' || stage === 'parse_error' || stage === 'file_missing') return 'failed'
+  if (status === 'processing' || ['worker', 'vision_ocr', 'pdf_text_extract', 'pdf_vision_ocr', 'word_text_extract', 'pptx_text_extract', 'spreadsheet_extract', 'csv_extract', 'text_extract', 'markdown_extract'].includes(stage)) return 'processing'
+  if (status === 'ready' || stage === 'indexed' || doc?.searchable) return 'ready'
+  if (status === 'pending' || status === 'queued' || ['uploaded', 'queued', 'need_ocr'].includes(stage)) return 'waiting'
+  return 'waiting'
+}
+
+function docStatusLabel(doc: any) {
+  return statusText(doc?.status)
+}
+
+function docStageLabel(doc: any) {
+  return stageText(doc?.stage)
+}
 
 async function load() {
   try {

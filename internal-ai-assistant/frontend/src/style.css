@@ -2238,6 +2238,59 @@ body.admin-scroll-page {
   background: #f7f7f8;
 }
 
+.admin-doc-toolbar {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 4px;
+}
+
+.admin-search-box {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-search-box span {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-doc-search-box {
+  width: min(520px, 100%);
+}
+
+.admin-doc-summary {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.admin-filter-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-filter-row button {
+  min-height: 32px;
+  border: 1px solid #ececf1;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #6b7280;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-filter-row button.active {
+  background: #202123;
+  border-color: #202123;
+  color: #ffffff;
+}
+
+.admin-doc-empty {
+  margin-top: 12px;
+}
+
 .admin-table {
   width: 100%;
   margin-top: 14px;
@@ -2273,7 +2326,46 @@ body.admin-scroll-page {
   background: #fbfbfc !important;
 }
 
-.doc-status-cell {
+.admin-doc-cell {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-doc-cell-head {
+  display: grid;
+  gap: 3px;
+}
+
+.admin-doc-cell-head strong {
+  color: #202123;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.admin-doc-file {
+  color: #8e8ea0;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.admin-doc-cell p {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.admin-doc-cell-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: #8e8ea0;
+  font-size: 11px;
+}
+
+.admin-doc-status {
   display: grid;
   gap: 5px;
   color: #6b7280;
@@ -2281,10 +2373,45 @@ body.admin-scroll-page {
   line-height: 1.45;
 }
 
-.doc-status-cell strong {
+.admin-doc-status strong {
   color: #202123;
   font-size: 13px;
   font-weight: 650;
+}
+
+.admin-status-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 650;
+  border: 1px solid transparent;
+}
+
+.admin-status-pill.ready {
+  color: #047857;
+  background: #ecfdf5;
+  border-color: #bbf7d0;
+}
+
+.admin-status-pill.processing {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.admin-status-pill.waiting {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.admin-status-pill.failed {
+  color: #b91c1c;
+  background: #fef2f2;
+  border-color: #fecaca;
 }
 
 .admin-row-actions {
