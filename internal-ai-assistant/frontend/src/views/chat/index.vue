@@ -280,8 +280,25 @@
       </header>
 
       <div class="source-panel-toolbar">
-        <div v-if="isSourcePanelDocumentOverview" class="source-panel-note document-list-note">
-          当前展示你有权限访问的文档清单。
+        <div v-if="isSourcePanelDocumentOverview" class="document-list-controls">
+          <label class="document-search-box">
+            <span>搜索文档</span>
+            <input v-model="documentSearch" type="search" placeholder="输入文件名、类型或片段内容" />
+          </label>
+          <div class="document-filter-row" aria-label="文档状态筛选">
+            <button :class="{ active: documentStatusFilter === 'all' }" type="button" @click="documentStatusFilter = 'all'">
+              全部 {{ activeSources.length }}
+            </button>
+            <button :class="{ active: documentStatusFilter === 'ready' }" type="button" @click="documentStatusFilter = 'ready'">
+              已解析 {{ documentReadyCount }}
+            </button>
+            <button :class="{ active: documentStatusFilter === 'partial' }" type="button" @click="documentStatusFilter = 'partial'">
+              部分内容 {{ documentPartialCount }}
+            </button>
+            <button :class="{ active: documentStatusFilter === 'empty' }" type="button" @click="documentStatusFilter = 'empty'">
+              暂无预览 {{ documentEmptyCount }}
+            </button>
+          </div>
         </div>
         <template v-else>
           <div class="source-filter">
@@ -319,7 +336,7 @@
           </div>
         </div>
         <p>
-          这里展示的是你当前有权限访问的文档清单。摘要模式会默认把每份文档已解析出的全部片段交给模型；列表中仅展示摘要预览，点击“预览内容”可继续查看原始片段。
+          这里是当前账号可访问的文档范围。可以按文件名搜索，也可以用状态快速查看哪些文档已经解析、哪些只有部分内容或暂无预览。
         </p>
       </section>
 
@@ -334,14 +351,27 @@
             overview: isSourcePanelDocumentOverview,
           }]"
         >
-          <div class="source-index">{{ index + 1 }}</div>
+          <div class="source-index">{{ isSourcePanelDocumentOverview ? sourceExtension(source) : index + 1 }}</div>
           <div class="source-body">
             <div class="source-headline">
-              <h3>{{ sourceTitle(source) }}</h3>
-              <span v-if="source.summary_source" class="source-coverage-pill">已纳入 {{ source.chunks_used || 0 }}/{{ source.total_chunks || 0 }}</span>
+              <div>
+                <h3>{{ sourceTitle(source) }}</h3>
+                <span v-if="isSourcePanelDocumentOverview" class="document-file-name">{{ sourceFilename(source) }}</span>
+              </div>
+              <span v-if="isSourcePanelDocumentOverview" :class="['document-status-pill', documentStatusKind(source)]">
+                {{ documentStatusLabel(source) }}
+              </span>
+              <span v-else-if="source.summary_source" class="source-coverage-pill">已纳入 {{ source.chunks_used || 0 }}/{{ source.total_chunks || 0 }}</span>
             </div>
-            <p>{{ sourceSnippet(source) || '该来源暂未返回片段内容。' }}</p>
-            <div class="source-meta">{{ sourceType(source) }} · {{ sourceLocation(source) }}</div>
+            <p>{{ sourceSnippet(source) || (isSourcePanelDocumentOverview ? '这个文档暂时没有可展示的预览内容。' : '该来源暂未返回片段内容。') }}</p>
+            <div class="source-meta">
+              <template v-if="isSourcePanelDocumentOverview">
+                {{ sourceType(source) }} · {{ documentStatusDetail(source) }}
+              </template>
+              <template v-else>
+                {{ sourceType(source) }} · {{ sourceLocation(source) }}
+              </template>
+            </div>
             <div class="source-actions">
               <button type="button" @click="previewSource(source)">预览内容</button>
               <button type="button" @click="openSource(source)">{{ openSourceLabel(source) }}</button>
@@ -350,7 +380,7 @@
         </article>
 
         <div v-if="!filteredSources.length" class="source-empty">
-          当前回答段落还没有匹配到更明确的来源，可以切换到“全部来源”查看完整范围。
+          {{ isSourcePanelDocumentOverview ? '没有匹配的文档。可以清空搜索词或切换状态筛选。' : '当前回答段落还没有匹配到更明确的来源，可以切换到“全部来源”查看完整范围。' }}
         </div>
       </div>
 
@@ -375,6 +405,7 @@ type Role = 'assistant' | 'user'
 type FeedbackRating = 'helpful' | 'unhelpful' | 'wrong' | 'unsafe' | 'other' | 'user_feedback'
 
 type StructuredSectionKind = 'lead' | 'section' | 'highlight' | 'warning' | 'action'
+type DocumentStatusFilter = 'all' | 'ready' | 'partial' | 'empty'
 
 interface SourceItem {
   document_id?: string
@@ -471,6 +502,8 @@ const sourcePanelVisible = ref(false)
 const activeSourceMessage = ref<ChatMessageItem | null>(null)
 const activeSourceSectionIndex = ref<number | null>(null)
 const sourceViewMode = ref<'all' | 'related'>('all')
+const documentSearch = ref('')
+const documentStatusFilter = ref<DocumentStatusFilter>('all')
 const highlightedSourceKey = ref('')
 const sourceScrollRef = ref<HTMLElement | null>(null)
 const collapsedSectionState = ref<Record<string, Record<number, boolean>>>({})
@@ -504,6 +537,7 @@ const activeSourceSection = computed(() => {
 const filteredSources = computed(() => {
   const message = activeSourceMessage.value
   if (!message) return []
+  if (isDocumentOverview(message)) return filterDocumentSources(activeSources.value)
   if (sourceViewMode.value === 'all' || activeSourceSectionIndex.value === null) return activeSources.value
   const section = activeSourceSection.value
   return section ? getRelatedSources(message, section) : []
@@ -519,6 +553,9 @@ const overviewDocumentTotal = computed(() => {
   if (!message) return 0
   return message.document_count || message.sources.length || 0
 })
+const documentReadyCount = computed(() => activeSources.value.filter((source) => documentStatusKind(source) === 'ready').length)
+const documentPartialCount = computed(() => activeSources.value.filter((source) => documentStatusKind(source) === 'partial').length)
+const documentEmptyCount = computed(() => activeSources.value.filter((source) => documentStatusKind(source) === 'empty').length)
 const sourcePanelTitle = computed(() => {
   if (sourceViewMode.value === 'related' && activeSourceSection.value?.title) return `关联来源 · ${activeSourceSection.value.title}`
   return isDocumentOverview(activeSourceMessage.value) ? '可读文档范围' : '引用来源'
@@ -986,6 +1023,8 @@ function openSourcePanel(message: ChatMessageItem, sectionIndex: number | null =
   activeSourceMessage.value = message
   activeSourceSectionIndex.value = sectionIndex
   sourceViewMode.value = sectionIndex === null ? 'all' : 'related'
+  documentSearch.value = ''
+  documentStatusFilter.value = 'all'
   sourcePanelVisible.value = true
   highlightedSourceKey.value = ''
   clearPreview()
@@ -1001,6 +1040,8 @@ function closeSourcePanel() {
   activeSourceMessage.value = null
   activeSourceSectionIndex.value = null
   sourceViewMode.value = 'all'
+  documentSearch.value = ''
+  documentStatusFilter.value = 'all'
   highlightedSourceKey.value = ''
   clearPreview()
 }
@@ -1150,7 +1191,62 @@ function sourceKey(source: SourceItem, index: number) {
 }
 
 function sourceTitle(source: SourceItem) {
-  return String(source.document_title || source.title || source.filename || source.document_id || '未知来源')
+  const title = String(source.document_title || source.title || '')
+  const filename = String(source.filename || '')
+  const id = String(source.document_id || '')
+  const titleLooksLikeId = Boolean(title && /^\d{6,}$/.test(title.trim()))
+  const filenameBase = filename.includes('.') ? filename.split('.').slice(0, -1).join('.') : filename
+  if (filename && (!title || titleLooksLikeId || title === filenameBase)) return filename
+  return title || filename || id || '未知来源'
+}
+
+function sourceFilename(source: SourceItem) {
+  return String(source.filename || source.document_title || source.title || source.document_id || '未知文档')
+}
+
+function sourceExtension(source: SourceItem) {
+  const name = sourceFilename(source).toLowerCase()
+  const ext = name.includes('.') ? name.split('.').pop() || '' : ''
+  return ext ? ext.toUpperCase() : 'DOC'
+}
+
+function documentStatusKind(source: SourceItem): DocumentStatusFilter {
+  const used = Number(source.chunks_used || 0)
+  const total = Number(source.total_chunks || 0)
+  if (source.summary_source && total > 0 && used >= total) return 'ready'
+  if (source.summary_source && used > 0) return 'partial'
+  if (sourceSnippet(source)) return 'partial'
+  return 'empty'
+}
+
+function documentStatusLabel(source: SourceItem) {
+  const kind = documentStatusKind(source)
+  if (kind === 'ready') return '已解析'
+  if (kind === 'partial') return '部分内容'
+  return '暂无预览'
+}
+
+function documentStatusDetail(source: SourceItem) {
+  const used = Number(source.chunks_used || 0)
+  const total = Number(source.total_chunks || 0)
+  if (source.summary_source && total > 0) return `${used}/${total} 个片段`
+  return sourceLocation(source)
+}
+
+function filterDocumentSources(sources: SourceItem[]) {
+  const keyword = normalizeSearchText(documentSearch.value).trim()
+  return sources.filter((source) => {
+    if (documentStatusFilter.value !== 'all' && documentStatusKind(source) !== documentStatusFilter.value) return false
+    if (!keyword) return true
+    const haystack = normalizeSearchText([
+      sourceTitle(source),
+      sourceFilename(source),
+      sourceType(source),
+      sourceLocation(source),
+      sourceSnippet(source),
+    ].join(' '))
+    return haystack.includes(keyword)
+  })
 }
 
 function isSpreadsheetSource(source: SourceItem) {
