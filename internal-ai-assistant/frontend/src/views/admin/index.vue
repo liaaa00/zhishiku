@@ -1,86 +1,151 @@
 <template>
-  <div class="admin-page">
-    <h2>后台管理</h2>
-    <p>这里不是平台，只保留员工、岗位组、文档和文档权限。</p>
-    <el-tabs>
+  <div class="admin-page admin-chatgpt-page">
+    <header class="admin-hero">
+      <div>
+        <span class="admin-eyebrow">Knowledge Admin</span>
+        <h2>后台管理</h2>
+        <p>管理岗位组、员工账号、文档权限和高级索引状态。</p>
+      </div>
+      <div class="admin-hero-status">
+        <span>PageIndex</span>
+        <strong>{{ pageIndexEngineText }}</strong>
+      </div>
+    </header>
+
+    <section class="admin-stat-grid" aria-label="后台数据概览">
+      <article class="admin-stat-card">
+        <span>岗位组</span>
+        <strong>{{ groups.length }}</strong>
+      </article>
+      <article class="admin-stat-card">
+        <span>员工</span>
+        <strong>{{ users.length }}</strong>
+      </article>
+      <article class="admin-stat-card">
+        <span>文档</span>
+        <strong>{{ docs.length }}</strong>
+      </article>
+      <article class="admin-stat-card wide">
+        <span>高级索引状态</span>
+        <strong>{{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</strong>
+      </article>
+    </section>
+
+    <el-tabs class="admin-tabs">
       <el-tab-pane label="岗位组">
-        <el-input v-model="groupName" placeholder="岗位组名称" style="max-width: 240px" />
-        <el-button type="primary" @click="createGroup">新增</el-button>
-        <ul><li v-for="g in groups" :key="g.id">{{ g.name }}</li></ul>
+        <section class="admin-panel-card">
+          <header class="admin-section-header">
+            <div>
+              <h3>岗位组</h3>
+              <p>用岗位组控制员工可以访问哪些知识文档。</p>
+            </div>
+          </header>
+          <div class="admin-form-row">
+            <el-input v-model="groupName" placeholder="岗位组名称" class="admin-input-sm" />
+            <el-button type="primary" @click="createGroup">新增</el-button>
+          </div>
+          <ul class="admin-chip-list">
+            <li v-for="g in groups" :key="g.id">{{ g.name }}</li>
+            <li v-if="!groups.length" class="empty">暂无岗位组</li>
+          </ul>
+        </section>
       </el-tab-pane>
 
       <el-tab-pane label="员工">
-        <el-input v-model="user.username" placeholder="用户名" style="max-width: 160px" />
-        <el-input v-model="user.password" placeholder="密码" style="max-width: 160px" />
-        <el-select v-model="user.group_ids" multiple placeholder="所属岗位组" style="width: 260px">
-          <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
-        </el-select>
-        <el-checkbox v-model="user.is_admin">管理员</el-checkbox>
-        <el-button type="primary" @click="createUser">新增员工</el-button>
-        <el-table :data="users" style="margin-top: 16px">
-          <el-table-column prop="username" label="用户名" />
-          <el-table-column label="岗位组">
-            <template #default="scope">{{ scope.row.groups.map((g:any) => g.name).join('、') }}</template>
-          </el-table-column>
-          <el-table-column label="管理员">
-            <template #default="scope">{{ scope.row.is_admin ? '是' : '否' }}</template>
-          </el-table-column>
-        </el-table>
+        <section class="admin-panel-card">
+          <header class="admin-section-header">
+            <div>
+              <h3>员工</h3>
+              <p>创建员工账号，并分配可访问的岗位组。</p>
+            </div>
+          </header>
+          <div class="admin-form-row admin-form-row-wrap">
+            <el-input v-model="user.username" placeholder="用户名" class="admin-input-sm" />
+            <el-input v-model="user.password" placeholder="密码" class="admin-input-sm" />
+            <el-select v-model="user.group_ids" multiple placeholder="所属岗位组" class="admin-select-md">
+              <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+            </el-select>
+            <el-checkbox v-model="user.is_admin">管理员</el-checkbox>
+            <el-button type="primary" @click="createUser">新增员工</el-button>
+          </div>
+          <el-table :data="users" class="admin-table">
+            <el-table-column prop="username" label="用户名" min-width="140" />
+            <el-table-column label="岗位组" min-width="220">
+              <template #default="scope">{{ scope.row.groups.map((g:any) => g.name).join('、') || '未分配' }}</template>
+            </el-table-column>
+            <el-table-column label="管理员" width="100">
+              <template #default="scope">{{ scope.row.is_admin ? '是' : '否' }}</template>
+            </el-table-column>
+          </el-table>
+        </section>
       </el-tab-pane>
 
       <el-tab-pane label="文档与权限">
-        <div class="admin-toolbar">
-          <el-upload :auto-upload="false" :show-file-list="false" :on-change="handleFile">
-            <el-button type="primary">选择文件上传</el-button>
-          </el-upload>
-          <span class="tip">支持 PDF / Markdown / Word / Excel / PPT / CSV / TXT / 图片；上传后显示解析和 PageIndex 状态。</span>
-        </div>
-        <div class="tip">高级索引：{{ pageIndexEngineText }} · {{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</div>
-        <el-table :data="docs" style="margin-top: 16px">
-          <el-table-column prop="title" label="文档" min-width="160" />
-          <el-table-column prop="filename" label="文件名" min-width="160" />
-          <el-table-column label="解析状态" min-width="220">
-            <template #default="scope">
-              <div class="doc-status-cell">
-                <strong>{{ statusText(scope.row.status) }} · {{ stageText(scope.row.stage) }}</strong>
-                <span>{{ scope.row.message || '暂无说明' }}</span>
-                <span>片段 {{ scope.row.chunks || 0 }} · {{ scope.row.searchable ? '可检索' : '未检索' }}</span>
-                <span>高级索引：{{ pageIndexStatusText(scope.row.page_index) }}</span>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="可访问岗位组" min-width="300">
-            <template #default="scope">
-              <el-select
-                v-model="docGroupMap[scope.row.id]"
-                multiple
-                placeholder="选择岗位组"
-                style="width: 100%"
-                @change="saveDocPermission(scope.row.id)"
-              >
-                <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
-              </el-select>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="180">
-            <template #default="scope">
-              <el-button link type="primary" @click="openDocumentPageIndex(scope.row)">结构树</el-button>
-              <el-button link @click="rebuildDocumentPageIndex(scope.row)">重建高级索引</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+        <section class="admin-panel-card">
+          <header class="admin-section-header">
+            <div>
+              <h3>文档与权限</h3>
+              <p>上传知识文档，查看解析进度，并配置岗位组可见范围。</p>
+            </div>
+            <el-upload :auto-upload="false" :show-file-list="false" :on-change="handleFile">
+              <el-button type="primary">选择文件上传</el-button>
+            </el-upload>
+          </header>
+
+          <div class="admin-upload-note">
+            <span>支持 PDF / Markdown / Word / Excel / PPT / CSV / TXT / 图片</span>
+            <span>上传后显示解析和 PageIndex 状态。</span>
+          </div>
+          <div class="admin-index-note">高级索引：{{ pageIndexEngineText }} · {{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</div>
+
+          <el-table :data="docs" class="admin-table admin-doc-table">
+            <el-table-column prop="title" label="文档" min-width="180" />
+            <el-table-column prop="filename" label="文件名" min-width="180" />
+            <el-table-column label="解析状态" min-width="260">
+              <template #default="scope">
+                <div class="doc-status-cell">
+                  <strong>{{ statusText(scope.row.status) }} · {{ stageText(scope.row.stage) }}</strong>
+                  <span>{{ scope.row.message || '暂无说明' }}</span>
+                  <span>片段 {{ scope.row.chunks || 0 }} · {{ scope.row.searchable ? '可检索' : '未检索' }}</span>
+                  <span>高级索引：{{ pageIndexStatusText(scope.row.page_index) }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="可访问岗位组" min-width="300">
+              <template #default="scope">
+                <el-select
+                  v-model="docGroupMap[scope.row.id]"
+                  multiple
+                  placeholder="选择岗位组"
+                  class="admin-full-select"
+                  @change="saveDocPermission(scope.row.id)"
+                >
+                  <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="190">
+              <template #default="scope">
+                <div class="admin-row-actions">
+                  <el-button link type="primary" @click="openDocumentPageIndex(scope.row)">结构树</el-button>
+                  <el-button link @click="rebuildDocumentPageIndex(scope.row)">重建高级索引</el-button>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="pageIndexDialogVisible" title="高级结构索引" width="min(760px, calc(100vw - 32px))">
-      <div v-if="pageIndexLoading">正在加载高级索引…</div>
+    <el-dialog v-model="pageIndexDialogVisible" title="高级结构索引" width="min(760px, calc(100vw - 32px))" class="admin-pageindex-dialog">
+      <div v-if="pageIndexLoading" class="admin-dialog-empty">正在加载高级索引…</div>
       <div v-else>
-        <p>{{ pageIndexStatusText(pageIndexPayload?.page_index) }}</p>
-        <el-card v-for="node in pageIndexFlatNodes" :key="node.key" class="source-card">
+        <p class="admin-index-note dialog-note">{{ pageIndexStatusText(pageIndexPayload?.page_index) }}</p>
+        <el-card v-for="node in pageIndexFlatNodes" :key="node.key" class="source-card admin-tree-card">
           <strong>{{ node.indent }}{{ node.title }}</strong>
           <p>{{ node.summary || '暂无摘要' }}</p>
         </el-card>
-        <div v-if="!pageIndexFlatNodes.length">暂无结构树。可点击“重建高级索引”。</div>
+        <div v-if="!pageIndexFlatNodes.length" class="admin-dialog-empty">暂无结构树。可点击“重建高级索引”。</div>
       </div>
     </el-dialog>
   </div>

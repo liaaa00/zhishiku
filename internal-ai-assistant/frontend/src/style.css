@@ -1887,3 +1887,412 @@ body {
     z-index: 80;
   }
 }
+
+/* 2026-06-09 admin ChatGPT-like polish */
+html.admin-scroll-page,
+body.admin-scroll-page {
+  height: auto !important;
+  min-height: 100%;
+  overflow: auto !important;
+  background: #ffffff !important;
+}
+
+.admin-chatgpt-page {
+  min-height: 100dvh;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px clamp(16px, 3vw, 36px) 56px;
+  color: #202123;
+  background: #ffffff;
+}
+
+.admin-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 0 18px;
+  border-bottom: 1px solid #ececf1;
+}
+
+.admin-eyebrow {
+  display: block;
+  margin-bottom: 8px;
+  color: #8e8ea0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.admin-hero h2 {
+  margin: 0;
+  color: #202123;
+  font-size: clamp(28px, 4vw, 40px);
+  font-weight: 650;
+  letter-spacing: -.03em;
+  line-height: 1.12;
+}
+
+.admin-hero p {
+  margin: 10px 0 0;
+  color: #6b7280;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.admin-hero-status {
+  min-width: 190px;
+  padding: 12px 14px;
+  border: 1px solid #ececf1;
+  border-radius: 14px;
+  background: #f7f7f8;
+}
+
+.admin-hero-status span,
+.admin-hero-status strong {
+  display: block;
+}
+
+.admin-hero-status span {
+  color: #8e8ea0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-hero-status strong {
+  margin-top: 4px;
+  color: #202123;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.admin-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.admin-stat-card {
+  min-height: 88px;
+  padding: 16px;
+  border: 1px solid #ececf1;
+  border-radius: 16px;
+  background: #f7f7f8;
+}
+
+.admin-stat-card span,
+.admin-stat-card strong {
+  display: block;
+}
+
+.admin-stat-card span {
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-stat-card strong {
+  margin-top: 10px;
+  color: #202123;
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+.admin-stat-card.wide strong {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.admin-tabs {
+  margin-top: 16px;
+}
+
+.admin-tabs .el-tabs__header {
+  margin: 0 0 14px;
+}
+
+.admin-tabs .el-tabs__nav-wrap::after {
+  height: 1px;
+  background: #ececf1;
+}
+
+.admin-tabs .el-tabs__item {
+  color: #6b7280;
+  font-weight: 600;
+}
+
+.admin-tabs .el-tabs__item.is-active {
+  color: #202123;
+}
+
+.admin-tabs .el-tabs__active-bar {
+  background: #202123;
+}
+
+.admin-panel-card {
+  padding: 18px;
+  border: 1px solid #ececf1;
+  border-radius: 18px;
+  background: #ffffff;
+}
+
+.admin-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.admin-section-header h3 {
+  margin: 0;
+  color: #202123;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.admin-section-header p {
+  margin: 6px 0 0;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-form-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.admin-form-row-wrap {
+  flex-wrap: wrap;
+}
+
+.admin-input-sm {
+  width: 180px;
+  max-width: 100%;
+}
+
+.admin-select-md {
+  width: 280px;
+  max-width: 100%;
+}
+
+.admin-full-select {
+  width: 100%;
+}
+
+.admin-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-chip-list li {
+  padding: 8px 11px;
+  border: 1px solid #ececf1;
+  border-radius: 999px;
+  background: #f7f7f8;
+  color: #343541;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.admin-chip-list li.empty {
+  border-style: dashed;
+  color: #8e8ea0;
+}
+
+.admin-upload-note,
+.admin-index-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0 0 12px;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-index-note {
+  padding: 10px 12px;
+  border: 1px solid #ececf1;
+  border-radius: 12px;
+  background: #f7f7f8;
+}
+
+.admin-table {
+  width: 100%;
+  margin-top: 14px;
+  border: 1px solid #ececf1;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.admin-table.el-table,
+.admin-table .el-table__inner-wrapper,
+.admin-table .el-table__body-wrapper,
+.admin-table .el-table__header-wrapper {
+  border-radius: 14px;
+}
+
+.admin-table.el-table::before,
+.admin-table .el-table__inner-wrapper::before {
+  display: none;
+}
+
+.admin-table th.el-table__cell {
+  background: #f7f7f8 !important;
+  color: #6b7280;
+  font-weight: 650;
+}
+
+.admin-table td.el-table__cell,
+.admin-table th.el-table__cell {
+  border-bottom-color: #ececf1 !important;
+}
+
+.admin-table .el-table__row:hover > td.el-table__cell {
+  background: #fbfbfc !important;
+}
+
+.doc-status-cell {
+  display: grid;
+  gap: 5px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.doc-status-cell strong {
+  color: #202123;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.admin-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.admin-chatgpt-page .el-button--primary {
+  --el-button-bg-color: #202123;
+  --el-button-border-color: #202123;
+  --el-button-hover-bg-color: #000000;
+  --el-button-hover-border-color: #000000;
+  --el-button-active-bg-color: #000000;
+  --el-button-active-border-color: #000000;
+  border-radius: 10px;
+  font-weight: 650;
+}
+
+.admin-chatgpt-page .el-button.is-link {
+  color: #202123;
+  font-weight: 600;
+}
+
+.admin-chatgpt-page .el-input__wrapper,
+.admin-chatgpt-page .el-select__wrapper {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #d9d9e3 inset !important;
+}
+
+.admin-chatgpt-page .el-input__wrapper:hover,
+.admin-chatgpt-page .el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px #c7c7d1 inset !important;
+}
+
+.admin-chatgpt-page .el-input__wrapper.is-focus,
+.admin-chatgpt-page .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 2px rgba(32, 33, 35, .16) inset !important;
+}
+
+.admin-pageindex-dialog .el-dialog {
+  border-radius: 18px;
+}
+
+.admin-pageindex-dialog .el-dialog__header {
+  padding-bottom: 12px;
+  border-bottom: 1px solid #ececf1;
+}
+
+.admin-pageindex-dialog .el-dialog__body {
+  padding-top: 16px;
+}
+
+.admin-tree-card {
+  margin-bottom: 10px;
+  border: 1px solid #ececf1 !important;
+  border-radius: 14px !important;
+  box-shadow: none !important;
+}
+
+.admin-tree-card strong {
+  color: #202123;
+}
+
+.admin-tree-card p {
+  margin: 8px 0 0;
+  color: #6b7280;
+  line-height: 1.55;
+}
+
+.admin-dialog-empty {
+  padding: 22px;
+  border: 1px dashed #d9d9e3;
+  border-radius: 14px;
+  color: #8e8ea0;
+  text-align: center;
+}
+
+.dialog-note {
+  margin-bottom: 12px;
+}
+
+@media (max-width: 980px) {
+  .admin-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-hero {
+    flex-direction: column;
+  }
+
+  .admin-hero-status {
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-chatgpt-page {
+    padding: 18px 12px 38px;
+  }
+
+  .admin-stat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-panel-card {
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .admin-section-header,
+  .admin-form-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-input-sm,
+  .admin-select-md {
+    width: 100%;
+  }
+}

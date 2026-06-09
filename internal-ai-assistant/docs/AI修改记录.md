@@ -613,3 +613,34 @@ ValueError: invalid literal for int() with base 10: 'pageindex:0000'
   - `展示方式` 显示为 `文档清单`。
   - 控制台无新的 warning/error。
 - 未操作 `5173`。
+
+---
+
+## 2026-06-09：后台管理页按 ChatGPT-like 风格优化
+
+### 用户要求
+
+- 用户要求后台管理页面也和聊天页一样优化，采用类似 ChatGPT 网页端的浅色极简风格。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 增加后台页顶部 Hero 区域和 PageIndex 状态卡。
+  - 增加岗位组、员工、文档数量统计卡。
+  - 将岗位组、员工、文档与权限三个 Tab 的内容整理为清晰卡片区块。
+  - 上传区、文档权限表格、PageIndex 结构树弹窗保留原有业务逻辑，仅优化结构和 class。
+- 修改 `frontend/src/style.css`：
+  - 增加后台页专用 ChatGPT-like 浅色样式。
+  - 优化后台 Tabs、表单、按钮、统计卡、表格、状态单元格、PageIndex 弹窗和移动端布局。
+  - 保持 `admin-scroll-page` 可滚动，避免聊天页布局影响后台页面。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- Playwright 打开 `http://127.0.0.1:5174/admin`：
+  - 页面顶部、统计卡、岗位组 Tab 正常显示。
+  - 员工 Tab 正常切换并显示员工表格。
+  - 文档与权限 Tab 正常切换，上传按钮、PageIndex 状态和文档表格正常显示。
+  - 页面可滚动，`body/html overflow` 为 `auto`。
+  - 控制台无新的 warning/error。
+- 未操作 `5173`。
