@@ -427,3 +427,76 @@ ValueError: invalid literal for int() with base 10: 'pageindex:0000'
 
 - 不要再把简版 `chat/index.vue` 当成正确前端。
 - 若用户认为视觉仍不一致，优先用 Playwright 截图比对具体元素和样式，再做 CSS/组件微调，不再猜测分支。
+
+---
+
+## 2026-06-09：按用户确认恢复“公司知识助手 / Internal Copilot”版
+
+### 背景
+
+- 用户明确指出上一轮恢复的 `Knowledge Copilot / Enterprise Knowledge Assistant` 不是 2026-06-05 最终页面。
+- 经重新排查 2026-06-05 会话日志和当前 `backend/app/html_pages.py`，目标页面特征应为：
+  - 左侧品牌：`知识助手` / `Internal Copilot`
+  - 顶部标题：`公司知识助手`
+  - 顶部按钮：`引用 / 状态`
+  - Hero：`今天想了解什么？`
+  - 提示卡：`总结资料`、`分析附件`、`查权限`、`看引用`
+  - 输入框：`给知识助手发送消息，或拖入文件…`
+  - 底部说明：支持 PDF / Word / PPT / Excel / CSV / TXT / MD / 图片，最大 200MB
+
+### 本次恢复范围
+
+- 修改 `frontend/src/views/chat/index.vue`：
+  - 替换品牌、顶部、Hero、提示卡和输入区文案。
+  - 补齐 `openSources` 别名，避免来源按钮调用不存在函数。
+  - 新增 `openLatestSources`，用于顶部 `引用 / 状态` 按钮。
+  - 保留现有流式回答、附件上传、历史会话、来源面板、反馈弹窗逻辑。
+- 修改 `frontend/src/style.css`：
+  - 恢复 6 月 5 日“公司知识助手”风格的 ChatGPT 式布局。
+  - 保留登录、后台滚动、Markdown、来源面板和反馈弹窗基础样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 已启动本项目 5174 前端，不操作 5173。
+- Playwright 打开 `http://127.0.0.1:5174/chat`，快照确认存在：
+  - `知识助手`
+  - `Internal Copilot`
+  - `公司知识助手`
+  - `引用 / 状态`
+  - `今天想了解什么？`
+  - `总结资料 / 分析附件 / 查权限 / 看引用`
+  - `给知识助手发送消息，或拖入文件…`
+- 当前后端 8000 未启动，导致 `/api/me`、`/api/chat/sessions` 经 5174 代理返回 500；这是服务未启动状态，不属于本次前端外观恢复代码错误。
+- 本次尚未 commit / push，等待用户确认页面是否正确。
+
+---
+
+## 2026-06-09：用户确认保留 Knowledge Copilot 版本并做企业级 UI 优化
+
+### 用户确认
+
+- 用户确认使用恢复出的 2026-06-05 现代聊天前端版本：
+  - `内部 AI 助手`
+  - `Knowledge Copilot`
+  - `Enterprise Knowledge Assistant`
+  - `让内部知识变成可追溯的答案`
+  - `今天想了解什么？`
+  - 上传图片或文件、来源面板、反馈按钮、结构化回答区。
+
+### 本次优化范围
+
+- 以 `ui-ux-pro-max` 的企业 SaaS / Minimalism & Swiss Style 建议为基准。
+- 主要修改 `frontend/src/style.css`，保留当前聊天页结构与功能逻辑。
+- 优化方向：
+  - 从旧暖色风格调整为企业蓝灰风格。
+  - 提升侧边栏、顶部栏、Hero、提示卡、消息卡、输入区、来源面板的层次和边界。
+  - 增加更清晰的 focus-visible、hover、disabled、reduced-motion 支持。
+  - 保持移动端响应式布局，不改 5174 / 8000 / 5173 规则。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- `5174` 正在运行，Playwright 打开 `http://127.0.0.1:5174/chat` 验证关键结构仍存在。
+- Playwright 控制台仅发现 `favicon.ico` 404；未发现本次 UI 优化导致的前端运行错误。
+- 未操作 `5173`。
