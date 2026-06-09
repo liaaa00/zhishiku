@@ -40,14 +40,31 @@
               <p>用岗位组控制员工可以访问哪些知识文档。</p>
             </div>
           </header>
+          <div v-if="groups.length" class="admin-list-toolbar">
+            <label class="admin-search-box admin-group-search-box">
+              <span>搜索岗位组</span>
+              <el-input v-model="groupSearch" clearable placeholder="按岗位组名称、ID 或成员数搜索" class="admin-input-search" />
+            </label>
+            <div class="admin-list-summary admin-group-summary">当前显示 {{ filteredGroups.length }} / {{ groups.length }} 个岗位组</div>
+          </div>
           <div class="admin-form-row">
             <el-input v-model="groupName" placeholder="岗位组名称" class="admin-input-sm" />
             <el-button type="primary" @click="createGroup">新增</el-button>
           </div>
-          <ul class="admin-chip-list">
-            <li v-for="g in groups" :key="g.id">{{ g.name }}</li>
-            <li v-if="!groups.length" class="empty">暂无岗位组</li>
+          <div v-if="groups.length && !filteredGroups.length" class="admin-dialog-empty admin-group-empty">没有匹配的岗位组。可以清空搜索词重新查看。</div>
+          <ul v-if="groups.length" class="admin-group-grid">
+            <li v-for="g in filteredGroups" :key="g.id" class="admin-group-card">
+              <div class="admin-group-card-head">
+                <strong>{{ g.name }}</strong>
+                <span class="admin-group-pill">{{ groupMemberCount(g.id) }} 名员工</span>
+              </div>
+              <div class="admin-group-card-meta">
+                <span>{{ groupDocumentCount(g.id) }} 份文档</span>
+                <span>ID {{ g.id }}</span>
+              </div>
+            </li>
           </ul>
+          <div v-else class="admin-dialog-empty admin-group-empty">暂无岗位组</div>
         </section>
       </el-tab-pane>
 
@@ -59,6 +76,27 @@
               <p>创建员工账号，并分配可访问的岗位组。</p>
             </div>
           </header>
+          <div v-if="users.length" class="admin-list-toolbar">
+            <label class="admin-search-box admin-user-search-box">
+              <span>搜索员工</span>
+              <el-input v-model="userSearch" clearable placeholder="按用户名、岗位组或角色搜索" class="admin-input-search" />
+            </label>
+            <div class="admin-filter-row" aria-label="员工角色筛选">
+              <button :class="{ active: userRoleFilter === 'all' }" type="button" @click="userRoleFilter = 'all'">
+                全部 {{ users.length }}
+              </button>
+              <button :class="{ active: userRoleFilter === 'admin' }" type="button" @click="userRoleFilter = 'admin'">
+                管理员 {{ userAdminCount }}
+              </button>
+              <button :class="{ active: userRoleFilter === 'member' }" type="button" @click="userRoleFilter = 'member'">
+                成员 {{ userMemberCount }}
+              </button>
+              <button :class="{ active: userRoleFilter === 'unassigned' }" type="button" @click="userRoleFilter = 'unassigned'">
+                未分配 {{ userUnassignedCount }}
+              </button>
+            </div>
+            <div class="admin-list-summary admin-user-summary">当前显示 {{ filteredUsers.length }} / {{ users.length }} 名员工</div>
+          </div>
           <div class="admin-form-row admin-form-row-wrap">
             <el-input v-model="user.username" placeholder="用户名" class="admin-input-sm" />
             <el-input v-model="user.password" placeholder="密码" class="admin-input-sm" />
@@ -68,13 +106,23 @@
             <el-checkbox v-model="user.is_admin">管理员</el-checkbox>
             <el-button type="primary" @click="createUser">新增员工</el-button>
           </div>
-          <el-table :data="users" class="admin-table">
-            <el-table-column prop="username" label="用户名" min-width="140" />
-            <el-table-column label="岗位组" min-width="220">
-              <template #default="scope">{{ scope.row.groups.map((g:any) => g.name).join('、') || '未分配' }}</template>
+          <div v-if="users.length && !filteredUsers.length" class="admin-dialog-empty admin-user-empty">没有匹配的员工。可以清空搜索词或切换角色筛选。</div>
+          <el-table :data="filteredUsers" class="admin-table admin-user-table">
+            <el-table-column label="员工" min-width="180">
+              <template #default="scope">
+                <div class="admin-user-cell">
+                  <strong>{{ scope.row.username }}</strong>
+                  <span>ID {{ scope.row.id }}</span>
+                </div>
+              </template>
             </el-table-column>
-            <el-table-column label="管理员" width="100">
-              <template #default="scope">{{ scope.row.is_admin ? '是' : '否' }}</template>
+            <el-table-column label="角色" width="120">
+              <template #default="scope">
+                <span :class="['admin-role-pill', userRoleKind(scope.row)]">{{ userRoleLabel(scope.row) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="岗位组" min-width="260">
+              <template #default="scope">{{ userGroupsText(scope.row) }}</template>
             </el-table-column>
           </el-table>
         </section>
@@ -210,11 +258,15 @@ const docGroupMap = reactive<Record<string, string[]>>({})
 const groupName = ref('')
 const user = reactive({ username: '', password: '', is_admin: false, group_ids: [] as string[] })
 type DocStatusFilter = 'all' | 'ready' | 'processing' | 'waiting' | 'failed'
+type UserRoleFilter = 'all' | 'admin' | 'member' | 'unassigned'
 
 const pageIndexDialogVisible = ref(false)
 const pageIndexLoading = ref(false)
 const pageIndexPayload = ref<any | null>(null)
 const pageIndexDoc = ref<any | null>(null)
+const groupSearch = ref('')
+const userSearch = ref('')
+const userRoleFilter = ref<UserRoleFilter>('all')
 const docSearch = ref('')
 const docStatusFilter = ref<DocStatusFilter>('all')
 
@@ -224,6 +276,33 @@ const pageIndexEngineText = computed(() => {
   return '轻量结构树兜底'
 })
 const pageIndexFlatNodes = computed(() => flattenPageIndexNodes(pageIndexPayload.value?.structure || []))
+const filteredGroups = computed(() => {
+  const keyword = normalizeText(groupSearch.value).trim()
+  return groups.value.filter((group: any) => {
+    if (!keyword) return true
+    const haystack = normalizeText([
+      group?.name,
+      group?.id,
+      groupMemberCount(group?.id),
+      groupDocumentCount(group?.id),
+    ].join(' '))
+    return haystack.includes(keyword)
+  })
+})
+const filteredUsers = computed(() => {
+  const keyword = normalizeText(userSearch.value).trim()
+  return users.value.filter((item: any) => {
+    if (userRoleFilter.value !== 'all' && userRoleKind(item) !== userRoleFilter.value) return false
+    if (!keyword) return true
+    const haystack = normalizeText([
+      item?.username,
+      item?.id,
+      item?.groups?.map((g: any) => g?.name).join('、'),
+      item?.is_admin ? '管理员' : '成员',
+    ].join(' '))
+    return haystack.includes(keyword)
+  })
+})
 const filteredDocs = computed(() => {
   const keyword = normalizeText(docSearch.value).trim()
   return docs.value.filter((doc: any) => {
@@ -245,6 +324,33 @@ const docReadyCount = computed(() => docs.value.filter((doc: any) => docStatusKi
 const docProcessingCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'processing').length)
 const docWaitingCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'waiting').length)
 const docFailedCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'failed').length)
+const userAdminCount = computed(() => users.value.filter((item: any) => item?.is_admin).length)
+const userMemberCount = computed(() => users.value.filter((item: any) => !item?.is_admin && (item?.groups || []).length > 0).length)
+const userUnassignedCount = computed(() => users.value.filter((item: any) => !(item?.groups || []).length).length)
+
+function groupMemberCount(groupId?: string) {
+  if (!groupId) return 0
+  return users.value.filter((userItem: any) => (userItem?.groups || []).some((group: any) => String(group?.id) === String(groupId))).length
+}
+
+function groupDocumentCount(groupId?: string) {
+  if (!groupId) return 0
+  return docs.value.filter((doc: any) => (doc?.groups || []).some((group: any) => String(group?.id) === String(groupId))).length
+}
+
+function userRoleKind(item: any): UserRoleFilter {
+  if (item?.is_admin) return 'admin'
+  if ((item?.groups || []).length) return 'member'
+  return 'unassigned'
+}
+
+function userRoleLabel(item: any) {
+  return ({ admin: '管理员', member: '成员', unassigned: '未分配' } as Record<string, string>)[userRoleKind(item)]
+}
+
+function userGroupsText(item: any) {
+  return String((item?.groups || []).map((g: any) => g?.name).filter(Boolean).join('、') || '未分配')
+}
 
 function normalizeText(value: string) {
   return String(value || '').toLowerCase()

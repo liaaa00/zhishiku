@@ -2220,6 +2220,135 @@ body.admin-scroll-page {
   color: #8e8ea0;
 }
 
+.admin-list-toolbar {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 4px;
+}
+
+.admin-list-summary {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.admin-input-search {
+  width: 100%;
+}
+
+.admin-group-search-box,
+.admin-user-search-box {
+  width: min(420px, 100%);
+}
+
+.admin-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-group-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 15px;
+  border: 1px solid #ececf1;
+  border-radius: 16px;
+  background: #f7f7f8;
+}
+
+.admin-group-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-group-card-head strong {
+  color: #202123;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.admin-group-pill {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #d9d9e3;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 650;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.admin-group-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: #8e8ea0;
+  font-size: 11px;
+}
+
+.admin-user-table {
+  margin-top: 12px;
+}
+
+.admin-user-cell {
+  display: grid;
+  gap: 3px;
+}
+
+.admin-user-cell strong {
+  color: #202123;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.admin-user-cell span {
+  color: #8e8ea0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.admin-role-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 650;
+  border: 1px solid transparent;
+}
+
+.admin-role-pill.admin {
+  color: #047857;
+  background: #ecfdf5;
+  border-color: #bbf7d0;
+}
+
+.admin-role-pill.member {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.admin-role-pill.unassigned {
+  color: #6b7280;
+  background: #f3f4f6;
+  border-color: #e5e7eb;
+}
+
+.admin-group-empty,
+.admin-user-empty {
+  margin-top: 12px;
+}
+
 .admin-upload-note,
 .admin-index-note {
   display: flex;
