@@ -500,3 +500,29 @@ ValueError: invalid literal for int() with base 10: 'pageindex:0000'
 - `5174` 正在运行，Playwright 打开 `http://127.0.0.1:5174/chat` 验证关键结构仍存在。
 - Playwright 控制台仅发现 `favicon.ico` 404；未发现本次 UI 优化导致的前端运行错误。
 - 未操作 `5173`。
+
+---
+
+## 2026-06-09：Knowledge Copilot 聊天页排版微调
+
+### 用户要求
+
+- 用户继续要求“排版什么的调整一下”。
+- 本次只针对已确认的 Knowledge Copilot 版本做视觉排版优化，不改业务逻辑。
+
+### 本次调整范围
+
+- 修改 `frontend/src/style.css`：
+  - 收紧左侧栏、顶部栏、Hero 区域和提示卡间距。
+  - 统一消息卡、输入框、附件条、错误提示的最大内容宽度。
+  - 让输入区和消息区在桌面端更对齐，减少页面松散感。
+  - 调整来源面板宽度、内边距和卡片圆角。
+  - 补充 1440px、1100px、860px 响应式覆盖，提升大屏和移动端排版稳定性。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 5174 已在运行，Playwright 打开 `http://127.0.0.1:5174/chat` 验证关键文案和布局存在。
+- 修正输入区为三列：上传按钮 / 输入框 / 发送按钮，避免按钮换行错位。
+- Playwright 控制台未发现新的 warning/error。
+- 未操作 `5173`。
