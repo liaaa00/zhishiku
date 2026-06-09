@@ -280,22 +280,27 @@
       </header>
 
       <div class="source-panel-toolbar">
-        <div class="source-filter">
-          <button :class="{ active: sourceViewMode === 'all' }" type="button" @click="setSourceViewMode('all')">
-            {{ isSourcePanelDocumentOverview ? '全部文档' : '全部来源' }}
-          </button>
-          <button
-            :class="{ active: sourceViewMode === 'related' }"
-            type="button"
-            :disabled="activeSourceSectionIndex === null"
-            @click="setSourceViewMode('related')"
-          >
-            相关来源
-          </button>
+        <div v-if="isSourcePanelDocumentOverview" class="source-panel-note document-list-note">
+          当前展示你有权限访问的文档清单。
         </div>
-        <div v-if="activeSourceSection?.title && sourceViewMode === 'related'" class="source-panel-note">
-          正在查看“{{ activeSourceSection.title }}”的关联来源
-        </div>
+        <template v-else>
+          <div class="source-filter">
+            <button :class="{ active: sourceViewMode === 'all' }" type="button" @click="setSourceViewMode('all')">
+              全部来源
+            </button>
+            <button
+              v-if="activeSourceSectionIndex !== null"
+              :class="{ active: sourceViewMode === 'related' }"
+              type="button"
+              @click="setSourceViewMode('related')"
+            >
+              当前段落来源
+            </button>
+          </div>
+          <div v-if="activeSourceSection?.title && sourceViewMode === 'related'" class="source-panel-note">
+            正在查看“{{ activeSourceSection.title }}”的关联来源
+          </div>
+        </template>
       </div>
 
       <section v-if="isSourcePanelDocumentOverview" class="document-overview-panel">
@@ -310,7 +315,7 @@
           </div>
           <div class="document-overview-stat">
             <span>展示方式</span>
-            <strong>{{ sourceViewMode === 'related' ? '按回答段落筛选' : '全量清单' }}</strong>
+            <strong>文档清单</strong>
           </div>
         </div>
         <p>
