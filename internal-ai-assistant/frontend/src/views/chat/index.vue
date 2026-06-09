@@ -43,20 +43,19 @@
     <main class="ai-main">
       <header class="topbar">
         <div>
-          <div class="eyebrow">Enterprise Knowledge Assistant</div>
-          <h1>让内部知识变成可追溯的答案</h1>
+          <div class="eyebrow">内部 AI 助手</div>
+          <h1>知识库问答</h1>
         </div>
         <div class="topbar-actions">
-          <span class="status-pill">权限隔离</span>
+          <span class="status-pill">可上传文件</span>
           <span class="status-pill dark">引用可查</span>
         </div>
       </header>
 
       <section ref="chatBodyRef" class="conversation-panel">
         <div v-if="showHero" class="hero-panel">
-          <div class="hero-orb"></div>
-          <h2>今天想了解什么？</h2>
-          <p>我会基于你有权限访问的内部文档、附件和引用片段回答，不确定的地方会明确提示。</p>
+          <h2>有什么可以帮忙的？</h2>
+          <p>可以直接提问，也可以上传文件后让我总结、整理表格或核对引用来源。</p>
           <div class="prompt-grid">
             <button v-for="item in promptCards" :key="item" type="button" @click="askPrompt(item)">{{ item }}</button>
           </div>
@@ -986,6 +985,10 @@ function openSourcePanel(message: ChatMessageItem, sectionIndex: number | null =
   highlightedSourceKey.value = ''
   clearPreview()
   if (sectionIndex !== null) nextTick(() => focusFirstHighlightedSource(message, sectionIndex))
+}
+
+function openSources(message: ChatMessageItem, sectionIndex: number | null = null) {
+  openSourcePanel(message, sectionIndex)
 }
 
 function closeSourcePanel() {

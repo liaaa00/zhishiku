@@ -526,3 +526,38 @@ ValueError: invalid literal for int() with base 10: 'pageindex:0000'
 - 修正输入区为三列：上传按钮 / 输入框 / 发送按钮，避免按钮换行错位。
 - Playwright 控制台未发现新的 warning/error。
 - 未操作 `5173`。
+
+---
+
+## 2026-06-09：按 ChatGPT 网页端风格重做聊天页外观
+
+### 用户要求
+
+- 用户明确要求“完全模仿 GPT 的网页端”，不要继续做自创企业蓝灰风格。
+- 本次目标为 ChatGPT 网页端式浅色极简聊天布局：浅灰侧边栏、白色主区、居中欢迎语、底部圆角输入框、干净消息流。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/chat/index.vue`：
+  - 顶部文案简化为 `知识库问答`。
+  - Hero 问候改为 `有什么可以帮忙的？`。
+  - 移除 Hero 中多余的 `AI` 标记，让欢迎区更接近 ChatGPT 的干净样式。
+  - 补充 `openSources` 函数别名，避免来源按钮调用时报 `_ctx.openSources is not a function`。
+- 修改 `frontend/src/style.css`：
+  - 追加 ChatGPT-like 最终覆盖样式。
+  - 改为浅灰侧栏、白色主背景、扁平会话列表、简化顶部栏。
+  - 消息流改为居中 760px 阅读宽度，去掉重卡片阴影和大面积蓝色装饰。
+  - 输入区改为底部居中圆角胶囊样式，发送按钮改为圆形上箭头样式。
+  - 保留上传、来源面板、反馈、结构化回答等业务功能样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- Playwright 打开 `http://127.0.0.1:5174/chat`，点击 `新建对话` 后确认：
+  - 左侧浅灰会话栏。
+  - 主区白底。
+  - 欢迎语 `有什么可以帮忙的？` 居中。
+  - 提示卡两列居中。
+  - 底部输入框为 ChatGPT 式圆角胶囊布局。
+- Playwright 控制台未发现新的 warning/error。
+- 未操作 `5173`。
