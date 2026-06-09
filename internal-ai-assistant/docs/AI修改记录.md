@@ -561,3 +561,29 @@ ValueError: invalid literal for int() with base 10: 'pageindex:0000'
   - 底部输入框为 ChatGPT 式圆角胶囊布局。
 - Playwright 控制台未发现新的 warning/error。
 - 未操作 `5173`。
+
+---
+
+## 2026-06-09：修复“查看文档清单”右侧打开
+
+### 用户要求
+
+- 用户指出回答下方的 `查看文档清单` 按钮，点击后应该在右侧打开文档清单面板。
+
+### 本次修改范围
+
+- 修改 `frontend/src/style.css`：
+  - 将 `.source-panel` 改为桌面端固定在页面右侧的抽屉面板。
+  - 面板内部改为 flex 纵向布局，顶部、筛选栏、文档概览、文档列表分别固定/滚动。
+  - 补充文档概览统计卡、文档列表卡片、按钮区域的 ChatGPT-like 浅色样式。
+  - 移动端仍保持全屏右侧面板，不影响小屏使用。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- Playwright 打开 `http://127.0.0.1:5174/chat`，进入历史会话 `总结我现在可读的文档` 后点击 `查看文档清单`：
+  - 右侧固定抽屉打开。
+  - 面板标题为 `可读文档范围`。
+  - 显示 `3 份文档` 及文档清单。
+  - 控制台无新的 warning/error。
+- 未操作 `5173`。
