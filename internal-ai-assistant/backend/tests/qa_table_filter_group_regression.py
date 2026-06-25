@@ -46,6 +46,24 @@ def _row(row_id: str, row_number: int, city: str, company: str, status: str = "�
     )
 
 
+def _nonstandard_row(row_id: str, row_number: int, city: str, company: str, status: str = "有效") -> DocumentTableRow:
+    payload = {
+        "所属地": city,
+        "机构主体": company,
+        "是否启用": status,
+    }
+    return DocumentTableRow(
+        id=row_id,
+        document_id="doc-table-nonstandard",
+        sheet_name="门店清单",
+        row_number=row_number,
+        row_key=f"门店清单:{row_number}",
+        row_json=json.dumps(payload, ensure_ascii=False),
+        row_text=" | ".join(f"{key}={value}" for key, value in payload.items()),
+        is_header=False,
+    )
+
+
 def main() -> None:
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -59,8 +77,17 @@ def main() -> None:
             source_type="xlsx",
             created_by="admin",
         )
+        nonstandard_doc = Document(
+            id="doc-table-nonstandard",
+            title="新上传门店台账202606",
+            filename="新上传门店台账202606.xlsx",
+            storage_path="fixture2.xlsx",
+            source_type="xlsx",
+            created_by="admin",
+        )
         db.add(user)
         db.add(doc)
+        db.add(nonstandard_doc)
         db.add_all(
             [
                 _row("row-sh-1", 2, "上海", "上海一号网点"),
@@ -68,6 +95,9 @@ def main() -> None:
                 _row("row-sh-disabled", 4, "上海", "上海停用网点", "停用"),
                 _row("row-bj-1", 5, "北京", "北京一号网点"),
                 _row("row-cd-1", 6, "成都", "成都一号网点"),
+                _nonstandard_row("row-ns-sh-1", 2, "上海", "上海新表机构", "有效"),
+                _nonstandard_row("row-ns-sh-off", 3, "上海", "上海新表停用机构", "停用"),
+                _nonstandard_row("row-ns-bj-1", 4, "北京", "北京新表机构", "有效"),
             ]
         )
         db.commit()
@@ -75,18 +105,22 @@ def main() -> None:
         filter_question = "列出城市=上海的有效网点清单"
         contexts, meta = table_mode_contexts(db, filter_question, user, top_k=10)
         row_ids = {str(item.get("table_row_id")) for item in contexts if not item.get("is_header")}
-        if row_ids != {"row-sh-1", "row-sh-2", "row-sh-disabled"}:
-            raise AssertionError(f"city filter should keep only Shanghai rows, got {sorted(row_ids)}; meta={meta}")
-        if meta.get("value_filter_matched_rows") != 3:
-            raise AssertionError(f"expected 3 value-filter matches, got {meta}")
+        if row_ids != {"row-sh-1", "row-sh-2", "row-sh-disabled", "row-ns-sh-1", "row-ns-sh-off"}:
+            raise AssertionError(f"city filter should keep only Shanghai rows across standard/nonstandard schemas, got {sorted(row_ids)}; meta={meta}")
+        if meta.get("value_filter_matched_rows") != 5:
+            raise AssertionError(f"expected 5 value-filter matches, got {meta}")
+        schema_entries = meta.get("table_schema", {}).get("doc-table-nonstandard") or []
+        schema_pairs = {(item.get("semantic_name"), item.get("raw_name")) for item in schema_entries}
+        if not {("city", "所属地"), ("company", "机构主体"), ("status", "是否启用")}.issubset(schema_pairs):
+            raise AssertionError(f"nonstandard table schema should map semantic columns, got {schema_entries}")
         if meta.get("query_op") != "list":
             raise AssertionError(f"city filter list query should be query_op=list, got {meta}")
 
         multi_filter_question = "列出城市=上海且状态=有效的网点清单"
         multi_contexts, multi_meta = table_mode_contexts(db, multi_filter_question, user, top_k=10)
         multi_row_ids = {str(item.get("table_row_id")) for item in multi_contexts if not item.get("is_header")}
-        if multi_row_ids != {"row-sh-1", "row-sh-2"}:
-            raise AssertionError(f"multi filters should keep only active Shanghai rows, got {sorted(multi_row_ids)}; meta={multi_meta}")
+        if multi_row_ids != {"row-sh-1", "row-sh-2", "row-ns-sh-1"}:
+            raise AssertionError(f"multi filters should keep only active Shanghai rows across schemas, got {sorted(multi_row_ids)}; meta={multi_meta}")
         if multi_meta.get("query_op") != "list":
             raise AssertionError(f"multi filter list query should be query_op=list, got {multi_meta}")
         multi_answer = build_table_answer(multi_filter_question, multi_contexts)
@@ -104,13 +138,15 @@ def main() -> None:
             raise AssertionError(f"answer should explain selected columns; answer={projection_answer}")
         if "公司=上海一号网点 | 城市=上海 | 状态=有效" not in projection_answer:
             raise AssertionError(f"preview should prioritize projected fields; answer={projection_answer}")
+        if "公司=上海新表机构 | 城市=上海 | 状态=有效" not in projection_answer:
+            raise AssertionError(f"preview should project fields through nonstandard schema; answer={projection_answer}")
 
         group_question = "有效网点按城市统计分别有多少个？"
         group_contexts, group_meta = table_mode_contexts(db, group_question, user, top_k=10)
         if group_meta.get("query_op") != "group_count":
             raise AssertionError(f"group query should be query_op=group_count, got {group_meta}")
         answer = build_table_answer(group_question, group_contexts)
-        if "按城市统计" not in answer or "上海：3 条" not in answer or "北京：1 条" not in answer:
+        if "按城市统计" not in answer or "上海：5 条" not in answer or "北京：2 条" not in answer:
             raise AssertionError(f"grouped answer missing expected city counts; meta={group_meta}; answer={answer}")
         if "查询操作：分组计数" not in answer:
             raise AssertionError(f"answer should explain group_count operation; answer={answer}")

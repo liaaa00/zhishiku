@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Document, DocumentTableRow, User, document_group_link
+from .table_schema import infer_column_semantics, semantic_value
 
 TABLE_QUERY_VERBS = (
     "多少",
@@ -243,11 +244,14 @@ def _score_document(question: str, doc: Document, sample_rows: list[DocumentTabl
     sample_text = " ".join(_row_text(row).lower() for row in sample_rows)
     row_values = []
     row_keys: set[str] = set()
+    sample_payloads: list[dict[str, str]] = []
     for row in sample_rows:
         payload = _row_json(row)
+        sample_payloads.append(payload)
         row_keys.update(payload.keys())
         row_values.extend(str(value) for value in payload.values())
     value_text = " ".join(row_values).lower()
+    semantic_map = infer_column_semantics(sample_payloads)
 
     score = 0.04
     for term in terms:
@@ -266,6 +270,14 @@ def _score_document(question: str, doc: Document, sample_rows: list[DocumentTabl
     if any(word in question for word in ("有效网点", "网点", "开设", "有效")):
         if any("当前进度" in key or "开设公司名称" in key for key in row_keys):
             score += 0.6
+        if {"city", "company"}.issubset(set(semantic_map.keys())):
+            score += 0.45
+        if "status" in semantic_map:
+            score += 0.2
+
+    if any(word in question for word in ("城市", "公司", "状态", "名单", "清单", "明细")):
+        semantic_hits = sum(1 for key in ("city", "company", "status") if key in semantic_map)
+        score += min(0.45, semantic_hits * 0.15)
 
     if any(word in question for word in ("社保", "公积金", "截止时间", "时间节点", "医保")):
         if any("截止时间" in key or "操作规则" in key or "预计缴款时间" in key for key in row_keys):
@@ -327,7 +339,10 @@ def _column_matches(key: str, alias_group: str) -> bool:
     return any(alias in str(key or "") for alias in COLUMN_ALIASES.get(alias_group, ()))
 
 
-def _first_alias_value(row: dict, alias_group: str) -> str:
+def _first_alias_value(row: dict, alias_group: str, semantic_map: dict | None = None) -> str:
+    mapped_value = semantic_value(row, alias_group, semantic_map)
+    if mapped_value:
+        return mapped_value
     for key, value in row.items():
         if _column_matches(str(key), alias_group):
             cleaned = _clean(value)
@@ -489,12 +504,13 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     group_counts: dict[str, int] = defaultdict(int)
     for item in data_rows:
         row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
+        semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
         if distinct_by:
-            value = _first_alias_value(row, distinct_by)
+            value = _first_alias_value(row, distinct_by, semantic_map)
             if value and value not in distinct_values:
                 distinct_values.append(value)
         if group_by:
-            value = _first_alias_value(row, group_by) or "未标明"
+            value = _first_alias_value(row, group_by, semantic_map) or "未标明"
             group_counts[value] += 1
 
     docs: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -593,10 +609,11 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
         lines.append(f"#### {title}" + (f" / {sheet}" if sheet else ""))
         for item in items[:20]:
             row = item.get("table_row") or {}
+            semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
             parts = []
             if select_columns:
                 for column in select_columns:
-                    value = _first_alias_value(row, column)
+                    value = _first_alias_value(row, column, semantic_map)
                     if value:
                         parts.append(f"{COLUMN_LABELS.get(column, column)}={value}")
             for key in preferred_columns:

@@ -500,6 +500,7 @@
                 <p>操作：{{ tableQueryDiagnostics.query_op || '无' }}</p>
                 <p>过滤：{{ formatTableFilters(tableQueryDiagnostics.value_filters) || '无' }}</p>
                 <p>展示：{{ formatDiagnosticList(tableQueryDiagnostics.select_columns) || '默认字段' }}</p>
+                <p>映射：{{ formatTableSchema(tableQueryDiagnostics.table_schema) || '无' }}</p>
                 <p>分组：{{ tableQueryDiagnostics.group_by || '无' }} · 去重：{{ tableQueryDiagnostics.distinct_by || '无' }}</p>
               </article>
             </div>
@@ -707,11 +708,13 @@ const tableQueryDiagnostics = computed(() => {
   const distinctBy = meta.distinct_by || ''
   const queryOp = meta.query_op || ''
   const selectColumns = Array.isArray(meta.select_columns) ? meta.select_columns : []
+  const tableSchema = meta.table_schema || {}
   return {
     value_filters: valueFilters,
     group_by: groupBy,
     distinct_by: distinctBy,
     select_columns: selectColumns,
+    table_schema: tableSchema,
     query_op: queryOp,
     matched_rows: meta.value_filter_matched_rows,
     hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy) || selectColumns.length > 0 || Boolean(queryOp),
@@ -729,6 +732,7 @@ const flattenedRetrievalMeta = computed(() => {
   delete meta.group_by
   delete meta.distinct_by
   delete meta.select_columns
+  delete meta.table_schema
   delete meta.query_op
   return meta
 })
@@ -1187,6 +1191,15 @@ function formatTableFilters(value: any) {
     .filter(Boolean)
     .slice(0, 6)
     .join('；')
+}
+
+function formatTableSchema(value: any) {
+  if (!value || typeof value !== 'object') return ''
+  const entries = Object.values(value)
+    .flatMap((items: any) => Array.isArray(items) ? items : [])
+    .map((item: any) => `${item?.semantic_name || item?.label || 'field'}=${item?.raw_name || '-'}`)
+    .filter(Boolean)
+  return [...new Set(entries)].slice(0, 8).join('；')
 }
 
 async function runSearchTest() {

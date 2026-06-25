@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from .models import User
 from .table_query import row_to_context, select_table_documents, table_rows_for_documents
+from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_value
 
 MONTH_RE = re.compile(r"(20\d{2})\s*年\s*(\d{1,2})\s*月")
 MONTH_SEP_RE = re.compile(r"(20\d{2})\s*[-/]\s*(\d{1,2})")
@@ -142,13 +143,16 @@ def _row_values_for_alias(row: dict, alias_group: str) -> list[str]:
     return values
 
 
-def _row_text_for_aliases(row: dict, alias_groups: tuple[str, ...]) -> str:
+def _row_text_for_aliases(row: dict, alias_groups: tuple[str, ...], semantic_map: dict | None = None) -> str:
     values: list[str] = []
     for group in alias_groups:
+        mapped_value = semantic_value(row, group, semantic_map)
+        if mapped_value:
+            values.append(mapped_value)
         values.extend(_row_values_for_alias(row, group))
     if not values:
         values = [_clean(value) for value in row.values() if _clean(value)]
-    return " ".join(values)
+    return " ".join(dict.fromkeys(values))
 
 
 def _literal_after_marker(compact_question: str, marker: str) -> str:
@@ -217,12 +221,13 @@ def _row_matches_value_filters(context: dict, filters: list[dict[str, str]]) -> 
     if not filters:
         return True
     row = context.get("table_row") if isinstance(context.get("table_row"), dict) else {}
+    semantic_map = context.get("table_semantic_map") if isinstance(context.get("table_semantic_map"), dict) else {}
     for item in filters:
         column = item.get("column") or ""
         value = item.get("value") or ""
         if not value:
             continue
-        focused = _row_text_for_aliases(row, (column,))
+        focused = _row_text_for_aliases(row, (column,), semantic_map)
         if value not in focused:
             return False
     return True
@@ -344,11 +349,13 @@ def _row_score(question: str, context: dict, doc_rank: int) -> float:
         return -1.0
 
     row = context.get("table_row") if isinstance(context.get("table_row"), dict) else {}
+    semantic_map = context.get("table_semantic_map") if isinstance(context.get("table_semantic_map"), dict) else {}
     sheet = _clean(context.get("sheet_name"))
     row_text = _clean(context.get("content") or "")
     row_keys = _clean(" ".join(str(key) for key in row.keys())) if row else ""
     row_values = _clean(" ".join(str(value) for value in row.values())) if row else ""
-    combined = " ".join(part for part in [sheet, row_text, row_keys, row_values] if part).lower()
+    semantic_values = _clean(" ".join(semantic_value(row, key, semantic_map) for key in ("city", "company", "status") if semantic_value(row, key, semantic_map)))
+    combined = " ".join(part for part in [sheet, row_text, row_keys, row_values, semantic_values] if part).lower()
 
     score = 0.4 - doc_rank * 0.05
     month_tokens = _month_tokens(question)
@@ -372,6 +379,11 @@ def _row_score(question: str, context: dict, doc_rank: int) -> float:
     if any(word in question for word in ("分公司", "公司名称", "开设", "名单", "哪些城市", "城市")):
         if any(word in row_keys for word in ("单位名称", "开设公司名称", "公司名称")):
             score += 1.0
+        if "city" in semantic_map or "company" in semantic_map:
+            score += 0.9
+
+    if any(word in question for word in ("状态", "有效", "启用", "停用")) and "status" in semantic_map:
+        score += 0.7
 
     return round(score, 4)
 
@@ -385,6 +397,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     per_doc_limit = max(80, (max_contexts // max(len(docs), 1)) * 3)
     scored_contexts: list[tuple[float, int, int, dict]] = []
     header_contexts_by_doc: dict[str, list[dict]] = {}
+    table_schema_by_doc: dict[str, list[dict]] = {}
     month_tokens = _month_tokens(question)
     year_tokens = _year_tokens(question)
     branch_completion_query = _is_branch_completion_query(question)
@@ -397,7 +410,18 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
 
     for doc_rank, doc in enumerate(docs):
         rows = table_rows_for_documents(db, [doc.id], include_headers=True, limit=1000)
-        row_contexts = [row_to_context(row_doc, row) for row, row_doc in rows]
+        raw_contexts = [row_to_context(row_doc, row) for row, row_doc in rows]
+        raw_data_rows = [item for item in raw_contexts if not item.get("is_header")]
+        semantic_map = infer_column_semantics(
+            [item.get("table_row") for item in raw_data_rows if isinstance(item.get("table_row"), dict)]
+        )
+        table_schema_by_doc[str(doc.id)] = semantic_columns_debug(semantic_map)
+        row_contexts = []
+        for item in raw_contexts:
+            enriched = dict(item)
+            enriched["table_semantic_map"] = semantic_map
+            enriched["table_schema"] = table_schema_by_doc[str(doc.id)]
+            row_contexts.append(enriched)
         data_rows = [item for item in row_contexts if not item.get("is_header")]
         headers = [item for item in row_contexts if item.get("is_header")]
         # If the question names a month, score the whole table first so later
@@ -456,6 +480,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "matched_documents": len(docs),
             "enabled": True,
             "document_ids": [doc.id for doc in docs],
+            "table_schema": table_schema_by_doc,
             "branch_completion_filter": branch_completion_query,
             "branch_completion_matched_rows": branch_completion_matched_rows,
             "value_filters": value_filters,
@@ -484,6 +509,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "matched_documents": len(docs),
         "enabled": True,
         "document_ids": [doc.id for doc in docs],
+        "table_schema": table_schema_by_doc,
         "branch_completion_filter": branch_completion_query,
         "branch_completion_matched_rows": branch_completion_matched_rows,
         "value_filters": value_filters,
