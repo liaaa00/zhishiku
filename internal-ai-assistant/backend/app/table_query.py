@@ -363,6 +363,19 @@ def _group_by_column(question: str) -> str:
     return ""
 
 
+def _query_operation(question: str, group_by: str = "", distinct_by: str = "") -> str:
+    compact = _compact(question)
+    if group_by:
+        return "group_count"
+    if distinct_by:
+        return "distinct_count" if any(term in compact for term in ("多少", "几个", "几家")) else "distinct_list"
+    if any(term in compact for term in ("列出", "清单", "名单", "明细", "有哪些", "哪些")):
+        return "list"
+    if any(term in compact for term in ("多少", "几个", "几家", "统计", "汇总", "总数", "数量")):
+        return "count"
+    return "retrieve"
+
+
 def _literal_after_marker(compact_question: str, marker: str) -> str:
     match = re.search(rf"{re.escape(marker)}(?:是|为|=|：|:)([^，。；;、?？]+)", compact_question)
     if not match:
@@ -447,6 +460,7 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     )
     group_by = _group_by_column(question)
     distinct_by = _distinct_column(question)
+    query_op = "branch_completion_count" if branch_completion else _query_operation(question, group_by, distinct_by)
     value_filters = [] if branch_completion else _question_value_filters(question)
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
     distinct_values: list[str] = []
@@ -510,6 +524,16 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
         lines.append(f"结论：共有 {len(data_rows)} {count_unit}命中记录。")
     lines.append("")
     lines.append("### 统计口径")
+    op_label = {
+        "branch_completion_count": "分公司完成度统计",
+        "group_count": "分组计数",
+        "distinct_count": "去重计数",
+        "distinct_list": "去重列举",
+        "list": "明细列举",
+        "count": "命中行计数",
+        "retrieve": "表格检索",
+    }.get(query_op, query_op)
+    lines.append(f"- 查询操作：{op_label}。")
     if branch_completion:
         lines.append("- 仅统计同时满足：银行账户完成、社保公积金账户完成、公积金比例有值、公司名称有值的表格数据行。")
     else:

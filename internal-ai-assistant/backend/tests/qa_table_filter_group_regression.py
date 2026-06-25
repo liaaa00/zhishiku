@@ -79,27 +79,41 @@ def main() -> None:
             raise AssertionError(f"city filter should keep only Shanghai rows, got {sorted(row_ids)}; meta={meta}")
         if meta.get("value_filter_matched_rows") != 3:
             raise AssertionError(f"expected 3 value-filter matches, got {meta}")
+        if meta.get("query_op") != "list":
+            raise AssertionError(f"city filter list query should be query_op=list, got {meta}")
 
         multi_filter_question = "列出城市=上海且状态=有效的网点清单"
         multi_contexts, multi_meta = table_mode_contexts(db, multi_filter_question, user, top_k=10)
         multi_row_ids = {str(item.get("table_row_id")) for item in multi_contexts if not item.get("is_header")}
         if multi_row_ids != {"row-sh-1", "row-sh-2"}:
             raise AssertionError(f"multi filters should keep only active Shanghai rows, got {sorted(multi_row_ids)}; meta={multi_meta}")
+        if multi_meta.get("query_op") != "list":
+            raise AssertionError(f"multi filter list query should be query_op=list, got {multi_meta}")
         multi_answer = build_table_answer(multi_filter_question, multi_contexts)
         if "过滤条件：城市 包含 上海；状态 包含 有效" not in multi_answer:
             raise AssertionError(f"answer should explain multi filters; answer={multi_answer}")
+        if "查询操作：明细列举" not in multi_answer:
+            raise AssertionError(f"answer should explain list operation; answer={multi_answer}")
 
         group_question = "有效网点按城市统计分别有多少个？"
         group_contexts, group_meta = table_mode_contexts(db, group_question, user, top_k=10)
+        if group_meta.get("query_op") != "group_count":
+            raise AssertionError(f"group query should be query_op=group_count, got {group_meta}")
         answer = build_table_answer(group_question, group_contexts)
         if "按城市统计" not in answer or "上海：3 条" not in answer or "北京：1 条" not in answer:
             raise AssertionError(f"grouped answer missing expected city counts; meta={group_meta}; answer={answer}")
+        if "查询操作：分组计数" not in answer:
+            raise AssertionError(f"answer should explain group_count operation; answer={answer}")
 
         distinct_question = "有效网点覆盖多少个城市？"
         distinct_contexts, distinct_meta = table_mode_contexts(db, distinct_question, user, top_k=10)
+        if distinct_meta.get("query_op") != "distinct_count":
+            raise AssertionError(f"distinct query should be query_op=distinct_count, got {distinct_meta}")
         distinct_answer = build_table_answer(distinct_question, distinct_contexts)
         if "共有 3 个城市" not in distinct_answer:
             raise AssertionError(f"distinct city answer should count 3 cities; meta={distinct_meta}; answer={distinct_answer}")
+        if "查询操作：去重计数" not in distinct_answer:
+            raise AssertionError(f"answer should explain distinct_count operation; answer={distinct_answer}")
 
         print("Table filter/group regression passed.")
     finally:

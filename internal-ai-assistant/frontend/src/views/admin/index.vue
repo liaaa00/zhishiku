@@ -497,6 +497,7 @@
               <article class="admin-router-diagnostic-card" :class="tableQueryDiagnostics.hasTableSignals ? '' : 'is-muted'">
                 <span>Table Query</span>
                 <strong>{{ tableQueryDiagnostics.summary }}</strong>
+                <p>操作：{{ tableQueryDiagnostics.query_op || '无' }}</p>
                 <p>过滤：{{ formatTableFilters(tableQueryDiagnostics.value_filters) || '无' }}</p>
                 <p>分组：{{ tableQueryDiagnostics.group_by || '无' }} · 去重：{{ tableQueryDiagnostics.distinct_by || '无' }}</p>
               </article>
@@ -703,13 +704,15 @@ const tableQueryDiagnostics = computed(() => {
   const valueFilters = Array.isArray(meta.value_filters) ? meta.value_filters : []
   const groupBy = meta.group_by || ''
   const distinctBy = meta.distinct_by || ''
+  const queryOp = meta.query_op || ''
   return {
     value_filters: valueFilters,
     group_by: groupBy,
     distinct_by: distinctBy,
+    query_op: queryOp,
     matched_rows: meta.value_filter_matched_rows,
-    hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy),
-    summary: valueFilters.length > 0 || groupBy || distinctBy
+    hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy) || Boolean(queryOp),
+    summary: valueFilters.length > 0 || groupBy || distinctBy || queryOp
       ? `${valueFilters.length} filters · ${meta.value_filter_matched_rows ?? '-'} rows`
       : '未识别结构化条件',
   }
@@ -722,6 +725,7 @@ const flattenedRetrievalMeta = computed(() => {
   delete meta.value_filters
   delete meta.group_by
   delete meta.distinct_by
+  delete meta.query_op
   return meta
 })
 

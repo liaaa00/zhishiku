@@ -248,6 +248,19 @@ def _distinct_column(question: str) -> str:
     return ""
 
 
+def _query_operation(question: str, group_by: str = "", distinct_by: str = "") -> str:
+    compact = _compact(question)
+    if group_by:
+        return "group_count"
+    if distinct_by:
+        return "distinct_count" if any(term in compact for term in ("多少", "几个", "几家")) else "distinct_list"
+    if any(term in compact for term in ("列出", "清单", "名单", "明细", "有哪些", "哪些")):
+        return "list"
+    if any(term in compact for term in ("多少", "几个", "几家", "统计", "汇总", "总数", "数量")):
+        return "count"
+    return "retrieve"
+
+
 def _compact(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or ""))
 
@@ -358,6 +371,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     value_filters = [] if branch_completion_query else _explicit_value_filters(question)
     group_by = _group_by_column(question)
     distinct_by = _distinct_column(question)
+    query_op = "branch_completion_count" if branch_completion_query else _query_operation(question, group_by, distinct_by)
 
     for doc_rank, doc in enumerate(docs):
         rows = table_rows_for_documents(db, [doc.id], include_headers=True, limit=1000)
@@ -426,6 +440,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "value_filter_matched_rows": value_filter_matched_rows,
             "group_by": group_by,
             "distinct_by": distinct_by,
+            "query_op": query_op,
         }
     if len(selected) < max_contexts:
         selected_doc_ids = list(dict.fromkeys(str(item.get("document_id") or "") for item in selected if item.get("document_id")))
@@ -452,4 +467,5 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "value_filter_matched_rows": value_filter_matched_rows,
         "group_by": group_by,
         "distinct_by": distinct_by,
+        "query_op": query_op,
     }
