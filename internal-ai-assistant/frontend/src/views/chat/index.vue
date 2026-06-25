@@ -1,5 +1,5 @@
 <template>
-  <div class="ai-workbench">
+  <div class="ai-workbench" @paste="handleWorkbenchPaste" @drop.prevent="handleWorkbenchDrop" @dragover.prevent>
     <aside class="ai-sidebar">
       <div class="brand-card">
         <div class="brand-logo">AI</div>
@@ -47,12 +47,21 @@
           <h1>知识库问答</h1>
         </div>
         <div class="topbar-actions">
-          <span class="status-pill">可上传文件</span>
-          <span class="status-pill dark">引用可查</span>
+          <div class="chat-search-box">
+            <input v-model="chatSearchQuery" type="search" placeholder="搜索当前会话" @keydown.enter.prevent="jumpToNextSearchMatch" />
+            <span>{{ chatSearchSummary }}</span>
+            <button type="button" :disabled="!chatSearchMatches.length" @click="jumpToPrevSearchMatch">上一个</button>
+            <button type="button" :disabled="!chatSearchMatches.length" @click="jumpToNextSearchMatch">下一个</button>
+          </div>
+          <span class="status-pill">{{ conversationStatusLabel }}</span>
+          <span class="status-pill dark">{{ currentSessionLabel }}</span>
         </div>
       </header>
 
-      <section ref="chatBodyRef" class="conversation-panel">
+      <div class="workbench-layout">
+        <section class="chat-column">
+
+          <section ref="chatBodyRef" class="conversation-panel" @scroll.passive="handleChatScroll">
         <div v-if="showHero" class="hero-panel">
           <h2>有什么可以帮忙的？</h2>
           <p>可以直接提问，也可以上传文件后让我总结、整理表格或核对引用来源。</p>
@@ -61,7 +70,12 @@
           </div>
         </div>
 
-        <article v-for="message in visibleMessages" :key="message.id" :class="['message-row', message.role]">
+        <article
+          v-for="message in visibleMessages"
+          :id="messageDomId(message)"
+          :key="message.id"
+          :class="['message-row', message.role, { 'search-hit': isSearchMatchedMessage(message), 'search-current': isCurrentSearchMessage(message) }]"
+        >
           <div class="avatar">{{ message.role === 'assistant' ? 'AI' : '我' }}</div>
           <div class="message-card">
             <div class="message-head">
@@ -108,7 +122,7 @@
                     v-for="(block, blockIndex) in getStructuredSections(message)"
                     :id="sectionDomId(message, blockIndex)"
                     :key="`${message.id}-block-${blockIndex}`"
-                    :class="['answer-section', block.kind, { 'has-title': !!block.title, collapsed: isSectionCollapsed(message, blockIndex) }]"
+                    :class="['answer-section', block.kind, { 'has-title': !!block.title, 'plain-answer': !block.title, collapsed: isSectionCollapsed(message, blockIndex) }]"
                   >
                     <header v-if="block.title" class="answer-section-head">
                       <button
@@ -159,14 +173,28 @@
 
             <div v-if="message.role === 'assistant' && message.id !== 'welcome'" class="message-actions">
               <button type="button" @click="copyText(stripInlineSourceMarkers(message.content))">复制</button>
+              <button type="button" @click="copyText(message.content)">复制 Markdown</button>
+              <button type="button" @click="copyText(answerWithSourceSummary(message))">复制含来源</button>
+              <button type="button" :disabled="sending" @click="regenerateAnswer(message)">重新生成</button>
               <button type="button" :disabled="message.feedbackSubmitted" @click="openFeedbackDialog(message, 'helpful')">有帮助</button>
               <button type="button" :disabled="message.feedbackSubmitted" @click="openFeedbackDialog(message, 'unhelpful')">不够好</button>
               <button type="button" :disabled="message.feedbackSubmitted" @click="openFeedbackDialog(message, 'user_feedback')">我要补充反馈</button>
               <span v-if="message.feedbackSubmitted">已反馈</span>
             </div>
+            <div v-else-if="message.role === 'user'" class="message-actions user-message-actions">
+              <button type="button" :disabled="sending" @click="editUserMessage(message)">编辑并重发</button>
+              <button type="button" @click="copyText(message.content)">复制问题</button>
+            </div>
           </div>
         </article>
+          <button v-if="showScrollToBottom" class="chat-scroll-bottom" type="button" @click="scrollToBottom">
+            回到最新消息
+            <span>↓</span>
+          </button>
       </section>
+        </section>
+
+      </div>
 
       <el-dialog
         v-model="feedbackDialogVisible"
@@ -220,12 +248,23 @@
         />
         <div v-if="pendingAttachments.length" class="attachment-strip" aria-label="已上传附件">
           <article v-for="item in pendingAttachments" :key="item.localId" class="attachment-chip-modern">
-            <span class="attachment-icon" aria-hidden="true">{{ attachmentIcon(item) }}</span>
+            <button
+              type="button"
+              :class="['attachment-progress-ring', item.status]"
+              :style="attachmentProgressStyle(item)"
+              :title="item.status === 'uploading' ? '取消上传' : attachmentStatusText(item)"
+              :aria-label="item.status === 'uploading' ? `取消上传 ${item.filename}` : attachmentStatusText(item)"
+              :disabled="item.status !== 'uploading'"
+              @click="cancelAttachmentUpload(item)"
+            >
+              <span>{{ attachmentProgressLabel(item) }}</span>
+            </button>
             <span class="attachment-main">
               <strong>{{ item.filename }}</strong>
               <small>{{ attachmentStatusText(item) }}</small>
             </span>
-            <button type="button" class="attachment-remove" :disabled="sending" @click="removeAttachment(item.localId)">×</button>
+            <button v-if="item.status === 'failed'" type="button" class="attachment-retry" :disabled="sending || uploadingAttachment" @click="retryAttachment(item)">重试</button>
+            <button type="button" class="attachment-remove" :disabled="sending" aria-label="移除附件" @click="removeAttachment(item.localId)">×</button>
           </article>
         </div>
         <div class="composer">
@@ -254,19 +293,23 @@
           <el-input
             v-model="question"
             type="textarea"
-            :autosize="{ minRows: 1, maxRows: 6 }"
+            :autosize="{ minRows: 1, maxRows: 10 }"
             resize="none"
-            :disabled="sending"
-            maxlength="2000"
+            maxlength="4000"
             :placeholder="pendingAttachments.length ? '描述你想基于附件了解什么…' : '输入问题，Shift + Enter 换行'"
             @keydown.enter.exact="onEnter"
           />
-          <button class="send-button" type="button" :disabled="sending || (!question.trim() && !readyAttachmentCount)" @click="send">
-            <span v-if="sending" class="spinner"></span>
+          <button
+            :class="['send-button', { stopping: sending }]"
+            type="button"
+            :disabled="stoppingGeneration || (!sending && !question.trim() && !readyAttachmentCount)"
+            @click="sending ? stopGeneration() : send()"
+          >
+            <span v-if="sending">{{ stoppingGeneration ? '停止中…' : '停止' }}</span>
             <span v-else>发送</span>
           </button>
         </div>
-        <div class="composer-note">可上传图片或文件后提问；回答会尽量基于可访问资料生成，请结合引用来源核验重要结论。</div>
+        <div class="composer-note">可点击上传、拖拽文件，或直接粘贴截图后提问；回答会尽量基于可访问资料生成，请结合引用来源核验重要结论。</div>
       </footer>
     </main>
 
@@ -302,8 +345,11 @@
         </div>
         <template v-else>
           <div class="source-filter">
+            <button :class="{ active: sourceViewMode === 'top' }" type="button" @click="setSourceViewMode('top')">
+              重点证据
+            </button>
             <button :class="{ active: sourceViewMode === 'all' }" type="button" @click="setSourceViewMode('all')">
-              全部来源
+              全部记录
             </button>
             <button
               v-if="activeSourceSectionIndex !== null"
@@ -363,7 +409,7 @@
               </span>
               <span v-else-if="source.summary_source" class="source-coverage-pill">已纳入 {{ source.chunks_used || 0 }}/{{ source.total_chunks || 0 }}</span>
             </div>
-            <p>{{ sourceSnippet(source) || (isSourcePanelDocumentOverview ? '这个文档暂时没有可展示的预览内容。' : '该来源暂未返回片段内容。') }}</p>
+            <p>{{ sourceEvidenceSummary(source) || (isSourcePanelDocumentOverview ? '这个文档暂时没有可展示的预览内容。' : '该来源暂未返回可读证据摘要。') }}</p>
             <div class="source-meta">
               <template v-if="isSourcePanelDocumentOverview">
                 {{ sourceType(source) }} · {{ documentStatusDetail(source) }}
@@ -373,7 +419,8 @@
               </template>
             </div>
             <div class="source-actions">
-              <button type="button" @click="previewSource(source)">预览内容</button>
+              <button type="button" @click="previewSource(source)">查看证据</button>
+              <button type="button" @click="copyText(sourceEvidenceSummary(source) || sourceTitle(source))">复制证据</button>
               <button type="button" @click="openSource(source)">{{ openSourceLabel(source) }}</button>
             </div>
           </div>
@@ -396,7 +443,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '../../api'
 import { useRouter } from 'vue-router'
@@ -425,6 +472,12 @@ interface SourceItem {
   summary_source?: boolean
   chunks_used?: number | string | null
   total_chunks?: number | string | null
+  retrieval_channel?: string
+  table_row?: Record<string, unknown> | null
+  sheet_name?: string
+  row_number?: number | string | null
+  location?: string
+  section_title?: string
   [key: string]: unknown
 }
 
@@ -456,6 +509,8 @@ interface ChatMessageItem {
   document_count?: number
   summary_mode?: boolean
   feedbackSubmitted?: boolean
+  requestText?: string
+  displayText?: string
 }
 
 interface SessionSummary {
@@ -479,6 +534,9 @@ interface PendingAttachment {
   status: AttachmentStatus
   message?: string
   task_id?: string
+  file?: File
+  progress?: number
+  abortController?: AbortController
 }
 
 const SPREADSHEET_EXTENSIONS = new Set(['csv', 'xlsx', 'xls', 'tsv'])
@@ -491,6 +549,8 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 const question = ref('')
 const sessionId = ref('')
 const sending = ref(false)
+const activeStreamController = ref<AbortController | null>(null)
+const stoppingGeneration = ref(false)
 const uploadingAttachment = ref(false)
 const attachmentMenuOpen = ref(false)
 const pendingAttachments = ref<PendingAttachment[]>([])
@@ -501,7 +561,7 @@ const messages = ref<ChatMessageItem[]>([welcomeMessage()])
 const sourcePanelVisible = ref(false)
 const activeSourceMessage = ref<ChatMessageItem | null>(null)
 const activeSourceSectionIndex = ref<number | null>(null)
-const sourceViewMode = ref<'all' | 'related'>('all')
+const sourceViewMode = ref<'all' | 'related' | 'top'>('top')
 const documentSearch = ref('')
 const documentStatusFilter = ref<DocumentStatusFilter>('all')
 const highlightedSourceKey = ref('')
@@ -515,6 +575,10 @@ const feedbackSubmitting = ref(false)
 const feedbackTargetMessage = ref<ChatMessageItem | null>(null)
 const feedbackTargetRating = ref<FeedbackRating>('user_feedback')
 const feedbackForm = ref({ content: '' })
+const CHAT_SCROLL_THRESHOLD = 72
+const isChatAtBottom = ref(true)
+const chatSearchQuery = ref('')
+const currentSearchMatchIndex = ref(0)
 
 const promptCards = [
   '总结我现在可读的文档',
@@ -525,9 +589,42 @@ const promptCards = [
 
 const visibleMessages = computed(() => messages.value.filter((message) => message.id !== 'welcome'))
 const showHero = computed(() => visibleMessages.value.length === 0)
+const chatSearchMatches = computed(() => {
+  const keyword = normalizeSearchText(chatSearchQuery.value).trim()
+  if (!keyword) return []
+  return visibleMessages.value.filter((message) => normalizeSearchText(message.content).includes(keyword))
+})
+const chatSearchSummary = computed(() => {
+  if (!chatSearchQuery.value.trim()) return '未搜索'
+  const total = chatSearchMatches.value.length
+  if (!total) return '0 条'
+  return `${Math.min(currentSearchMatchIndex.value + 1, total)} / ${total}`
+})
 const visibleSessions = computed(() => sessions.value.slice(0, 80))
 const readyAttachmentCount = computed(() => pendingAttachments.value.filter((item) => item.status === 'ready').length)
-const activeSources = computed(() => activeSourceMessage.value?.sources || [])
+const latestAssistantMessage = computed(() => [...visibleMessages.value].reverse().find((message) => message.role === 'assistant') || null)
+const latestAssistantSourceCount = computed(() => {
+  const message = latestAssistantMessage.value
+  if (!message) return 0
+  return isDocumentOverview(message) ? (message.document_count || message.sources.length || 0) : message.sources.length
+})
+const latestAssistantSources = computed(() => latestAssistantMessage.value?.sources || [])
+const latestAssistantSourcesPreview = computed(() => latestAssistantSources.value.slice(0, 4))
+const railAttachmentsPreview = computed(() => pendingAttachments.value.slice(0, 5))
+const conversationStatusLabel = computed(() => {
+  if (sending.value) return 'AI 正在回答'
+  if (readyAttachmentCount.value > 0) return `附件已就绪 · ${readyAttachmentCount.value}`
+  if (visibleMessages.value.length > 0) return '可继续追问'
+  return '准备提问'
+})
+const currentSessionLabel = computed(() => {
+  const current = sessions.value.find((item) => item.id === sessionId.value)
+  if (current?.title) return current.title
+  if (sessionId.value) return '已保存会话'
+  return '新会话'
+})
+const showScrollToBottom = computed(() => !showHero.value && !isChatAtBottom.value && !sourcePanelVisible.value)
+const activeSources = computed(() => sortSourcesForDisplay(activeSourceMessage.value?.sources || [], activeSourceMessage.value))
 const activeSourceSection = computed(() => {
   const message = activeSourceMessage.value
   const sectionIndex = activeSourceSectionIndex.value
@@ -538,6 +635,7 @@ const filteredSources = computed(() => {
   const message = activeSourceMessage.value
   if (!message) return []
   if (isDocumentOverview(message)) return filterDocumentSources(activeSources.value)
+  if (sourceViewMode.value === 'top') return activeSources.value.slice(0, 6)
   if (sourceViewMode.value === 'all' || activeSourceSectionIndex.value === null) return activeSources.value
   const section = activeSourceSection.value
   return section ? getRelatedSources(message, section) : []
@@ -566,9 +664,9 @@ const sourcePanelCount = computed(() => {
   const total = isDocumentOverview(message) ? (message.document_count || message.sources.length) : message.sources.length
   const visible = filteredSources.value.length
   if (sourceViewMode.value === 'related' && activeSourceSectionIndex.value !== null) {
-    return `相关来源 ${visible} 条 · 全部 ${total} ${isDocumentOverview(message) ? '份文档' : '条片段'}`
+    return `相关证据 ${visible} 条 · 全部 ${total} ${isDocumentOverview(message) ? '份文档' : '条证据'}`
   }
-  return `${total} ${isDocumentOverview(message) ? '份文档' : '条片段'}`
+  return `${total} ${isDocumentOverview(message) ? '份文档' : '条证据'}`
 })
 
 function messageId(prefix: string) {
@@ -600,6 +698,29 @@ function stripInlineSourceMarkers(value: string) {
     .replace(/\s*\[来源\s*\d+\]/g, '')
     .replace(/\s*（来源\s*\d+）/g, '')
     .replace(/\s*\(来源\s*\d+\)/g, '')
+}
+
+function sourceDisplayScore(source: SourceItem, message?: ChatMessageItem | null) {
+  const channel = String(source.retrieval_channel || '')
+  const name = String(source.filename || source.document_title || source.title || '').toLowerCase()
+  const text = normalizeSearchText([sourceTitle(source), sourceLocation(source), sourceSnippet(source), message?.content || ''].join(' '))
+  let score = 0
+  if (channel === 'table' || String(source.chunk_index ?? '').startsWith('table:')) score += 120
+  if (isSpreadsheetSource(source)) score += 60
+  if (name.includes('北仑')) score += 45
+  if (name.includes('进度表') || name.includes('派单') || name.includes('截止时间')) score += 18
+  if (text.includes('城市') || text.includes('公司名称') || text.includes('开设公司名称') || text.includes('分公司')) score += 24
+  if (source.table_row) score += 40
+  if (channel === 'pageindex') score += 6
+  if (!isSpreadsheetSource(source) && channel === 'pageindex') score -= 25
+  return score
+}
+
+function sortSourcesForDisplay(sources: SourceItem[], message?: ChatMessageItem | null) {
+  return [...sources]
+    .map((source, index) => ({ source, index, score: sourceDisplayScore(source, message) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((item) => item.source)
 }
 
 function fillAssistantMessage(message: ChatMessageItem, data: any, overwriteAnswer = false) {
@@ -635,11 +756,20 @@ function parseSseBlock(block: string): { event: string; data: any } | null {
 }
 
 async function responseErrorMessage(response: Response) {
+  const fallback = response.status >= 500
+    ? '后端服务暂时不可用，请确认 8000 后端服务已启动后再重试'
+    : (response.statusText || '请求失败')
   try {
-    const data = await response.json()
-    return data?.detail || data?.message || response.statusText || '请求失败'
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      const data = await response.json()
+      return data?.detail || data?.message || fallback
+    }
+    const text = (await response.text()).trim()
+    if (/internal server error/i.test(text)) return fallback
+    return text || fallback
   } catch {
-    return response.statusText || '请求失败'
+    return fallback
   }
 }
 
@@ -718,7 +848,12 @@ async function sendWithStream(text: string, assistantMessage: ChatMessageItem, m
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
   const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), 120000)
+  activeStreamController.value = controller
+  let timedOut = false
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, 120000)
   let response: Response
   try {
     response = await fetch('/api/chat/stream', {
@@ -728,10 +863,14 @@ async function sendWithStream(text: string, assistantMessage: ChatMessageItem, m
       signal: controller.signal,
     })
   } catch (err: any) {
-    if (err?.name === 'AbortError') throw new Error('模型运行超过 120 秒仍未返回，请稍后重试或缩小问题范围')
+    if (err?.name === 'AbortError') {
+      if (timedOut) throw new Error('模型运行超过 120 秒仍未返回，请稍后重试或缩小问题范围')
+      throw new Error('已停止生成')
+    }
     throw err
   } finally {
     window.clearTimeout(timeoutId)
+    if (activeStreamController.value === controller) activeStreamController.value = null
   }
   if (response.status === 401) {
     router.push('/login')
@@ -764,6 +903,12 @@ async function sendWithStream(text: string, assistantMessage: ChatMessageItem, m
     if (parsed && (await applyStreamEvent(parsed, assistantMessage, markDelta))) completed = true
   }
   if (!completed) throw new Error('流式响应未完整结束，请稍后重试')
+}
+
+function stopGeneration() {
+  if (!sending.value || !activeStreamController.value) return
+  stoppingGeneration.value = true
+  activeStreamController.value.abort()
 }
 
 function toggleAttachmentMenu() {
@@ -801,40 +946,111 @@ function removeAttachment(localId: string) {
   pendingAttachments.value = pendingAttachments.value.filter((item) => item.localId !== localId)
 }
 
-async function handleAttachmentInput(event: Event, pickerKind: AttachmentKind) {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files || [])
-  input.value = ''
-  if (!files.length) return
+async function uploadAttachmentItem(item: PendingAttachment) {
+  if (!item.file) return
+  item.status = 'uploading'
+  item.progress = 0
+  item.message = '上传中…'
+  const controller = new AbortController()
+  item.abortController = controller
+  const formData = new FormData()
+  formData.append('file', item.file)
+  try {
+    const { data } = await http.post('/chat/attachments', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      signal: controller.signal,
+      onUploadProgress: (event) => {
+        if (!event.total) return
+        item.progress = Math.min(99, Math.round((event.loaded / event.total) * 100))
+      },
+    })
+    item.id = data?.id || item.id
+    item.title = data?.title || item.title
+    item.filename = data?.filename || item.filename
+    item.extension = data?.kind || item.extension
+    item.task_id = data?.task_id || item.task_id
+    item.status = 'ready'
+    item.progress = 100
+    item.message = data?.message || '已上传，正在后台解析/OCR'
+  } catch (err: any) {
+    item.status = 'failed'
+    item.message = err?.code === 'ERR_CANCELED' ? '已取消上传' : (err?.response?.data?.detail || err?.message || '上传失败')
+    if (err?.code !== 'ERR_CANCELED') ElMessage.error(item.message)
+  } finally {
+    item.abortController = undefined
+  }
+}
+
+async function retryAttachment(item: PendingAttachment) {
+  if (sending.value || uploadingAttachment.value || !item.file) return
+  uploadingAttachment.value = true
+  try {
+    await uploadAttachmentItem(item)
+  } finally {
+    uploadingAttachment.value = false
+  }
+}
+
+function cancelAttachmentUpload(item: PendingAttachment) {
+  if (item.status !== 'uploading') return
+  item.abortController?.abort()
+}
+
+function attachmentProgressStyle(item: PendingAttachment) {
+  const progress = Math.max(0, Math.min(100, Math.round(item.progress || 0)))
+  return { '--attachment-progress': `${progress * 3.6}deg` }
+}
+
+function attachmentProgressLabel(item: PendingAttachment) {
+  if (item.status === 'uploading') return `${Math.max(0, Math.min(99, Math.round(item.progress || 0)))}%`
+  if (item.status === 'ready') return '✓'
+  if (item.status === 'failed') return '!'
+  return attachmentIcon(item)
+}
+
+async function addAttachmentFiles(files: File[], pickerKind: AttachmentKind = 'file') {
+  if (!files.length || sending.value) return
   attachmentMenuOpen.value = false
   uploadingAttachment.value = true
   try {
     for (const file of files) {
       const extension = fileExtension(file.name)
-      const kind: AttachmentKind = pickerKind === 'image' || IMAGE_EXTENSIONS.has(extension) ? 'image' : 'file'
+      const kind: AttachmentKind = pickerKind === 'image' || IMAGE_EXTENSIONS.has(extension) || file.type.startsWith('image/') ? 'image' : 'file'
       const localId = `att-${Date.now()}-${Math.random().toString(16).slice(2)}`
-      const item: PendingAttachment = { localId, filename: file.name, kind, extension, status: 'uploading' }
+      const item: PendingAttachment = { localId, filename: file.name, kind, extension, status: 'uploading', file }
       pendingAttachments.value.push(item)
-      const formData = new FormData()
-      formData.append('file', file)
-      try {
-        const { data } = await http.post('/chat/attachments', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
-        item.id = data?.id || item.id
-        item.title = data?.title || item.title
-        item.filename = data?.filename || item.filename
-        item.extension = data?.kind || item.extension
-        item.task_id = data?.task_id || item.task_id
-        item.status = 'ready'
-        item.message = data?.message || '已上传，正在后台解析/OCR'
-      } catch (err: any) {
-        item.status = 'failed'
-        item.message = err?.response?.data?.detail || err?.message || '上传失败'
-        ElMessage.error(item.message)
-      }
+      await uploadAttachmentItem(item)
     }
   } finally {
     uploadingAttachment.value = false
   }
+}
+
+async function handleAttachmentInput(event: Event, pickerKind: AttachmentKind) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  await addAttachmentFiles(files, pickerKind)
+}
+
+function filesFromClipboard(event: ClipboardEvent) {
+  return Array.from(event.clipboardData?.items || [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+}
+
+function handleWorkbenchPaste(event: ClipboardEvent) {
+  const files = filesFromClipboard(event)
+  if (!files.length) return
+  event.preventDefault()
+  addAttachmentFiles(files, 'image')
+}
+
+function handleWorkbenchDrop(event: DragEvent) {
+  const files = Array.from(event.dataTransfer?.files || [])
+  if (!files.length) return
+  addAttachmentFiles(files, 'file')
 }
 
 function readyAttachments() {
@@ -856,15 +1072,8 @@ function buildUserMessageContent(text: string) {
   return `${text || '请阅读并总结附件'}\n\n已上传附件：\n${lines.join('\n')}`
 }
 
-async function send() {
-  const rawText = question.value.trim()
-  if ((!rawText && !readyAttachmentCount.value) || sending.value) return
-  const text = buildAttachmentPrompt(rawText)
-  const displayText = buildUserMessageContent(rawText)
-  const sentAttachmentIds = new Set(readyAttachments().map((item) => item.localId))
-  error.value = ''
-  const userMessage: ChatMessageItem = { id: messageId('user'), role: 'user', content: displayText, sources: [], created_at: new Date().toISOString() }
-  const assistantMessage: ChatMessageItem = {
+function createAssistantMessage(): ChatMessageItem {
+  return {
     id: messageId('assistant'),
     role: 'assistant',
     content: '',
@@ -875,9 +1084,17 @@ async function send() {
     waitSeconds: 0,
     streaming: true,
   }
-  messages.value.push(userMessage, assistantMessage)
-  question.value = ''
+}
+
+async function runAssistantRequest(text: string, assistantMessage: ChatMessageItem, sentAttachmentIds = new Set<string>()) {
+  error.value = ''
   sending.value = true
+  assistantMessage.content = ''
+  assistantMessage.sources = []
+  assistantMessage.pendingText = '正在连接知识库…'
+  assistantMessage.waitStartedAt = Date.now()
+  assistantMessage.waitSeconds = 0
+  assistantMessage.streaming = true
   await scrollToBottom()
 
   let receivedDelta = false
@@ -898,21 +1115,83 @@ async function send() {
       const recovered = await recoverAssistantMessageFromSession(assistantMessage)
       if (recovered) ElMessage.info('已从服务器同步最终回答。')
     }
-    pendingAttachments.value = pendingAttachments.value.filter((item) => !sentAttachmentIds.has(item.localId))
+    if (sentAttachmentIds.size) pendingAttachments.value = pendingAttachments.value.filter((item) => !sentAttachmentIds.has(item.localId))
     await loadSessions()
   } catch (err: any) {
     const detail = err?.response?.data?.detail || err?.message || '发送失败'
-    error.value = detail
+    const stoppedByUser = detail === '已停止生成'
+    error.value = stoppedByUser ? '' : detail
     assistantMessage.streaming = false
     assistantMessage.pendingText = ''
-    if (!assistantMessage.content) assistantMessage.content = `发送失败：${detail}`
-    else assistantMessage.content += `\n\n发送中断：${detail}`
-    ElMessage.error(detail)
+    if (stoppedByUser) {
+      assistantMessage.content = assistantMessage.content
+        ? `${assistantMessage.content}\n\n（已停止生成）`
+        : '已停止生成。'
+      ElMessage.info('已停止生成')
+    } else {
+      if (!assistantMessage.content) assistantMessage.content = `发送失败：${detail}`
+      else assistantMessage.content += `\n\n发送中断：${detail}`
+      ElMessage.error(detail)
+    }
   } finally {
     window.clearInterval(waitTimer)
     sending.value = false
+    stoppingGeneration.value = false
+    activeStreamController.value = null
     await scrollToBottom()
   }
+}
+
+async function send() {
+  const rawText = question.value.trim()
+  if ((!rawText && !readyAttachmentCount.value) || sending.value) return
+  const text = buildAttachmentPrompt(rawText)
+  const displayText = buildUserMessageContent(rawText)
+  const sentAttachmentIds = new Set(readyAttachments().map((item) => item.localId))
+  const userMessage: ChatMessageItem = {
+    id: messageId('user'),
+    role: 'user',
+    content: displayText,
+    sources: [],
+    created_at: new Date().toISOString(),
+    requestText: text,
+    displayText,
+  }
+  const assistantMessage = createAssistantMessage()
+  assistantMessage.requestText = text
+  messages.value.push(userMessage, assistantMessage)
+  question.value = ''
+  await runAssistantRequest(text, assistantMessage, sentAttachmentIds)
+}
+
+function findPreviousUserMessage(message: ChatMessageItem) {
+  const index = messages.value.findIndex((item) => item.id === message.id)
+  if (index <= 0) return null
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (messages.value[i]?.role === 'user') return messages.value[i]
+  }
+  return null
+}
+
+async function regenerateAnswer(message: ChatMessageItem) {
+  if (sending.value) return
+  const userMessage = findPreviousUserMessage(message)
+  const text = message.requestText || userMessage?.requestText || userMessage?.content || ''
+  if (!text.trim()) {
+    ElMessage.warning('没有找到可重新生成的问题')
+    return
+  }
+  message.requestText = text
+  await runAssistantRequest(text, message)
+}
+
+function editUserMessage(message: ChatMessageItem) {
+  if (sending.value) return
+  question.value = message.requestText || message.content
+  const index = messages.value.findIndex((item) => item.id === message.id)
+  if (index >= 0) messages.value = messages.value.slice(0, index)
+  closeSourcePanel()
+  nextTick().then(scrollToBottom)
 }
 
 function askPrompt(text: string) {
@@ -978,11 +1257,26 @@ async function openSession(id: string) {
       citation_mode: item.citation_mode,
       document_count: Number(item.document_count || 0),
       summary_mode: Boolean(item.summary_mode),
+      requestText: item.content || '',
+      displayText: item.content || '',
     }))
     if (!messages.value.length) messages.value = [welcomeMessage()]
     await scrollToBottom()
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || '加载历史会话失败')
+  }
+}
+
+async function deleteSession(id: string) {
+  if (!id) return
+  if (!window.confirm('确定删除这条会话历史吗？')) return
+  try {
+    await http.delete(`/chat/sessions/${id}`)
+    sessions.value = sessions.value.filter((item) => item.id !== id)
+    if (sessionId.value === id) newConversation()
+    ElMessage.success('会话已删除')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '删除会话失败')
   }
 }
 
@@ -1019,10 +1313,21 @@ function logout() {
   router.push('/login')
 }
 
+function updateChatScrollState() {
+  const el = chatBodyRef.value
+  if (!el) return
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  isChatAtBottom.value = distance <= CHAT_SCROLL_THRESHOLD
+}
+
+function handleChatScroll() {
+  updateChatScrollState()
+}
+
 function openSourcePanel(message: ChatMessageItem, sectionIndex: number | null = null) {
   activeSourceMessage.value = message
   activeSourceSectionIndex.value = sectionIndex
-  sourceViewMode.value = sectionIndex === null ? 'all' : 'related'
+  sourceViewMode.value = sectionIndex === null ? 'top' : 'related'
   documentSearch.value = ''
   documentStatusFilter.value = 'all'
   sourcePanelVisible.value = true
@@ -1046,7 +1351,7 @@ function closeSourcePanel() {
   clearPreview()
 }
 
-function setSourceViewMode(mode: 'all' | 'related') {
+function setSourceViewMode(mode: 'all' | 'related' | 'top') {
   sourceViewMode.value = mode
 }
 
@@ -1056,8 +1361,12 @@ function clearPreview() {
 }
 
 function previewSource(source: SourceItem) {
-  previewSourceTitle.value = sourceTitle(source)
-  previewText.value = sourceSnippet(source) || '暂无可预览内容。'
+  previewSourceTitle.value = `${sourceTitle(source)} · ${sourceLocation(source)}`
+  const summary = sourceEvidenceSummary(source)
+  const raw = sourceSnippet(source)
+  previewText.value = summary
+    ? `证据摘要：\n${summary}${raw && raw !== summary ? `\n\n原始命中：\n${raw}` : ''}`
+    : '暂无可预览内容。'
 }
 
 function sourceApiPath(url: string) {
@@ -1270,22 +1579,117 @@ function formatSpreadsheetSnippet(text: string) {
     .join('\n')
 }
 
+function tableRowFromSource(source: SourceItem) {
+  const row = source.table_row
+  if (row && typeof row === 'object' && !Array.isArray(row)) return row as Record<string, unknown>
+  return null
+}
+
+function sourceEvidenceSummary(source: SourceItem) {
+  const row = tableRowFromSource(source)
+  if (row) {
+    const priority = [
+      '省份',
+      '城市',
+      '单位名称',
+      '开设公司名称',
+      '当前进度-1.银行账户是否开具完成',
+      '当前进度-2.社保公积金账户是否开具完成',
+      '当前进度-3.公积金比例',
+      '当前进度-4.开设公司名称',
+      '操作规则-社保',
+      '操作规则-医保',
+      '操作规则-公积金',
+      '截止时间-社保',
+      '截止时间-医保',
+      '截止时间-公积金',
+      '预计缴款时间-社保',
+      '预计缴款时间-公积金',
+      '备注',
+    ]
+    const parts = priority
+      .map((key) => {
+        const value = String(row[key] || '').trim()
+        return value ? `${key}：${value}` : ''
+      })
+      .filter(Boolean)
+    if (parts.length) return parts.slice(0, 8).join(' · ')
+  }
+  return sourceSnippet(source)
+}
+
 function sourceSnippet(source: SourceItem) {
   const raw = String(source.content || source.snippet || source.excerpt || '')
   return isSpreadsheetSource(source) ? formatSpreadsheetSnippet(raw) : raw
 }
 
 function sourceType(source: SourceItem) {
+  const channel = String(source.retrieval_channel || '')
+  if (channel === 'table' || String(source.chunk_index ?? '').startsWith('table:')) return '表格行证据'
   const type = String(source.source_type || '')
   if (type.startsWith('chat_')) return '个人附件'
+  if (isSpreadsheetSource(source)) return '表格文档'
   return type || '知识库文档'
 }
 
 function sourceLocation(source: SourceItem) {
-  if (source.summary_source) return `已纳入片段 ${source.chunks_used || 0}/${source.total_chunks || 0}`
+  if (source.summary_source) return `已纳入 ${source.chunks_used || 0}/${source.total_chunks || 0}`
+  const channel = String(source.retrieval_channel || '')
+  const chunkIndex = String(source.chunk_index ?? '')
+  const sheet = String(source.sheet_name || source.section_title || '').trim()
+  const rowNumber = source.row_number || source.page_number
+  if (channel === 'table' || chunkIndex.startsWith('table:')) {
+    const parts = []
+    if (sheet) parts.push(sheet)
+    if (rowNumber === 0 || rowNumber) parts.push(`第 ${rowNumber} 行`)
+    return parts.length ? parts.join(' · ') : '表格行'
+  }
+  if (source.location) {
+    const readable = String(source.location)
+      .replace(/\bchunk\s*[:#]?\s*[^|]+/gi, '')
+      .replace(/\s*\|\s*/g, ' · ')
+      .replace(/\s+/g, ' ')
+      .replace(/^·\s*|\s*·$/g, '')
+      .trim()
+    if (readable) return readable
+  }
   if (source.page_number === 0 || source.page_number) return `第 ${source.page_number} 页`
-  if (source.chunk_index === 0 || source.chunk_index) return `片段 ${source.chunk_index}`
-  return '位置未知'
+  if (isSpreadsheetSource(source)) return '表格命中'
+  return '文档命中'
+}
+
+function messageDomId(message: ChatMessageItem) {
+  return `chat-message-${message.id}`
+}
+
+function isSearchMatchedMessage(message: ChatMessageItem) {
+  return chatSearchMatches.value.some((item) => item.id === message.id)
+}
+
+function isCurrentSearchMessage(message: ChatMessageItem) {
+  const current = chatSearchMatches.value[currentSearchMatchIndex.value]
+  return Boolean(current && current.id === message.id)
+}
+
+async function scrollToSearchMatch() {
+  const match = chatSearchMatches.value[currentSearchMatchIndex.value]
+  if (!match) return
+  await nextTick()
+  document.getElementById(messageDomId(match))?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+function jumpToNextSearchMatch() {
+  const total = chatSearchMatches.value.length
+  if (!total) return
+  currentSearchMatchIndex.value = (currentSearchMatchIndex.value + 1) % total
+  scrollToSearchMatch()
+}
+
+function jumpToPrevSearchMatch() {
+  const total = chatSearchMatches.value.length
+  if (!total) return
+  currentSearchMatchIndex.value = (currentSearchMatchIndex.value - 1 + total) % total
+  scrollToSearchMatch()
 }
 
 function sectionDomId(message: ChatMessageItem, index: number) {
@@ -1393,6 +1797,15 @@ function focusFirstHighlightedSource(message: ChatMessageItem, sectionIndex: num
 
 function sourceTriggerLabel(message: ChatMessageItem) {
   return isDocumentOverview(message) ? '查看文档清单' : '查看来源'
+}
+
+function answerWithSourceSummary(message: ChatMessageItem) {
+  const answer = stripInlineSourceMarkers(message.content || '')
+  if (!message.sources.length) return answer
+  const sourceLines = message.sources.slice(0, 8).map((source, index) => {
+    return `${index + 1}. ${sourceTitle(source)}（${sourceLocation(source)}）`
+  })
+  return `${answer}\n\n引用来源：\n${sourceLines.join('\n')}`
 }
 
 function formatTime(value?: string) {
@@ -1538,9 +1951,33 @@ function classifyStructuredSection(title: string, body: string, index: number, t
   return { kind: titleText ? ('section' as StructuredSectionKind) : ('lead' as StructuredSectionKind), badge: titleText ? '分节' : '回答' }
 }
 
+function shouldUseCompactAnswer(content: string) {
+  const normalized = String(content || '').replace(/\r\n/g, '\n').trim()
+  if (!normalized) return true
+  const lines = normalized.split('\n').filter((line) => line.trim())
+  const headingCount = lines.filter((line) => /^(#{1,4})\s+/.test(line.trim())).length
+  const labeledCount = lines.filter((line) => /^(结论|总结|摘要|概览|总览|风险|注意|提醒|建议|下一步|行动)[：:]\s+/.test(line.trim())).length
+  const listCount = lines.filter((line) => /^\s*(?:[-*]|\d+\.)\s+/.test(line)).length
+
+  if (headingCount >= 2) return false
+  if (headingCount >= 1 && normalized.length >= 260) return false
+  if (labeledCount >= 2 && normalized.length >= 360) return false
+  if (normalized.length >= 520 && listCount >= 3) return false
+  return normalized.length < 520
+}
+
 function buildStructuredSections(content: string): StructuredSection[] {
   const normalized = String(content || '').replace(/\r\n/g, '\n').trim()
   if (!normalized) return []
+  if (shouldUseCompactAnswer(normalized)) {
+    return [{
+      title: '',
+      html: renderMarkdown(normalized),
+      plainText: normalized,
+      kind: 'lead' as StructuredSectionKind,
+      badge: '回答',
+    }]
+  }
 
   const blocks: Array<{ title: string; lines: string[] }> = []
   let current = { title: '', lines: [] as string[] }
@@ -1559,7 +1996,7 @@ function buildStructuredSections(content: string): StructuredSection[] {
       continue
     }
 
-    const labeledMatch = /^(结论|总结|摘要|概览|总览|风险|注意|提醒|建议|下一步|行动|说明|引用来源|可读文档范围)[：:]\s*(.*)$/.exec(trimmed)
+    const labeledMatch = /^(结论|总结|摘要|概览|总览|风险|注意|提醒|建议|下一步|行动)[：:]\s*(.*)$/.exec(trimmed)
     if (labeledMatch) {
       pushCurrent()
       current = { title: labeledMatch[1], lines: labeledMatch[2] ? [labeledMatch[2]] : [] }
@@ -1570,6 +2007,16 @@ function buildStructuredSections(content: string): StructuredSection[] {
   }
 
   pushCurrent()
+
+  if (blocks.length <= 1) {
+    return [{
+      title: '',
+      html: renderMarkdown(normalized),
+      plainText: normalized,
+      kind: 'lead' as StructuredSectionKind,
+      badge: '回答',
+    }]
+  }
 
   return blocks.map((block, index) => {
     const body = block.lines.join('\n').trim() || block.title
@@ -1602,8 +2049,16 @@ function getStructuredOutline(message: ChatMessageItem): StructuredOutlineItem[]
 
 async function scrollToBottom() {
   await nextTick()
-  if (chatBodyRef.value) chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
+  if (chatBodyRef.value) {
+    chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
+    updateChatScrollState()
+  }
 }
+
+watch(chatSearchQuery, () => {
+  currentSearchMatchIndex.value = 0
+  if (chatSearchMatches.value.length) scrollToSearchMatch()
+})
 
 onMounted(() => {
   loadCurrentUser()

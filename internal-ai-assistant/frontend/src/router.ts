@@ -3,30 +3,37 @@ import LoginView from './views/login/index.vue'
 import ChatView from './views/chat/index.vue'
 import AdminView from './views/admin/index.vue'
 
+function currentUserIsAdmin() {
+  try {
+    const rawUser = localStorage.getItem('user')
+    if (!rawUser) return false
+    const user = JSON.parse(rawUser)
+    return Boolean(user?.is_admin)
+  } catch {
+    return false
+  }
+}
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/chat' },
-    { path: '/login', component: LoginView },
-    { path: '/chat', component: ChatView, meta: { authOnly: true } },
-    { path: '/admin', component: AdminView, meta: { adminOnly: true } },
+    { path: '/login', component: LoginView, meta: { requiresAuth: false } },
+    { path: '/chat', component: ChatView, meta: { requiresAuth: true } },
+    { path: '/admin', component: AdminView, meta: { requiresAuth: true, requiresAdmin: true } },
   ],
 })
 
 router.beforeEach((to) => {
   const token = localStorage.getItem('token')
-  if (to.meta.authOnly && !token) return '/login'
-  if (!to.meta.adminOnly) return true
-  if (!token) return '/login'
+  const requiresAuth = Boolean(to.meta.requiresAuth)
+  const requiresAdmin = Boolean(to.meta.requiresAdmin)
 
-  try {
-    const rawUser = localStorage.getItem('user')
-    if (!rawUser) return '/chat'
-    const user = JSON.parse(rawUser)
-    return user?.is_admin ? true : '/chat'
-  } catch {
-    return '/chat'
-  }
+  if (to.path === '/login' && token) return '/chat'
+  if (requiresAuth && !token) return '/login'
+  if (requiresAdmin && !currentUserIsAdmin()) return '/chat'
+
+  return true
 })
 
 export default router
