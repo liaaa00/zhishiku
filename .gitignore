@@ -21,6 +21,24 @@ dist/
 # Runtime logs and local launch artifacts
 internal-ai-assistant/.runlogs/
 internal-ai-assistant/.runtime/
+internal-ai-assistant/run_logs/
+internal-ai-assistant/backend/logs/
+*.log
+
+# Local recovery/debug scratch files
+history_extracts/
+analyze_*.py
+extract_*.py
+inspect_*_log.py
+list_relevant_log_calls.py
+prepare_restore_files.py
+reconstruct_*.py
+scan_*_logs.py
+summarize_*_messages.py
+*_output.txt
+relevant_log_calls.txt
+internal-ai-assistant/tmp_*.py
+internal-ai-assistant/backend/tmp_*.py
 
 # Runtime data and uploads
 internal-ai-assistant/backend/data/
