@@ -2,6 +2,138 @@
 
 > 用途：记录 AI 修改过什么、为什么改、验证过什么、有哪些遗留风险。新对话或长时间后继续时必须先读。
 
+## 2026-06-25：历史未提交改动梳理与构建验证
+
+### 用户要求
+
+- 用户要求先梳理项目里已有大量历史未提交改动，再继续构建。
+
+### 梳理结论
+
+- 当前分支：`master`，HEAD：`6449f9b feat(frontend): improve admin groups and users`。
+- 工作区没有 staged 内容。
+- 已跟踪修改主要分为：
+  - 后端检索/RAG/表格结构化：`retrieval.py`、`rag/`、`table_query.py`、`table_retrieval.py`、`table_rows.py`、`structured_digest.py` 等。
+  - 后台任务/模型配置/文档管理：`admin_model.py`、`admin_tasks.py`、`admin_documents.py`、`settings_service.py`、`task_service.py` 等。
+  - 前端管理台和聊天页大改：`frontend/src/views/admin/index.vue`、`frontend/src/views/chat/index.vue`、`frontend/src/style.css`、`frontend/src/chat-gpt-layout.css` 等。
+  - 文档记录：`docs/AI修改记录.md`、`docs/specs/IMPLEMENTATION_PLAN.md`、`docs/specs/progress.txt`。
+- 未跟踪文件经初步分类：
+  - 应保留/待提交候选：`backend/app/rag/`、`backend/app/table_*.py`、`backend/tests/qa_*.py`、`frontend/src/chat-gpt-layout.css`。
+  - 本地产物/调试产物：`history_extracts/`、根目录 `extract_*.py` / `reconstruct_*.py` / `analyze_*.py`、`run_logs/`、`backend/logs/`、`tmp_*.py` 等。
+  - 待用户确认：根目录两个中文审计报告 Markdown 文件。
+
+### 本次修改范围
+
+- 修改 `.gitignore`：忽略运行日志、历史恢复/分析脚本、临时调试脚本、输出文本等本地产物。
+- 修复 `frontend/src/views/admin/index.vue` 一处 trailing whitespace。
+- 未删除任何本地文件，未提交，未回退。
+
+### 验证结果
+
+- `git diff --check`：通过，仅剩 Git 对 LF/CRLF 的提示。
+- `python -m compileall app`：通过。
+- `python tests/qa_table_routing_regression.py`：通过。
+- `python tests/qa_table_branch_completion_regression.py`：通过。
+- `python tests/qa_intent_ranking_regression.py`：通过。
+- `npm run build`：通过；仅有 Vite/Rollup 既有的大 chunk 和注释提示。
+
+### 补充回归（继续整理时追加）
+
+- `python tests/qa_agentic_rag_regression.py`：通过。
+- `python tests/qa_priority_2_4_regression.py`：通过。
+- `python tests/qa_final_regression.py`：通过。
+- `python tests/qa_api_validation.py`：通过，20 项检查通过。
+- `python tests/qa_final_regression_other_rating.py`：通过。
+- `python tests/qa_retrieval_eval_runner.py --cases tests/retrieval_eval_cases.json`：单独运行通过，4/4 passed。
+- 说明：曾并行启动两个 `qa_retrieval_eval_runner` 进程，因共用同一个临时 SQLite fixture DB 出现一次 `groups.name` 唯一约束冲突；单独重跑通过，判断为并行测试竞争，不是代码回归。
+
+### 最终整理检查（继续整理时追加）
+
+- 逐包检查后建议将本轮功能代码拆为：文档/忽略规则、后端 RAG+表格+schema+管理接口、前端、测试 4 类；后端内部强依赖较多，不建议把 `rag/` 与 `models.py`/`document_index.py`/`table_rows.py` 强行拆开提交。
+- 新增 import 依赖检查：`missing_count 0`。
+- 敏感信息扫描：未发现真实 API Key；命中的密码/token 均为测试 fixture 或配置字段名。
+- 根目录两个 2026-06-03 审计报告 `范围审查报告-紧急止损任务.md`、`二次复核报告-止损任务通过.md` 未被项目引用，建议不纳入本轮功能提交，是否归档需用户确认。
+- 再次验证：`python -m compileall app` 通过；`npm run build` 通过，仅保留 Vite/Rollup 体积和注释 warning。
+
+### 下一步建议
+
+- 提交前建议分批整理：
+  1. `.gitignore` + 修改记录；
+  2. 后端表格/RAG/检索能力；
+  3. 后端模型配置/任务/文档管理；
+  4. 前端管理台与聊天页；
+  5. 测试用例；
+  6. 根目录两个中文审计报告是否保留，需用户确认。
+
+## 2026-06-25：检索诊断展示与表格统计答案增强
+
+### 用户要求
+
+- 用户要求继续下一步，在第一阶段检索路由落地后继续增强可观测性和表格统计回答能力。
+
+### 本次修改范围
+
+- 后端 `backend/app/routers/chat_api.py`：
+  - `/api/admin/search-test` 顶层返回 `query_analysis`、`retrieval_route`、`evidence_check`，便于后台诊断面板直接展示。
+  - 普通 `/api/chat` 和流式 `/api/chat/stream` 在命中 `table` 路由时，优先使用本地确定性 `build_table_answer()` 生成表格统计答案，不再先交给大模型泛化。
+  - 在 `retrieval_meta.answer_composer` 标记 `table_local` 或 `llm_grounded`。
+- 后端 `backend/app/table_query.py`：
+  - 增强 `build_table_answer()`，输出结论、统计口径、来源文件/Sheet、命中列、命中行预览。
+  - 统计时排除表头行；对“银行账户 + 社保公积金账户 + 公积金比例 + 公司名称全部完成”类问题明确统计口径。
+- 前端 `frontend/src/views/admin/index.vue`、`frontend/src/style.css`：
+  - 后台“检索诊断”新增 Query Analysis / Retrieval Route / Evidence Check 三个诊断卡片。
+  - 检索 meta 展示过滤掉嵌套对象，避免显示 `[object Object]`。
+
+### 验证结果
+
+- `python -m compileall app`：通过。
+- `python tests/qa_table_routing_regression.py`：通过。
+- `python tests/qa_table_branch_completion_regression.py`：通过。
+- `python tests/qa_intent_ranking_regression.py`：通过。
+- `npm run build`：通过；仅有 Vite/Rollup 既有的大 chunk 和注释提示。
+- 本地函数自检：`build_table_answer()` 对 1 条数据行 + 1 条表头行输出 `共有 1 家`，且包含统计口径、Sheet 来源和命中列。
+
+### 注意与下一步
+
+- 本轮仍未操作 `5173`，未重建数据库。
+- 当前仓库存在大量历史未提交差异，提交前需要再次按文件范围审查。
+- 下一步可继续做表格列名别名匹配、条件解析、count/list/group by，以及在真实数据上跑后台检索诊断截图核验。
+
+## 2026-06-25：第一阶段检索路由层落地
+
+### 用户要求
+
+- 用户确认按“第一阶段代码结构和文件拆分方案”推进，把知识库问答从单一检索逐步升级为检索路由系统。
+- 本阶段目标是最小侵入：先拆出问题分析、路由选择、专用检索器封装、证据校验，不重建数据库、不推翻已有 PageIndex/表格检索能力。
+
+### 本次修改范围
+
+- 新增 `backend/app/rag/`：
+  - `schemas.py`：统一 `QueryAnalysis`、`RetrievalRoute`、`RetrievalResult`、`EvidenceCheck` 数据结构。
+  - `query_analyzer.py`：规则版问题分析器，识别普通文档问答、表格统计/筛选、元数据查询、汇总查询。
+  - `retrieval_router.py`：根据分析结果选择 `text/table/metadata/summary` 路由。
+  - `evidence_checker.py`：输出证据是否充分、来源数、文档数、缺失项和警告。
+  - `pipeline.py`：串联分析、路由、检索、证据校验，并保持旧检索返回格式兼容。
+  - `retrievers/`：新增 `text_retriever.py`、`table_retriever.py`、`metadata_retriever.py`、`summary_retriever.py` 封装现有能力。
+- 修改 `backend/app/retrieval.py`：
+  - `adaptive_retrieve_contexts()` 变为第一阶段路由入口，委托 `app.rag.pipeline.retrieve_contexts()`。
+  - 原自适应文本检索主体保留为 `_adaptive_text_retrieve_contexts()`，供文本通道复用。
+  - 表格通道改由 `rag/retrievers/table_retriever.py` 封装原 `table_mode_contexts()`，避免统计问题回落到普通语义检索。
+
+### 验证结果
+
+- `python -m compileall app`：通过。
+- `python tests/qa_table_routing_regression.py`：通过，输出 `Table routing regression passed.`。
+- `python tests/qa_table_branch_completion_regression.py`：通过，输出 `Table branch completion regression passed.`。
+- `python tests/qa_intent_ranking_regression.py`：通过，输出 `Intent-aware retrieval ranking regression passed.`。
+- 规则路由自检通过：表格统计问题 → `table`；电子劳动合同流程问题 → `text`；最新文件问题 → `metadata`；可读文档总结问题 → `summary`。
+
+### 注意与下一步
+
+- 本轮未改前端、未重启或操作 `5173`。
+- 当前仓库原本已有大量未提交/未跟踪改动；本轮新增代码应与既有改动一起谨慎审查后再提交。
+- 下一步可继续做：将 `/api/admin/search-test` 的诊断面板展示 `query_analysis`、`retrieval_route`、`evidence_check`，并逐步增强表格列别名、条件解析、count/list/group by。
+
 ## 2026-06-08：建立项目修改安全机制
 
 ### 背景
@@ -771,3 +903,386 @@ ValueError: invalid literal for int() with base 10: 'pageindex:0000'
   - 搜索 `admin` 后只显示对应员工。
   - 控制台无新的 warning/error。
 - 未操作 `5173`。
+
+---
+
+## 2026-06-09：后台快捷栏与结构树右侧抽屉优化
+
+### 用户要求
+
+- 用户要求继续细化后台管理页界面。
+- 继续保持 ChatGPT-like 的浅色极简风格，不做企业蓝和装饰性设计。
+- 不碰 `5173`。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 后台页顶部新增轻量快捷栏，可刷新数据并快速切换 `岗位组 / 员工 / 文档与权限`。
+  - 快捷栏显示当前 Tab 高亮和最后刷新时间。
+  - `刷新数据` 按钮增加 `刷新中…` 状态，避免重复点击。
+  - 文档 PageIndex `结构树` 从居中弹窗改为右侧抽屉，和聊天页右侧查看体验保持一致。
+  - 打开结构树时显示当前文档名称、文件名和索引状态。
+- 修改 `frontend/src/style.css`：
+  - 增加后台快捷栏、禁用态、当前 Tab 高亮、粘性停靠样式。
+  - 增加 PageIndex 右侧抽屉、文档元信息卡和结构树列表样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`。
+
+---
+
+## 2026-06-09：后台文档与权限卡片化优化
+
+### 用户要求
+
+- 用户要求继续下一步细化界面。
+- 本步聚焦后台 `文档与权限`，继续靠近 ChatGPT 网页端的轻量信息列表风格。
+- 不碰 `5173`。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 将 `文档与权限` 区域从传统 `el-table` 表格改为文档卡片式信息列表。
+  - 每个文档卡片左侧显示文档标题、文件名、说明、ID、阶段、片段数、可检索状态和高级索引状态。
+  - 每个文档卡片右侧保留岗位组权限选择、查看结构树和重建高级索引操作。
+- 修改 `frontend/src/style.css`：
+  - 新增文档卡片列表、左右信息布局、权限操作侧栏、hover 状态和窄屏单列响应式样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`。
+
+---
+
+## 2026-06-09：补回后台修改索引片段功能
+
+### 用户反馈
+
+- 用户指出我在卡片化后台文档列表时遗漏了“可以修改索引”的功能。
+- 经检查，后端已有 `GET /api/admin/documents/{document_id}/chunks` 和 `PUT /api/admin/documents/{document_id}/chunks/{chunk_id}` 接口，因此本次只恢复前端入口和编辑交互。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 在每个文档卡片操作区补回 `修改索引片段` 按钮。
+  - 新增右侧抽屉用于加载、查看和编辑文档普通索引片段。
+  - 每个片段显示片段序号、页码、可编辑文本框和字数。
+  - 保存片段时调用已有后端接口更新文本和向量；后端会在 PageIndex 已构建时提示重建高级索引。
+- 修改 `frontend/src/style.css`：
+  - 新增片段编辑抽屉中的片段卡片、标题、文本框操作区样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`。
+
+---
+
+## 2026-06-09：后台模型配置管理与测试连接
+
+### 用户要求
+
+- 用户要求后台还要有模型配置管理，并最好支持测试连接。
+- 经检查，后端已有 `GET /api/admin/model`、`PUT /api/admin/model`、`POST /api/admin/model/test`，因此本次只补前端管理入口。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 新增 `模型配置` Tab，并加入顶部快捷栏入口。
+  - 后台统计卡新增模型配置状态，显示 API Key 是否已保存。
+  - 模型配置页支持编辑 `Base URL`、`模型名称`、`API Key`。
+  - 支持保存配置；API Key 留空时保留后端已保存密钥。
+  - 支持点击 `测试连接` 调用后端测试接口，并显示成功/失败结果。
+- 修改 `frontend/src/style.css`：
+  - 新增模型配置表单卡、当前配置卡、状态徽标、测试结果提示和响应式布局样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+---
+
+## 2026-06-09：后台任务中心第一步
+
+### 用户要求
+
+- 用户同意按优化建议继续，第一步从后台任务中心开始。
+- 目标是统一查看文档解析、重新解析、PageIndex 构建等后台任务状态，并支持失败/完成任务重新入队。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 新增 `任务中心` Tab，并加入顶部快捷栏入口。
+  - 后台统计卡新增后台任务数量。
+  - 接入已有 `GET /api/admin/tasks` 接口加载任务列表。
+  - 接入已有 `POST /api/admin/tasks/{task_id}/retry` 接口重试任务。
+  - 支持任务状态筛选：`全部 / 等待中 / 执行中 / 已完成 / 失败`。
+  - 任务卡片展示任务类型、文档、状态、尝试次数、创建/开始/结束时间和错误信息。
+- 修改 `frontend/src/style.css`：
+  - 新增任务中心卡片、状态徽标、错误提示、响应式布局样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+---
+
+## 2026-06-09：后台文档卡片补全文档操作
+
+### 用户要求
+
+- 用户要求继续下一步细化界面。
+- 本步聚焦后台 `文档与权限` 的文档卡片操作补全，让管理员能直接打开原文、重新解析和删除文档。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 每个文档卡片新增 `打开原文`，使用前端 `http` 客户端带鉴权请求 `/api/documents/{id}/view`，支持浏览器可预览格式直接打开，Office 等格式自动下载。
+  - 新增 `重新解析` 操作，调用 `POST /api/admin/documents/{id}/reparse`，执行前弹出确认，成功后刷新文档和任务状态。
+  - 新增 `删除文档` 操作，调用 `DELETE /api/admin/documents/{id}`，执行前弹出危险确认，成功后刷新后台数据。
+  - 增加打开中、解析中、删除中状态，避免重复点击。
+- 修改 `frontend/src/style.css`：
+  - 优化文档卡片操作区换行与按钮间距。
+  - 增加低调但明确的删除按钮危险态样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+---
+
+## 2026-06-09：后台上传与解析体验细化
+
+### 用户要求
+
+- 用户继续要求后台管理页细化，重点是文档上传与解析体验。
+- 希望上传后能更清楚看到已入队、解析中、可检索、失败原因，并提供去任务中心查看入口。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 上传按钮增加加载态，避免重复提交。
+  - 上传成功后在页面插入“最近上传”结果卡，展示文档名、文件名、状态、任务 ID、可检索状态和失败原因。
+  - 上传成功后自动滚动定位到最新文档卡，方便立即查看解析状态。
+  - 上传后提供 `去任务中心查看` 和 `刷新状态` 两个轻量入口。
+- 修改 `frontend/src/style.css`：
+  - 新增上传结果卡、状态头、状态说明、错误提示和动作区样式。
+  - 新增最新上传文档卡高亮样式，便于快速定位。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+---
+
+## 2026-06-16：前端 401 全局拦截
+
+### 用户要求
+
+- 用户确认继续执行下一步，本轮按计划推进“步骤 2.1：添加前端 401 全局拦截”。
+
+### 本次修改范围
+
+- 修改 `frontend/src/api.ts`：
+  - 在 axios response interceptor 中拦截 `401` 响应。
+  - 清理 `localStorage` 中的 `token` 和 `user`。
+  - 当前路径不是 `/login` 时跳转到 `/login`，避免登录页错误导致循环跳转。
+  - 其他错误保持 `Promise.reject(error)`，不改变原有调用方错误处理。
+- 修改 `docs/specs/progress.txt`：
+  - 将“无全局 401 拦截”标记为已修复。
+  - 从“下一步”优先级表移除 2.1。
+- 修改 `docs/specs/IMPLEMENTATION_PLAN.md`：
+  - 将步骤 2.1 标记为“已完成”，完成日期为 2026-06-16。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+## 2026-06-16：前端路由守卫完善
+
+### 用户要求
+
+- 用户继续推进步骤 2.2：前端路由守卫完善。
+
+### 本次修改范围
+
+- 修改 `frontend/src/router.ts`：
+  - 将路由 meta 统一为 `requiresAuth` / `requiresAdmin`。
+  - `/login` 设为 `requiresAuth: false`。
+  - `/chat` 设为 `requiresAuth: true`。
+  - `/admin` 设为 `requiresAuth: true, requiresAdmin: true`。
+  - 全局守卫中补齐三条规则：
+    - 已登录访问 `/login` 时自动跳转 `/chat`。
+    - 未登录访问需要认证的页面时跳转 `/login`。
+    - 非管理员访问 `/admin` 时跳转 `/chat`。
+  - 管理员判断统一从 `localStorage.user` 解析 `is_admin`，避免路由逻辑分散。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+---
+
+## 2026-06-16：聊天页顺手度增强
+
+### 用户要求
+
+- 用户要求按顺序优化聊天页使用体验：输入框自动增高、停止生成、重新生成/重试、编辑上一条问题并重新发送、会话内搜索、来源面板更顺手、回答操作增强、附件上传体验增强。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/chat/index.vue`：
+  - 输入框最大自动增高从 6 行提升到 10 行，最大长度提升到 4000，并保持发送中仍可编辑草稿。
+  - 流式回答接入 `AbortController`，发送按钮在生成中切换为“停止/停止中…”。
+  - 用户主动停止时不再显示红色错误，回答区显示“已停止生成”。
+  - 抽出 `runAssistantRequest`，支持普通发送、重新生成和编辑问题后重发复用同一条流式链路。
+  - 助手回答新增“复制 Markdown”“复制含来源”“重新生成”。
+  - 用户消息新增“编辑并重发”“复制问题”。
+  - 顶部新增当前会话搜索，支持匹配计数、上一条/下一条跳转和消息高亮。
+  - 来源面板新增“高相关”筛选，来源卡片新增“复制片段”。
+  - 附件上传失败后支持“重试”。
+  - 支持拖拽文件到聊天页上传，以及直接粘贴截图/文件上传。
+- 修改 `frontend/src/style.css`：
+  - 新增会话搜索框、搜索命中高亮、停止按钮、附件重试按钮和输入框最大高度样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+---
+
+## 2026-06-16：附件上传圆形进度条
+
+### 用户要求
+
+- 用户希望附件上传状态参考截图改成圆形进度条：可看到实时进度，并且上传中可以点击取消。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/chat/index.vue`：
+  - 附件上传接入 axios `onUploadProgress`，上传过程中显示真实上传百分比。
+  - 为每个待上传附件保存 `AbortController`，上传中点击圆形进度条即可取消上传。
+  - 附件卡片左侧从文件类型块改为圆形状态环：上传中显示百分比，上传完成显示勾，失败显示感叹号。
+  - 保留失败重试和移除附件按钮。
+- 修改 `frontend/src/style.css`：
+  - 新增 `.attachment-progress-ring` 圆形进度条样式，使用 `conic-gradient` 展示进度。
+  - 上传中 hover 切换为红色取消状态，完成/失败分别使用绿色/红色状态。
+  - 优化附件卡片文件名宽度、关闭按钮点击反馈和移动端宽度适配。
+
+### 说明
+
+- 当前实现的是浏览器到后端的真实上传进度。
+- 后端附件接口目前只返回“已上传，正在后台解析/OCR”的排队状态，尚未提供解析/OCR百分比接口，所以解析阶段先展示状态文案；如需解析进度，需要下一步补后端任务状态查询接口和前端轮询。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+---
+
+## 2026-06-16：后台文档上传/删除体验修复
+
+### 用户反馈
+
+- 后台删除文档后列表仍显示，必须刷新页面才会消失。
+- 后台上传文档多次失败，页面显示“服务器内部错误，已记录日志”。
+
+### 原因分析
+
+- 复现发现：后台解析任务运行期间，SQLite 容易被长事务占用；此时同时上传/删除文档可能遇到数据库 busy/locked，接口返回 500。
+- 删除接口成功前，前端只依赖 `load()` 刷新列表；一旦接口或刷新慢/失败，文档卡片就会继续显示。
+- 上传接口在文件已保存但数据库入库失败时，可能留下孤儿上传文件。
+
+### 本次修改范围
+
+- 修改 `backend/app/database.py`：
+  - SQLite 连接增加 `timeout=30`。
+  - 初始化连接时设置 `PRAGMA journal_mode=WAL` 和 `PRAGMA busy_timeout=30000`，降低后台解析期间上传/删除撞锁概率。
+- 修改 `backend/app/task_service.py`：
+  - 后台解析任务在进入耗时文本提取、OCR、PageIndex 构建前先提交状态，避免长时间持有 SQLite 写锁。
+  - chunk 写入后及时提交，再进入 PageIndex 构建。
+- 修改 `backend/app/document_index.py`：
+  - 普通索引先在内存中切分并生成 embedding，再进入短事务删除/写入 chunks，减少写锁时间。
+- 修改 `backend/app/pageindex_adapter.py`：
+  - PageIndex 标记 processing 后立即提交，再执行耗时构建，避免构建期间占用写锁。
+- 修改 `backend/app/routers/admin_documents.py`：
+  - 上传接口在文件保存后若数据库入库/入队失败，会回滚事务并删除刚保存的文件，避免孤儿文件。
+  - 删除接口数据库记录删除成功后，即使原文件被 Windows/后台任务短暂占用，也返回成功并附带 warning，不再让前端误以为删除失败。
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 删除成功后立即从本地 `docs`、任务列表、权限映射、最近上传卡和已打开抽屉中移除该文档，再静默刷新后台数据。
+  - 上传成功后先把新文档插入列表，再刷新状态。
+  - 上传遇到 500/timeout/locked/busy 时显示更明确的“后台繁忙，请稍后重试/刷新状态”提示。
+
+### 验证结果
+
+- `python -m compileall backend/app`：通过。
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 本地 API 冒烟：`/api/health` 200；小 txt 文档上传 200；随后删除 200；数据库记录确认已消失。
+- 未操作 `5173`，未手动重启 `8000`（当前后端为 `uvicorn --reload`，代码变更会自动热重载）。
+
+---
+
+## 2026-06-16：后台文档状态自动更新
+
+### 用户反馈
+
+- 用户指出后台上传/解析状态看起来不会自动更新，需要手动点击“刷新状态”。
+
+### 原因分析
+
+- 检查发现后台页上传成功后只执行了一次 `load()`，没有定时轮询。
+- 因此文档从“已入队/解析中”变为“可检索/失败”时，前端不会主动更新，只能靠用户手动刷新。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 增加上传后的状态自动轮询，默认每 3 秒刷新文档列表、任务列表和 PageIndex 状态。
+  - 轮询在目标文档不再处于等待/处理中，或超过 5 分钟后自动停止。
+  - 页面打开时如果已有等待中/处理中任务，也会自动开始轮询。
+  - 页面卸载时自动清理定时器，避免后台继续请求。
+  - 最近上传卡片中新增“自动更新中”提示。
+- 修改 `frontend/src/style.css`：
+  - 新增“自动更新中”提示样式。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
+
+---
+
+## 2026-06-16：后台删除/重建失败提示优化
+
+### 用户反馈
+
+- 用户截图显示删除文档时出现“删除文档失败”和“重建高级索引失败”。
+
+### 日志与状态检查
+
+- 检查最新数据库记录：最新文档解析任务为 success，PageIndex 状态为 ready。
+- 直接调用最新文档的 `POST /api/admin/documents/{id}/page-index/rebuild` 返回 200，说明后端重建接口当前可用。
+- 因此该截图更像是前端在同一文档上同时触发删除/重建，或操作了已被删除的旧卡片，导致错误被泛化成两个失败 toast。
+
+### 本次修改范围
+
+- 修改 `frontend/src/views/admin/index.vue`：
+  - 新增 `rebuildingPageIndexDocId`，重建高级索引时显示“重建中…”。
+  - 删除、重新解析、重建高级索引三个操作互斥，避免同一文档并发触发。
+  - 新增 `requestErrorDetail()`，toast 显示后端 detail 和 HTTP 状态码，不再只显示泛化失败。
+  - 删除/重建遇到 404 时自动从本地列表移除旧卡片，减少“已删除但页面还可点”的情况。
+
+### 验证结果
+
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size / VueUse PURE 注释 warning，不阻断。
+- 未操作 `5173`，未重启 `8000`。
