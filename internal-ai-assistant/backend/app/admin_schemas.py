@@ -71,3 +71,10 @@ class ModelConfig(BaseModel):
     api_key: str = ""
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-chat"
+    embedding_provider: str = ""
+    embedding_base_url: str = ""
+    embedding_model: str = ""
+    embedding_api_key: str = ""
+    reranker_enabled: bool = False
+    reranker_model: str = ""
+    reranker_max_candidates: int = 24

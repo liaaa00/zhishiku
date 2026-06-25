@@ -23,6 +23,26 @@ from .config import (
 )
 
 
+def _runtime_embedding_config() -> dict:
+    fallback = {
+        "provider": EMBEDDING_PROVIDER,
+        "api_key": EMBEDDING_API_KEY,
+        "base_url": EMBEDDING_BASE_URL,
+        "model": EMBEDDING_MODEL,
+    }
+    try:
+        from .database import SessionLocal
+        from .settings_service import get_embedding_config
+
+        db = SessionLocal()
+        try:
+            return get_embedding_config(db)
+        finally:
+            db.close()
+    except Exception:
+        return fallback
+
+
 def local_hash_embedding(text: str) -> List[float]:
     """小型部署可用的本地轻量向量，不依赖外部服务。"""
     vec = [0.0] * EMBEDDING_DIM
@@ -53,12 +73,20 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
     """
     if not texts:
         return []
-    if EMBEDDING_PROVIDER in {"openai", "openai-compatible", "remote"} and EMBEDDING_API_KEY:
+    cfg = _runtime_embedding_config()
+    provider = str(cfg.get("provider") or "local").lower()
+    api_key = str(cfg.get("api_key") or "")
+    base_url = str(cfg.get("base_url") or "") or None
+    model = str(cfg.get("model") or "local-hash")
+    if provider in {"openai", "openai-compatible", "remote"} and api_key:
         try:
-            client = OpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
-            resp = client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            resp = client.embeddings.create(model=model, input=texts)
             return [list(item.embedding) for item in resp.data]
-        except Exception:
+        except Exception as exc:
+            from .config import IS_PRODUCTION
+            if IS_PRODUCTION:
+                raise RuntimeError(f"Embedding service unavailable: {str(exc)[:200]}") from exc
             # 不能因为向量服务临时不可用阻断系统使用；生产环境建议接监控告警。
             pass
     return [local_hash_embedding(text) for text in texts]
@@ -294,6 +322,7 @@ def _build_knowledge_messages(question: str, contexts: List[dict], history: Opti
         "回答风格要像清晰的业务分析报告：先给结论，再按需要用小标题、项目符号或 Markdown 表格整理，最后列出风险/需要核验项和引用。"
         "如果用户问的是表格/Excel/CSV，优先基于证据预处理包中的合并记录回答；不要把切片造成的字段断裂误判为缺失。"
         "如果资料不足，要明确说不足在哪里；不要使用未出现在授权资料中的外部事实。"
+        "不要把资料中的动作改写成更强含义：例如只有‘签署’证据时，不要写成‘签章/盖章/审核/自动同步’；只有员工端操作证据时，不要补写内部审批或合同组流程。"
         "少客套，不要以‘好的，根据您提供的……’开头。"
     )
     evidence_block = f"\n\n【证据预处理包（给 AI 理解资料用，不要照抄为最终答案）】\n{structured_digest}" if structured_digest else ""

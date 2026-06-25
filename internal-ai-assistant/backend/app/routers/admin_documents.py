@@ -74,12 +74,17 @@ def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db),
     _, ext = validate_upload_file(file, KNOWLEDGE_FILE_EXTENSIONS, "后台知识库支持 PDF、Word(.docx)、PowerPoint(.pptx)、Excel(.xlsx)、CSV、TXT、Markdown、图片 PNG/JPG/JPEG/WEBP/GIF（自动 OCR）。旧版 .doc/.ppt/.xls 请先另存为 .docx/.pptx/.xlsx。")
     doc_id, storage_path, filename = save_upload(file, "admin")
 
-    doc = Document(id=doc_id, title=Path(filename).stem, filename=filename, storage_path=str(storage_path), source_type=ext.lstrip('.'), created_by=user.id)
-    db.add(doc)
-    db.flush()
-    task = enqueue_document_task(db, doc, "document_parse", user)
-    db.commit()
-    return {"id": doc.id, "title": doc.title, "task_id": task.id, "status": "queued", "searchable": False, "message": "文档已上传，正在后台解析。"}
+    try:
+        doc = Document(id=doc_id, title=Path(filename).stem, filename=filename, storage_path=str(storage_path), source_type=ext.lstrip('.'), created_by=user.id)
+        db.add(doc)
+        db.flush()
+        task = enqueue_document_task(db, doc, "document_parse", user)
+        db.commit()
+        return {"id": doc.id, "title": doc.title, "task_id": task.id, "status": "queued", "searchable": False, "message": "文档已上传，正在后台解析。"}
+    except Exception:
+        db.rollback()
+        storage_path.unlink(missing_ok=True)
+        raise
 
 
 @router.get("/api/admin/documents/{document_id}/chunks")
@@ -195,13 +200,20 @@ def delete_document(document_id: str, db: Session = Depends(get_db), actor: User
     doc = ensure_admin_document(db, document_id)
     storage_path = Path(doc.storage_path) if doc.storage_path else None
     title = doc.title
+    filename = doc.filename
     cleanup_document_rows(db, doc.id)
-    audit(db, actor, "document.delete", "document", doc.id, {"title": title, "filename": doc.filename})
+    audit(db, actor, "document.delete", "document", doc.id, {"title": title, "filename": filename})
     db.delete(doc)
     db.commit()
+    file_warning = ""
     if storage_path:
-        storage_path.unlink(missing_ok=True)
-    return {"ok": True}
+        try:
+            storage_path.unlink(missing_ok=True)
+        except OSError as exc:
+            # Windows 上后台解析/OCR 可能短暂占用原文件。数据库记录已删除，
+            # 不应让文件清理失败导致前端误以为删除失败；残留文件后续可由维护任务清理。
+            file_warning = f"数据库记录已删除，但原文件暂时被占用未能立即清理：{exc}"
+    return {"ok": True, "warning": file_warning}
 
 
 @router.put("/api/admin/documents/{document_id}/permissions")

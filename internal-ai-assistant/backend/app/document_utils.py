@@ -145,8 +145,68 @@ def _cell_text(cell, shared: list[str]) -> str:
     return raw
 
 
+def _column_index(cell_ref: str) -> int:
+    letters = re.match(r"[A-Z]+", cell_ref or "")
+    if not letters:
+        return 0
+    value = 0
+    for ch in letters.group(0):
+        value = value * 26 + (ord(ch) - ord("A") + 1)
+    return value
+
+
+def _normalize_header(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip())
+
+
+def _xlsx_rows(root, shared: list[str]) -> list[dict[int, str]]:
+    rows: list[dict[int, str]] = []
+    for row in [e for e in root.iter() if e.tag.endswith("}row") or e.tag == "row"]:
+        values: dict[int, str] = {}
+        for cell in [e for e in row if e.tag.endswith("}c") or e.tag == "c"]:
+            value = _cell_text(cell, shared)
+            if value:
+                col = _column_index(cell.attrib.get("r", ""))
+                if col:
+                    values[col] = value
+        if values:
+            rows.append(values)
+    return rows
+
+
+def _table_headers(rows: list[dict[int, str]]) -> tuple[dict[int, str], int]:
+    if not rows:
+        return {}, 0
+    header1 = rows[0]
+    header2 = rows[1] if len(rows) > 1 else {}
+    max_col = max([*header1.keys(), *header2.keys()] or [0])
+    headers: dict[int, str] = {}
+    active_group = ""
+    for col in range(1, max_col + 1):
+        top = _normalize_header(header1.get(col, ""))
+        sub = _normalize_header(header2.get(col, ""))
+        if top:
+            active_group = top
+        if sub and active_group and sub != active_group:
+            headers[col] = f"{active_group}-{sub}"
+        else:
+            headers[col] = top or sub or f"列{col}"
+    data_start = 2 if any(_normalize_header(v) for v in header2.values()) else 1
+    return headers, data_start
+
+
+def _format_table_row(sheet_title: str, row_number: int, row: dict[int, str], headers: dict[int, str]) -> str:
+    cells = []
+    for col in sorted(row):
+        header = headers.get(col, f"列{col}")
+        value = str(row[col]).strip()
+        if value:
+            cells.append(f"{header}={value}")
+    return f"表格行 | 工作表={sheet_title} | Excel行={row_number} | " + " | ".join(cells)
+
+
 def extract_xlsx_text(file_path: str) -> List[PageText]:
-    """Extract visible cell values from modern Excel .xlsx files."""
+    """Extract visible cell values from modern Excel .xlsx files as row-oriented records."""
     pages: list[PageText] = []
     with zipfile.ZipFile(file_path) as zf:
         shared = _xlsx_shared_strings(zf)
@@ -157,19 +217,16 @@ def extract_xlsx_text(file_path: str) -> List[PageText]:
                 root = ET.fromstring(zf.read(name))
             except ET.ParseError:
                 continue
-            lines = []
-            for row in [e for e in root.iter() if e.tag.endswith("}row") or e.tag == "row"]:
-                cells = []
-                for cell in [e for e in row if e.tag.endswith("}c") or e.tag == "c"]:
-                    value = _cell_text(cell, shared)
-                    if value:
-                        ref = cell.attrib.get("r", "")
-                        cells.append(f"{ref}: {value}" if ref else value)
-                if cells:
-                    lines.append(" | ".join(cells))
-            if lines:
-                title = sheet_names.get(name, f"Sheet{idx}")
-                pages.append((idx, f"[{title}]\n" + "\n".join(lines)))
+            rows = _xlsx_rows(root, shared)
+            if not rows:
+                continue
+            title = sheet_names.get(name, f"Sheet{idx}")
+            headers, data_start = _table_headers(rows)
+            header_line = "表头 | " + " | ".join(f"列{col}={header}" for col, header in sorted(headers.items()))
+            lines = [f"[{title}]", header_line]
+            for row_index, row in enumerate(rows[data_start:], start=data_start + 1):
+                lines.append(_format_table_row(title, row_index, row, headers))
+            pages.append((idx, "\n".join(lines)))
     return pages
 
 
@@ -181,10 +238,18 @@ def extract_csv_text(file_path: str) -> List[PageText]:
         dialect = csv.Sniffer().sniff(text[:4096]) if text.strip() else csv.excel
     except csv.Error:
         dialect = csv.excel
-    reader = csv.reader(text.splitlines(), dialect)
-    for idx, row in enumerate(reader, start=1):
+    reader = list(csv.reader(text.splitlines(), dialect))
+    header = [_normalize_header(cell) or f"列{idx}" for idx, cell in enumerate(reader[0], start=1)] if reader else []
+    if header:
+        rows.append("表头 | " + " | ".join(f"列{idx}={name}" for idx, name in enumerate(header, start=1)))
+    for idx, row in enumerate(reader[1:] if header else reader, start=2 if header else 1):
         if any(cell.strip() for cell in row):
-            rows.append(f"Row {idx}: " + " | ".join(cell.strip() for cell in row))
+            fields = []
+            for col_idx, cell in enumerate(row, start=1):
+                value = cell.strip()
+                if value:
+                    fields.append(f"{header[col_idx - 1] if col_idx <= len(header) else f'列{col_idx}'}={value}")
+            rows.append(f"表格行 | CSV行={idx} | " + " | ".join(fields))
     return [(None, "\n".join(rows))]
 
 
@@ -206,8 +271,36 @@ def extract_supported_document(file_path: str) -> List[PageText]:
     raise ValueError("不支持的文件类型")
 
 
+def _chunk_table_text(text: str, max_chars: int = 1800) -> List[str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+    header_lines = [line for line in lines[:3] if line.startswith("[") or line.startswith("表头")]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        prefix = [] if not chunks and not current else header_lines
+        prefix_len = sum(len(item) + 1 for item in prefix)
+        line_len = len(line) + 1
+        if current and current_len + prefix_len + line_len > max_chars:
+            chunks.append("\n".join(prefix + current))
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += line_len
+    if current:
+        chunks.append("\n".join((header_lines if chunks else []) + current))
+    return chunks
+
+
 def chunk_text(text: str, max_chars: int = 1000, overlap: int = 150) -> List[str]:
-    text = " ".join(text.split())
+    raw_text = text.strip()
+    if not raw_text:
+        return []
+    if "\n" in raw_text and ("表格行" in raw_text or "表头" in raw_text or raw_text.startswith("[")):
+        return _chunk_table_text(raw_text)
+    text = " ".join(raw_text.split())
     if not text:
         return []
     chunks = []

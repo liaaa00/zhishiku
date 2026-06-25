@@ -9,6 +9,9 @@ from .ai_client import embed_texts
 from .grounding import filter_relevant_contexts, relevance_terms
 from .models import Document, DocumentChunk, DocumentPageIndex, User, document_group_link
 from .pageindex_adapter import load_pageindex_payload
+from .settings_service import get_model_config, get_reranker_config
+from .table_query import is_table_query
+from .table_retrieval import table_mode_contexts
 from .vector_store import QdrantUnavailable, search_chunks
 
 SQLITE_SCAN_LIMIT = 3000
@@ -20,6 +23,47 @@ ADAPTIVE_NEIGHBOR_MAX = 18
 PAGEINDEX_SUPPLEMENT_MAX = 12
 PAGEINDEX_DOC_SCAN_MAX = 50
 PAGEINDEX_PAGE_CHAR_LIMIT = 1800
+
+# Lightweight Agentic RAG guardrails. This is intentionally bounded: simple
+# questions keep the existing one-pass adaptive RAG path, while complex / multi-hop
+# questions may trigger at most one rewritten retrieval pass before final rerank.
+AGENTIC_MAX_EXTRA_ROUNDS = 1
+AGENTIC_REWRITE_QUERY_LIMIT = 1
+AGENTIC_EXTRA_CANDIDATE_MAX = 48
+AGENTIC_MIN_QUALITY_SCORE = 0.46
+AGENTIC_COMPLEX_MARKERS = (
+    "分别",
+    "同时",
+    "对比",
+    "比较",
+    "差异",
+    "区别",
+    "如果",
+    "失败",
+    "异常",
+    "无法",
+    "收不到",
+    "多个",
+    "多份",
+    "跨库",
+    "跨文档",
+    "多跳",
+    "企业端",
+    "员工端",
+    "内部",
+    "外部",
+    "先",
+    "再",
+    "然后",
+    "以及",
+    "并且",
+)
+AGENTIC_REWRITE_EXPANSIONS = (
+    ("esign_employee", ("员工", "微助手", "外服云", "短信", "登录", "注册", "入口", "劳动合同", "电子签", "签署")),
+    ("esign_internal", ("企业端", "HR", "合同组", "工单", "内部审核", "盖章", "归档", "续签申请")),
+    ("exception", ("失败", "异常", "无法登录", "收不到通知", "处理办法", "解决步骤")),
+    ("comparison", ("对比", "差异", "适用场景", "处理流程", "注意事项")),
+)
 
 BROAD_QUERY_PATTERNS = (
     "总结",
@@ -74,6 +118,47 @@ PRECISE_QUERY_PATTERNS = (
     "谁",
     "是什么",
 )
+
+PROCESS_QUERY_TERMS = (
+    "流程",
+    "步骤",
+    "怎么签",
+    "如何签",
+    "电子签",
+    "签署",
+    "签劳动合同",
+    "签合同",
+    "操作指南",
+    "办理流程",
+)
+
+E_SIGN_QUERY_TERMS = (
+    "电子签",
+    "电子签署",
+    "电子劳动合同",
+    "电子合同",
+    "签劳动合同",
+    "签合同",
+)
+
+FORM_CONTEXT_MARKERS = (
+    "表格数据",
+    "```text",
+    "a1:",
+    "b1:",
+    "c1:",
+    "字段",
+    "全职员工",
+    "入职人员信息表",
+    "劳动合同起始日",
+    "劳动合同终止日",
+)
+
+ESIGN_SUBJECT_MARKERS = ("电子劳动合同", "电子合同", "电子签", "线上签署", "在线签署")
+ESIGN_EMPLOYEE_ENTRY_MARKERS = ("员工", "本人", "微助手", "外服云", "员工服务", "短信", "入口", "登录", "注册", "手机")
+ESIGN_SIGNING_ACTION_MARKERS = ("点击签署", "点击劳动合同", "签署", "确认签署", "核对", "签署完成")
+ESIGN_INTERNAL_WORKFLOW_MARKERS = ("工单", "工单系统", "合同组", "内部审核", "hr发起", "归档", "盖章", "审批流", "续签申请")
+ESIGN_STRONG_EMPLOYEE_FLOW_MARKERS = ("微助手", "外服云", "员工服务", "点击签署", "点击劳动合同", "核对", "短信")
 
 
 def parse_embedding(value: str) -> List[float]:
@@ -152,6 +237,245 @@ def _context_key(context: dict) -> tuple[str, str]:
     )
 
 
+def _is_process_query(question: str) -> bool:
+    compact = re.sub(r"\s+", "", (question or "").lower())
+    return any(term in compact for term in PROCESS_QUERY_TERMS)
+
+
+def _is_esign_query(question: str) -> bool:
+    compact = re.sub(r"\s+", "", (question or "").lower())
+    if any(term in compact for term in E_SIGN_QUERY_TERMS):
+        return True
+    # 用户常会问“劳动合同签署入口/怎么签”，不一定写“电子签”三个字；
+    # 这类问题仍应进入员工端电子签检索意图，而不是泛化成普通合同流程。
+    contract_markers = ("劳动合同", "合同")
+    signing_entry_markers = ("签署", "签约", "签字", "怎么签", "如何签", "入口", "微助手", "外服云")
+    return any(marker in compact for marker in contract_markers) and any(marker in compact for marker in signing_entry_markers)
+
+
+def _is_form_like_context(context: dict) -> bool:
+    source_type = str(context.get("source_type") or "").lower()
+    filename = str(context.get("filename") or "").lower()
+    title = str(context.get("document_title") or "").lower()
+    location = str(context.get("location") or "").lower()
+    content = str(context.get("content") or "").lower()
+    haystack = " ".join([filename, title, location, content])
+    if source_type in {"xlsx", "csv", "chat_xlsx", "chat_csv"}:
+        return True
+    if filename.endswith((".xlsx", ".xls", ".csv")):
+        return True
+    return any(marker in haystack for marker in FORM_CONTEXT_MARKERS)
+
+
+def _filter_process_contexts(question: str, contexts: list[dict]) -> list[dict]:
+    """Remove only contexts that are structurally incompatible with process questions.
+
+    The main decision of *which* evidence is best belongs to intent-aware reranking;
+    this guard only prevents table rows and obvious internal workflow noise from
+    crowding out process answers.
+    """
+    if not contexts or not _is_process_query(question):
+        return contexts
+    filtered = [context for context in contexts if not _is_form_like_context(context)]
+    if _is_esign_query(question):
+        aligned = [context for context in filtered if _is_direct_esign_context(question, context) or _is_esign_support_context(question, context)]
+        if aligned:
+            pruned = []
+            for context in filtered:
+                compact_text = re.sub(r"\s+", "", _context_full_text(context))
+                if _is_internal_contract_workflow_context(compact_text):
+                    continue
+                pruned.append(context)
+            filtered = pruned or aligned
+    return filtered or contexts
+
+
+def _dedupe_contexts(contexts: list[dict]) -> list[dict]:
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict] = []
+    for context in contexts:
+        key = _context_key(context)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(context)
+    return deduped
+
+
+def _context_title_text(context: dict) -> str:
+    return " ".join(
+        str(context.get(key) or "")
+        for key in ("document_title", "filename", "section_title", "anchor", "location")
+    )
+
+
+def _context_full_text(context: dict) -> str:
+    return " ".join([_context_title_text(context), str(context.get("content") or "")])
+
+
+def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def _is_internal_contract_workflow_context(text: str) -> bool:
+    if not _contains_any(text, ESIGN_INTERNAL_WORKFLOW_MARKERS):
+        return False
+    # “员工”一词可能出现在否定说明里（如“不是员工电子签署指南”），不能单独作为放行信号。
+    return not _contains_any(text, ESIGN_STRONG_EMPLOYEE_FLOW_MARKERS)
+
+
+def build_query_profile(question: str) -> dict:
+    compact = re.sub(r"\s+", "", (question or "").lower())
+    is_process = _is_process_query(question)
+    is_esign = _is_esign_query(question)
+    internal_intent = _contains_any(compact, ("工单", "合同组", "内部审核", "盖章", "归档", "审批", "hr", "续签申请"))
+    employee_intent = _contains_any(compact, ("员工", "本人", "微助手", "外服云", "电子签", "签署", "怎么签", "如何签", "入口"))
+    if is_esign and internal_intent and not employee_intent:
+        actor = "internal"
+    elif is_esign:
+        actor = "employee"
+    else:
+        actor = "unknown"
+    return {
+        "domain": "labor_contract" if _contains_any(compact, ("劳动合同", "合同", "签署", "签")) else "general",
+        "task": "esign_process" if is_esign and is_process else ("process" if is_process else "general"),
+        "actor": actor,
+        "is_process": is_process,
+        "is_esign": is_esign,
+    }
+
+
+def _matched_markers(text: str, markers: tuple[str, ...]) -> list[str]:
+    return [marker for marker in markers if marker in text]
+
+
+def score_context_for_query_profile(profile: dict, context: dict) -> dict:
+    title_text = _context_title_text(context)
+    full_text = _context_full_text(context)
+    compact_text = re.sub(r"\s+", "", full_text)
+    source_type = str(context.get("source_type") or "").lower()
+
+    positive: list[str] = []
+    negative: list[str] = []
+    intent_score = 0.0
+    conflict_penalty = 0.0
+    evidence_score = 0.0
+    wrong_source_penalty = 0.0
+
+    if profile.get("is_process") and _is_form_like_context(context):
+        wrong_source_penalty += 0.32
+        negative.append("table_like_context")
+
+    internal_hits = _matched_markers(compact_text, ESIGN_INTERNAL_WORKFLOW_MARKERS)
+    strong_employee_hits = _matched_markers(compact_text, ESIGN_STRONG_EMPLOYEE_FLOW_MARKERS)
+
+    if profile.get("actor") == "internal":
+        negative.extend(strong_employee_hits[:5])
+        positive.extend(internal_hits[:5])
+        if internal_hits:
+            intent_score += 0.28
+            evidence_score += min(0.18, len(internal_hits) * 0.04)
+        if _contains_any(title_text, ("工单", "工单系统", "合同组")):
+            intent_score += 0.22
+        if strong_employee_hits and not internal_hits:
+            conflict_penalty += 0.28
+        if source_type in {"xlsx", "csv", "chat_xlsx", "chat_csv"}:
+            wrong_source_penalty += 0.16
+
+    if profile.get("task") == "esign_process":
+        subject_hits = _matched_markers(compact_text, ESIGN_SUBJECT_MARKERS)
+        entry_hits = _matched_markers(compact_text, ESIGN_EMPLOYEE_ENTRY_MARKERS)
+        action_hits = _matched_markers(compact_text, ESIGN_SIGNING_ACTION_MARKERS)
+        internal_hits = _matched_markers(compact_text, ESIGN_INTERNAL_WORKFLOW_MARKERS)
+        strong_employee_hits = _matched_markers(compact_text, ESIGN_STRONG_EMPLOYEE_FLOW_MARKERS)
+        title_hits = _matched_markers(title_text, (*ESIGN_SUBJECT_MARKERS, "点击签署", "点击劳动合同"))
+
+        positive.extend(title_hits[:4])
+        positive.extend(subject_hits[:4])
+        positive.extend(strong_employee_hits[:4])
+        positive.extend(action_hits[:4])
+        negative.extend(internal_hits[:5])
+
+        if title_hits:
+            intent_score += 0.24
+        if subject_hits:
+            intent_score += 0.18
+            evidence_score += 0.08
+        if entry_hits or strong_employee_hits:
+            intent_score += 0.18
+            evidence_score += 0.12
+        if action_hits:
+            intent_score += 0.22
+            evidence_score += 0.12
+        if subject_hits and (entry_hits or strong_employee_hits) and action_hits:
+            intent_score += 0.20
+            evidence_score += 0.12
+        if _is_esign_support_context("电子签 签署 流程 注册 登录 入口", context):
+            intent_score += 0.10
+
+        if internal_hits and profile.get("actor") != "internal":
+            conflict_penalty += 0.28 + min(0.30, len(internal_hits) * 0.08)
+            if not strong_employee_hits and not action_hits:
+                conflict_penalty += 0.26
+            if _contains_any(title_text, ("工单", "工单系统", "合同组")):
+                conflict_penalty += 0.18
+        if source_type in {"xlsx", "csv", "chat_xlsx", "chat_csv"}:
+            wrong_source_penalty += 0.18
+
+    return {
+        "intent_score": round(min(intent_score, 0.85), 4),
+        "evidence_score": round(min(evidence_score, 0.36), 4),
+        "conflict_penalty": round(min(conflict_penalty, 0.58), 4),
+        "wrong_source_penalty": round(min(wrong_source_penalty, 0.42), 4),
+        "positive_signals": list(dict.fromkeys(positive))[:8],
+        "negative_signals": list(dict.fromkeys(negative))[:8],
+    }
+
+
+def _is_direct_esign_context(question: str, context: dict) -> bool:
+    title_text = _context_title_text(context)
+    full_text = _context_full_text(context)
+    compact_full_text = re.sub(r"\s+", "", full_text)
+
+    # 标题/章节/锚点命中仍然是强信号，但不是绑定某一份固定文档。
+    title_direct_markers = (*ESIGN_SUBJECT_MARKERS, "点击签署", "点击劳动合同", "签署完成短信")
+    if _contains_any(title_text, title_direct_markers):
+        return True
+
+    # 新增文档常见情况：标题不规范，但正文包含员工端电子签流程步骤。
+    # 要求同时具备电子签主题、员工/入口信号和签署动作，避免只因正文偶然出现“电子签/合同”就放行工单材料。
+    if (
+        _contains_any(compact_full_text, ESIGN_SUBJECT_MARKERS)
+        and _contains_any(compact_full_text, ESIGN_EMPLOYEE_ENTRY_MARKERS)
+        and _contains_any(compact_full_text, ESIGN_SIGNING_ACTION_MARKERS)
+        and not _is_internal_contract_workflow_context(compact_full_text)
+    ):
+        return True
+
+    compact_question = re.sub(r"\s+", "", (question or "").lower())
+    support_markers = ("微助手", "外服云", "员工服务")
+    support_terms = ("电子签", "签署", "流程", "注册", "登录", "入口")
+    if _contains_any(title_text, support_markers) and any(term in compact_question for term in support_terms):
+        return True
+    return False
+
+
+def _is_esign_support_context(question: str, context: dict) -> bool:
+    title_text = _context_title_text(context)
+    full_text = _context_full_text(context)
+    compact_question = re.sub(r"\s+", "", (question or "").lower())
+    compact_full_text = re.sub(r"\s+", "", full_text)
+    support_markers = ("微助手", "外服云", "员工服务")
+    support_terms = ("电子签", "签署", "流程", "注册", "登录", "入口")
+    if not any(term in compact_question for term in support_terms):
+        return False
+    return _contains_any(title_text, support_markers) or (
+        _contains_any(compact_full_text, support_markers)
+        and _contains_any(compact_full_text, ("注册", "登录", "入口", "绑定", "验证", "员工服务"))
+        and not _is_internal_contract_workflow_context(compact_full_text)
+    )
+
+
 def _chunk_context(doc: Document, chunk: DocumentChunk, score: float = 0.35, match_reason: str = "检索补充片段") -> dict:
     return {
         "document_id": doc.id,
@@ -198,6 +522,71 @@ def sqlite_search_chunks(db: Session, query_vector: List[float], user: User, gro
         )
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:limit]
+
+
+def keyword_terms_for_query(question: str) -> list[str]:
+    text = (question or "").lower().strip()
+    terms = set(re.findall(r"[a-z0-9_\-]{2,}", text))
+    cjk_chunks = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+    for chunk in cjk_chunks:
+        if len(chunk) <= 10:
+            terms.add(chunk)
+        for size in (2, 3, 4, 5, 6):
+            for i in range(max(0, len(chunk) - size + 1)):
+                terms.add(chunk[i : i + size])
+    return sorted((term for term in terms if len(term) >= 2), key=len, reverse=True)[:80]
+
+
+def _keyword_score(question_terms: list[str], title_text: str, content_text: str) -> tuple[float, list[str]]:
+    if not question_terms:
+        return 0.0, []
+    title = (title_text or "").lower()
+    content = (content_text or "").lower()
+    hits: list[str] = []
+    score = 0.0
+    for term in question_terms:
+        in_title = term in title
+        in_content = term in content
+        if not in_title and not in_content:
+            continue
+        if term not in hits:
+            hits.append(term)
+        length_boost = min(len(term), 12) / 12
+        score += (0.12 + 0.10 * length_boost) if in_content else 0.0
+        score += (0.18 + 0.12 * length_boost) if in_title else 0.0
+    coverage = len(hits) / max(len(question_terms), 1)
+    score += min(0.22, coverage * 0.35)
+    return min(score, 0.96), hits[:12]
+
+
+def keyword_search_chunks(db: Session, question: str, user: User, group_ids: list[str], limit: int) -> List[dict]:
+    doc_ids = accessible_document_ids(db, user, group_ids)
+    if not doc_ids:
+        return []
+    terms = keyword_terms_for_query(question)
+    if not terms:
+        return []
+
+    rows = db.execute(
+        select(DocumentChunk, Document)
+        .join(Document, Document.id == DocumentChunk.document_id)
+        .where(DocumentChunk.document_id.in_(doc_ids))
+        .order_by(Document.created_at.desc(), DocumentChunk.chunk_index.asc())
+        .limit(SQLITE_SCAN_LIMIT)
+    ).all()
+
+    scored: list[dict] = []
+    for chunk, doc in rows:
+        title_text = " ".join(str(item or "") for item in [doc.title, doc.filename])
+        score, hits = _keyword_score(terms, title_text, chunk.content or "")
+        if score <= 0:
+            continue
+        context = _chunk_context(doc, chunk, score=score, match_reason="keyword_recall")
+        context["match_terms"] = hits
+        context["retrieval_channel"] = "keyword"
+        scored.append(context)
+    scored.sort(key=lambda x: _safe_float(x.get("score")), reverse=True)
+    return scored[: max(1, min(limit, ADAPTIVE_CANDIDATE_MAX))]
 
 
 def retrieval_plan_for_question(question: str, top_k: int = 5) -> dict:
@@ -265,6 +654,160 @@ def retrieval_plan_for_question(question: str, top_k: int = 5) -> dict:
     }
 
 
+def agentic_route_for_question(question: str, plan: dict | None = None) -> dict:
+    """Decide whether a question deserves the bounded Agentic RAG path.
+
+    The router is deliberately heuristic and cheap. It does not call an LLM; it only
+    decides whether a second retrieval pass is worth the cost.
+    """
+    text = (question or "").strip()
+    compact = re.sub(r"\s+", "", text.lower())
+    plan = plan or retrieval_plan_for_question(text)
+    reasons: list[str] = []
+    complexity = 0.0
+
+    if plan.get("intent") == "deep_analysis":
+        complexity += 2.0
+        reasons.append("deep_analysis_plan")
+    elif plan.get("intent") == "broad_business":
+        complexity += 0.8
+        reasons.append("broad_business_plan")
+
+    marker_hits = [marker for marker in AGENTIC_COMPLEX_MARKERS if marker.lower() in compact]
+    if marker_hits:
+        complexity += min(2.4, len(marker_hits) * 0.45)
+        reasons.append("complex_markers:" + ",".join(marker_hits[:6]))
+
+    has_employee_side = _contains_any(compact, ("员工", "本人", "微助手", "外服云", "短信", "签署", "入口", "登录"))
+    has_internal_side = _contains_any(compact, ("企业端", "hr", "合同组", "工单", "内部", "审核", "盖章", "归档"))
+    has_exception = _contains_any(compact, ("失败", "异常", "无法", "收不到", "没收到", "不能", "报错"))
+    if has_employee_side and has_internal_side:
+        complexity += 1.2
+        reasons.append("cross_actor")
+    if has_exception:
+        complexity += 0.8
+        reasons.append("exception_handling")
+
+    cjk_len = len(re.findall(r"[\u4e00-\u9fff]", compact))
+    if cjk_len >= 55:
+        complexity += 0.8
+        reasons.append("long_question")
+
+    enabled = complexity >= 2.0
+    return {
+        "enabled": bool(enabled),
+        "complexity_score": round(complexity, 4),
+        "reasons": reasons[:8],
+        "max_extra_rounds": AGENTIC_MAX_EXTRA_ROUNDS if enabled else 0,
+        "rewrite_query_limit": AGENTIC_REWRITE_QUERY_LIMIT if enabled else 0,
+        "strategy": "bounded_rewrite_retrieve_rerank" if enabled else "single_pass_rag",
+    }
+
+
+def rewrite_query_for_agentic(question: str, route: dict | None = None) -> list[str]:
+    """Build bounded rewrite queries for a complex question.
+
+    This is a deterministic rewrite, not an LLM rewrite. It appends likely domain
+    terms so the second pass can recall adjacent evidence without changing the
+    user's original intent.
+    """
+    text = (question or "").strip()
+    if not text:
+        return []
+    route = route or agentic_route_for_question(text)
+    if not route.get("enabled"):
+        return []
+
+    compact = re.sub(r"\s+", "", text.lower())
+    expansions: list[str] = []
+
+    def add_terms(terms: tuple[str, ...]) -> None:
+        for term in terms:
+            if term and term not in expansions:
+                expansions.append(term)
+
+    if _is_esign_query(text) or _contains_any(compact, ("劳动合同", "合同", "电子签", "签署", "微助手", "外服云")):
+        add_terms(dict(AGENTIC_REWRITE_EXPANSIONS)["esign_employee"])
+    if _contains_any(compact, ("企业端", "hr", "合同组", "工单", "内部", "审核", "盖章", "归档", "续签")):
+        add_terms(dict(AGENTIC_REWRITE_EXPANSIONS)["esign_internal"])
+    if _contains_any(compact, ("失败", "异常", "无法", "收不到", "没收到", "报错", "不能")):
+        add_terms(dict(AGENTIC_REWRITE_EXPANSIONS)["exception"])
+    if _contains_any(compact, ("对比", "比较", "差异", "区别", "分别")):
+        add_terms(dict(AGENTIC_REWRITE_EXPANSIONS)["comparison"])
+    if not expansions:
+        add_terms(("流程", "规则", "处理办法", "注意事项"))
+
+    # Keep the original question first and only add missing terms. This prevents a
+    # rewrite from drifting away from the user's actual question.
+    missing_terms = [term for term in expansions if term.lower() not in compact]
+    rewritten = " ".join([text, *missing_terms[:18]]).strip()
+    if rewritten == text:
+        return []
+    return [rewritten[:360]][: int(route.get("rewrite_query_limit") or AGENTIC_REWRITE_QUERY_LIMIT)]
+
+
+def evaluate_agentic_evidence(question: str, contexts: list[dict], plan: dict | None = None) -> dict:
+    """Score whether retrieved evidence is good enough to stop.
+
+    The score mixes lexical coverage, rerank/source scores and document diversity.
+    It is not exposed as answer confidence; it only controls whether to spend an
+    extra retrieval pass.
+    """
+    if not contexts:
+        return {
+            "enough": False,
+            "quality_score": 0.0,
+            "reason": "no_contexts",
+            "context_count": 0,
+            "unique_document_count": 0,
+            "top_score": 0.0,
+            "lexical_coverage": 0.0,
+        }
+
+    plan = plan or retrieval_plan_for_question(question)
+    top_contexts = contexts[: min(6, len(contexts))]
+    question_terms = relevance_terms(question)
+    evidence_text = " ".join(_context_full_text(context) for context in top_contexts)
+    evidence_terms = relevance_terms(evidence_text)
+    overlap = question_terms.intersection(evidence_terms) if question_terms and evidence_terms else set()
+    lexical_coverage = len(overlap) / max(len(question_terms), 1)
+
+    scores = [
+        max(
+            _safe_float(context.get("llm_rerank_score"), 0.0),
+            _safe_float(context.get("rerank_score"), 0.0),
+            _safe_float(context.get("profile_score"), 0.0),
+            _safe_float(context.get("score"), 0.0),
+        )
+        for context in top_contexts
+    ]
+    top_score = max(scores or [0.0])
+    avg_top3 = sum(scores[:3]) / max(len(scores[:3]), 1)
+    unique_docs = {str(context.get("document_id") or "") for context in top_contexts if context.get("document_id")}
+    diversity = min(len(unique_docs), 3) / 3
+    quality = min(1.0, top_score * 0.45 + avg_top3 * 0.25 + min(lexical_coverage, 0.45) * 0.45 + diversity * 0.12)
+
+    threshold = AGENTIC_MIN_QUALITY_SCORE
+    if plan.get("intent") == "precise_lookup":
+        threshold = 0.42
+    elif plan.get("intent") == "deep_analysis":
+        threshold = 0.52
+    enough = quality >= threshold and len(top_contexts) >= min(3, max(1, int(plan.get("min_contexts") or 3) // 2))
+    reason = "enough" if enough else "low_quality_or_sparse"
+    return {
+        "enough": bool(enough),
+        "quality_score": round(quality, 4),
+        "threshold": round(threshold, 4),
+        "reason": reason,
+        "context_count": len(contexts),
+        "unique_document_count": len(unique_docs),
+        "top_score": round(top_score, 4),
+        "avg_top3_score": round(avg_top3, 4),
+        "lexical_coverage": round(lexical_coverage, 4),
+        "matched_terms": sorted(overlap, key=len, reverse=True)[:12],
+    }
+
+
 def retrieve_candidate_contexts(db: Session, question: str, user: User, top_k: int = 5, candidate_limit: int | None = None) -> Tuple[List[dict], str, str, int]:
     if candidate_limit is None:
         limit = max(1, min(int(top_k or 5), 10))
@@ -300,7 +843,7 @@ def _merge_unique_contexts(primary: list[dict], supplement: list[dict], limit: i
     return merged
 
 
-def _rerank_context_score(question_terms: set[str], context: dict, original_rank: int) -> float:
+def _rerank_context_score(question: str, question_terms: set[str], context: dict, original_rank: int, profile: dict | None = None) -> tuple[float, dict]:
     text = " ".join(
         str(item or "")
         for item in [
@@ -317,23 +860,66 @@ def _rerank_context_score(question_terms: set[str], context: dict, original_rank
     title_terms = relevance_terms(" ".join(str(context.get(item) or "") for item in ["document_title", "filename", "section_title", "anchor"]))
     title_overlap = question_terms.intersection(title_terms)
     coverage = len(overlap) / max(len(question_terms), 1)
-    title_boost = min(0.24, len(title_overlap) * 0.08)
-    pageindex_boost = 0.18 if context.get("pageindex_source") else 0.0
-    source_score = min(_safe_float(context.get("score"), 0.0), 1.0) * 0.45
-    lexical_score = min(0.45, coverage * 0.45)
+    title_boost = min(0.22, len(title_overlap) * 0.07)
+    pageindex_boost = 0.16 if context.get("pageindex_source") else 0.0
+    source_score = min(_safe_float(context.get("score"), 0.0), 1.0) * 0.35
+    lexical_score = min(0.30, coverage * 0.30)
     rank_penalty = min(0.08, original_rank * 0.004)
-    return source_score + lexical_score + title_boost + pageindex_boost - rank_penalty
+    profile_features = score_context_for_query_profile(profile or build_query_profile(question), context)
+    score = (
+        source_score
+        + lexical_score
+        + title_boost
+        + pageindex_boost
+        + _safe_float(profile_features.get("intent_score"), 0.0)
+        + _safe_float(profile_features.get("evidence_score"), 0.0)
+        - _safe_float(profile_features.get("conflict_penalty"), 0.0)
+        - _safe_float(profile_features.get("wrong_source_penalty"), 0.0)
+        - rank_penalty
+    )
+    profile_features.update({
+        "lexical_coverage": round(coverage, 4),
+        "title_boost": round(title_boost, 4),
+    })
+    return score, profile_features
 
 
-def rerank_contexts(question: str, contexts: list[dict], limit: int) -> tuple[list[dict], int]:
+def profile_rank_contexts(question: str, contexts: list[dict], profile: dict | None = None) -> list[dict]:
     if not contexts:
-        return [], 0
-    limit = max(1, min(int(limit or ADAPTIVE_FINAL_CONTEXT_MAX), ADAPTIVE_CONTEXT_MAX))
+        return []
+    profile = profile or build_query_profile(question)
     question_terms = relevance_terms(question)
     scored: list[tuple[float, int, dict]] = []
     for idx, context in enumerate(contexts):
-        score = _rerank_context_score(question_terms, context, idx) if question_terms else _safe_float(context.get("score"), 0.0)
-        scored.append((score, idx, context))
+        if question_terms:
+            score, features = _rerank_context_score(question, question_terms, context, idx, profile)
+        else:
+            features = score_context_for_query_profile(profile, context)
+            score = _safe_float(context.get("score"), 0.0) + _safe_float(features.get("intent_score"), 0.0) - _safe_float(features.get("conflict_penalty"), 0.0)
+        enriched = dict(context)
+        enriched["intent_ranking"] = features
+        enriched["profile_score"] = round(score, 4)
+        scored.append((score, idx, enriched))
+    scored.sort(key=lambda item: (bool(item[2].get("pageindex_source")), item[0]), reverse=True)
+    return [item[2] for item in scored]
+
+
+def rerank_contexts(question: str, contexts: list[dict], limit: int, profile: dict | None = None) -> tuple[list[dict], int]:
+    if not contexts:
+        return [], 0
+    limit = max(1, min(int(limit or ADAPTIVE_FINAL_CONTEXT_MAX), ADAPTIVE_CONTEXT_MAX))
+    profile = profile or build_query_profile(question)
+    question_terms = relevance_terms(question)
+    scored: list[tuple[float, int, dict]] = []
+    for idx, context in enumerate(contexts):
+        if question_terms:
+            score, features = _rerank_context_score(question, question_terms, context, idx, profile)
+        else:
+            features = score_context_for_query_profile(profile, context)
+            score = _safe_float(context.get("score"), 0.0) + _safe_float(features.get("intent_score"), 0.0) - _safe_float(features.get("conflict_penalty"), 0.0)
+        enriched = dict(context)
+        enriched["intent_ranking"] = features
+        scored.append((score, idx, enriched))
     scored.sort(key=lambda item: (bool(item[2].get("pageindex_source")), item[0]), reverse=True)
 
     selected: list[dict] = []
@@ -373,6 +959,129 @@ def rerank_contexts(question: str, contexts: list[dict], limit: int) -> tuple[li
             if len(selected) >= min(ADAPTIVE_FINAL_CONTEXT_MIN, limit):
                 break
     return selected[:limit], pageindex_selected
+
+
+def _extract_json_object(text: str) -> dict:
+    content = (text or "").strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.I).strip()
+        content = re.sub(r"\s*```$", "", content).strip()
+    try:
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        match = re.search(r"\{.*\}", content, re.S)
+        if not match:
+            return {}
+        try:
+            parsed = json.loads(match.group(0))
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+
+def llm_rerank_contexts(db: Session, question: str, contexts: list[dict], limit: int) -> tuple[list[dict], dict]:
+    """Optionally rerank retrieval candidates with the configured chat model.
+
+    The LLM reranker is intentionally best-effort: if disabled, unconfigured, or failed,
+    callers keep the rule-reranked order so Q&A availability is not affected.
+    """
+    meta = {
+        "enabled": False,
+        "used": False,
+        "model": "",
+        "candidate_count": len(contexts),
+        "reranked_count": 0,
+        "error": "",
+    }
+    if not contexts:
+        return [], meta
+
+    cfg = get_reranker_config(db)
+    meta["enabled"] = bool(cfg.get("enabled"))
+    if not meta["enabled"]:
+        return contexts[:limit], meta
+
+    model_cfg = get_model_config(db)
+    api_key = str(model_cfg.get("api_key") or "")
+    if not api_key:
+        meta["error"] = "未配置聊天模型 API Key"
+        return contexts[:limit], meta
+
+    model = str(cfg.get("model") or model_cfg.get("model") or "deepseek-chat")
+    meta["model"] = model
+    max_candidates = max(4, min(_safe_int(cfg.get("max_candidates"), 24), 60, len(contexts)))
+    candidates = contexts[:max_candidates]
+    payload = []
+    for idx, context in enumerate(candidates, start=1):
+        content = " ".join(str(context.get("content") or "").split())[:700]
+        payload.append({
+            "id": idx,
+            "title": context.get("document_title") or context.get("filename") or "未知文档",
+            "location": context.get("location") or f"chunk {context.get('chunk_index', '-')}",
+            "channel": context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "semantic"),
+            "score": round(_safe_float(context.get("rerank_score"), _safe_float(context.get("score"))), 4),
+            "content": content,
+        })
+
+    system = (
+        "你是企业内部知识库问答系统的检索精排器，只能输出 JSON。"
+        "根据用户问题判断候选片段是否能直接支持回答，优先选择事实相关、字段命中、同义表达相关、上下文完整的片段。"
+        "不要因为候选排在前面就盲目保留；也不要编造候选中没有的信息。"
+        "输出格式：{\"ranking\":[{\"id\":1,\"score\":0.95,\"reason\":\"...\"}]}，score 为 0 到 1。"
+    )
+    user_payload = json.dumps({"question": question, "candidates": payload}, ensure_ascii=False)
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=str(model_cfg.get("base_url") or "https://api.deepseek.com"),
+            timeout=45.0,
+            max_retries=1,
+        )
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user_payload}],
+            temperature=0.0,
+            max_tokens=900,
+        )
+        parsed = _extract_json_object(response.choices[0].message.content or "")
+        ranking = parsed.get("ranking") if isinstance(parsed, dict) else None
+        if not isinstance(ranking, list):
+            raise ValueError("reranker 返回格式不是 ranking 数组")
+
+        by_id = {idx: dict(context) for idx, context in enumerate(candidates, start=1)}
+        ordered: list[tuple[float, int, dict]] = []
+        seen_ids: set[int] = set()
+        for item in ranking:
+            if not isinstance(item, dict):
+                continue
+            cid = _safe_int(item.get("id"), 0)
+            if cid not in by_id or cid in seen_ids:
+                continue
+            score = max(0.0, min(_safe_float(item.get("score"), 0.0), 1.0))
+            context = by_id[cid]
+            context["llm_rerank_score"] = round(score, 4)
+            context["llm_rerank_reason"] = str(item.get("reason") or "")[:160]
+            ordered.append((score, cid, context))
+            seen_ids.add(cid)
+        if not ordered:
+            raise ValueError("reranker 未返回有效候选")
+
+        ordered.sort(key=lambda item: item[0], reverse=True)
+        selected = [item[2] for item in ordered]
+        for idx, context in enumerate(candidates, start=1):
+            if idx not in seen_ids:
+                fallback = dict(context)
+                fallback["llm_rerank_score"] = 0.0
+                selected.append(fallback)
+        meta["used"] = True
+        meta["reranked_count"] = len(ordered)
+        return selected[:limit], meta
+    except Exception as exc:
+        meta["error"] = str(exc)[:240]
+        return contexts[:limit], meta
 
 
 def expand_contexts_with_adjacent_chunks(
@@ -583,7 +1292,16 @@ def retrieve_pageindex_contexts(
 
 
 def adaptive_retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) -> Tuple[List[dict], str, str, int, dict]:
+    # Phase-1 RAG router entrypoint. The original adaptive text retrieval logic is
+    # kept below in _adaptive_text_retrieve_contexts and used by the text route.
+    from .rag.pipeline import retrieve_contexts
+
+    return retrieve_contexts(db, question, user, top_k=top_k)
+
+
+def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) -> Tuple[List[dict], str, str, int, dict]:
     plan = retrieval_plan_for_question(question, top_k)
+    query_profile = build_query_profile(question)
     candidate_contexts, retrieval_backend, retrieval_note, candidate_count = retrieve_candidate_contexts(
         db,
         question,
@@ -591,18 +1309,75 @@ def adaptive_retrieve_contexts(db: Session, question: str, user: User, top_k: in
         top_k=top_k,
         candidate_limit=int(plan["candidate_limit"]),
     )
+    group_ids = user_group_ids(user)
+    keyword_contexts = keyword_search_chunks(db, question, user, group_ids, max(int(plan["candidate_limit"]) // 2, int(plan["target_contexts"])))
+    keyword_candidate_count = len(keyword_contexts)
+    if keyword_contexts:
+        candidate_contexts = _merge_unique_contexts(candidate_contexts, keyword_contexts, ADAPTIVE_CANDIDATE_MAX)
+        if retrieval_backend == "qdrant":
+            retrieval_backend = "hybrid"
+        elif retrieval_backend == "sqlite":
+            retrieval_backend = "sqlite+keyword"
     filtered = filter_relevant_contexts(candidate_contexts, question, min_score=float(plan["min_score"]))
-    filtered.sort(key=lambda item: _safe_float(item.get("score")), reverse=True)
+    filtered = profile_rank_contexts(question, filtered, query_profile)
+    candidate_contexts = profile_rank_contexts(question, candidate_contexts, query_profile)
 
     target_contexts = int(plan["target_contexts"])
     min_contexts = int(plan["min_contexts"])
+
+    agentic_route = agentic_route_for_question(question, plan)
+    agentic_initial_quality = evaluate_agentic_evidence(question, filtered[:target_contexts] or candidate_contexts[:target_contexts], plan)
+    agentic_rewrites: list[str] = []
+    agentic_extra_candidate_count = 0
+    agentic_extra_filtered_count = 0
+    agentic_notes: list[str] = []
+    if agentic_route.get("enabled") and not agentic_initial_quality.get("enough"):
+        agentic_rewrites = rewrite_query_for_agentic(question, agentic_route)
+        extra_limit = min(
+            AGENTIC_EXTRA_CANDIDATE_MAX,
+            max(int(plan["target_contexts"]) * 3, int(plan["candidate_limit"]) // 2, 12),
+        )
+        for rewrite_query in agentic_rewrites[:AGENTIC_REWRITE_QUERY_LIMIT]:
+            extra_contexts, extra_backend, extra_note, extra_count = retrieve_candidate_contexts(
+                db,
+                rewrite_query,
+                user,
+                top_k=top_k,
+                candidate_limit=extra_limit,
+            )
+            agentic_extra_candidate_count += extra_count
+            extra_keywords = keyword_search_chunks(db, rewrite_query, user, group_ids, max(extra_limit // 2, int(plan["target_contexts"])))
+            if extra_keywords:
+                extra_contexts = _merge_unique_contexts(extra_contexts, extra_keywords, extra_limit)
+            extra_filtered = filter_relevant_contexts(extra_contexts, rewrite_query, min_score=max(0.10, float(plan["min_score"]) - 0.04))
+            extra_ranked = profile_rank_contexts(question, extra_filtered or extra_contexts, query_profile)
+            tagged_extra: list[dict] = []
+            for context in extra_ranked:
+                tagged = dict(context)
+                tagged["agentic_rewrite_query"] = rewrite_query
+                tagged["agentic_retrieval_round"] = 1
+                if not tagged.get("retrieval_channel"):
+                    tagged["retrieval_channel"] = "agentic_rewrite"
+                tagged_extra.append(tagged)
+            agentic_extra_filtered_count += len(extra_filtered)
+            if tagged_extra:
+                candidate_contexts = _merge_unique_contexts(candidate_contexts, tagged_extra, ADAPTIVE_CANDIDATE_MAX)
+                if retrieval_backend in ("qdrant", "sqlite", "sqlite+keyword"):
+                    retrieval_backend = "hybrid"
+            agentic_notes.append(f"rewrite_backend={extra_backend}; extra={extra_count}; filtered={len(extra_filtered)}" + (f"; note={extra_note}" if extra_note else ""))
+
+        if agentic_extra_candidate_count:
+            filtered = filter_relevant_contexts(candidate_contexts, question, min_score=float(plan["min_score"]))
+            filtered = profile_rank_contexts(question, filtered, query_profile)
+            candidate_contexts = profile_rank_contexts(question, candidate_contexts, query_profile)
+
+    agentic_final_quality = evaluate_agentic_evidence(question, filtered[:target_contexts] or candidate_contexts[:target_contexts], plan)
     best_score = max((_safe_float(item.get("score"), 0.0) for item in filtered), default=max((_safe_float(item.get("score"), 0.0) for item in candidate_contexts), default=0.0))
     final_contexts = filtered[:target_contexts]
     if len(final_contexts) < min_contexts and filtered and best_score >= max(0.18, float(plan["min_score"])):
         # 低命中时不要直接放弃：用候选池中分数最高的片段补足最小上下文，随后仍会由置信度逻辑提示风险。
         final_contexts = _merge_unique_contexts(final_contexts, candidate_contexts, min_contexts)
 
-    group_ids = user_group_ids(user)
     expand_allowed = bool(final_contexts) and best_score >= max(0.22, float(plan["min_score"]))
     expanded_contexts, adjacent_added = expand_contexts_with_adjacent_chunks(
         db,
@@ -612,12 +1387,14 @@ def adaptive_retrieve_contexts(db: Session, question: str, user: User, top_k: in
         window=int(plan["adjacent_window"]),
         max_added=int(plan["neighbor_budget"]),
     ) if expand_allowed else (final_contexts, 0)
+    expanded_contexts = _filter_process_contexts(question, expanded_contexts)
+    pageindex_base_contexts = _filter_process_contexts(question, expanded_contexts or final_contexts or candidate_contexts)
     pageindex_contexts = retrieve_pageindex_contexts(
         db,
         question,
         user,
         group_ids,
-        base_contexts=expanded_contexts or final_contexts or candidate_contexts,
+        base_contexts=pageindex_base_contexts,
         max_contexts=PAGEINDEX_SUPPLEMENT_MAX,
     )
     pageindex_added = len(pageindex_contexts)
@@ -625,20 +1402,43 @@ def adaptive_retrieve_contexts(db: Session, question: str, user: User, top_k: in
         # PageIndex carries the document structure/tree and should be the primary context.
         # Vector/SQLite chunks are kept only as supplemental evidence after structural hits.
         expanded_contexts = _merge_unique_contexts(pageindex_contexts, expanded_contexts, ADAPTIVE_CONTEXT_MAX)
+    expanded_contexts = _filter_process_contexts(question, expanded_contexts)
     expanded_contexts = expanded_contexts[:ADAPTIVE_CONTEXT_MAX]
     pre_rerank_count = len(expanded_contexts)
     final_limit = min(ADAPTIVE_FINAL_CONTEXT_MAX, max(ADAPTIVE_FINAL_CONTEXT_MIN, int(plan["target_contexts"])))
-    expanded_contexts, pageindex_selected = rerank_contexts(question, expanded_contexts, final_limit)
+    rule_limit = min(ADAPTIVE_CONTEXT_MAX, max(final_limit, get_reranker_config(db).get("max_candidates", 24)))
+    expanded_contexts, pageindex_selected = rerank_contexts(question, expanded_contexts, rule_limit, query_profile)
+    expanded_contexts, llm_reranker_meta = llm_rerank_contexts(db, question, expanded_contexts, final_limit)
+    pageindex_selected = sum(1 for item in expanded_contexts if item.get("pageindex_source"))
 
     best_score = max((_safe_float(item.get("score"), 0.0) for item in [*candidate_contexts, *pageindex_contexts]), default=0.0)
     unique_docs = {str(item.get("document_id") or "") for item in expanded_contexts if item.get("document_id")}
     meta = {
         **plan,
         "candidate_count": candidate_count,
+        "query_profile": query_profile,
+        "keyword_candidate_count": keyword_candidate_count,
+        "merged_candidate_count": len(candidate_contexts),
         "filtered_count": len(filtered),
         "final_context_count": len(expanded_contexts),
         "pre_rerank_context_count": pre_rerank_count,
         "rerank_limit": final_limit,
+        "rule_rerank_limit": rule_limit,
+        "llm_reranker_enabled": bool(llm_reranker_meta.get("enabled")),
+        "llm_reranker_used": bool(llm_reranker_meta.get("used")),
+        "llm_reranker_model": llm_reranker_meta.get("model") or "",
+        "llm_reranker_error": llm_reranker_meta.get("error") or "",
+        "llm_reranked_count": llm_reranker_meta.get("reranked_count") or 0,
+        "agentic_enabled": bool(agentic_route.get("enabled")),
+        "agentic_strategy": agentic_route.get("strategy") or "single_pass_rag",
+        "agentic_complexity_score": agentic_route.get("complexity_score") or 0.0,
+        "agentic_reasons": agentic_route.get("reasons") or [],
+        "agentic_initial_quality": agentic_initial_quality,
+        "agentic_final_quality": agentic_final_quality,
+        "agentic_rewrite_queries": agentic_rewrites,
+        "agentic_extra_rounds": 1 if agentic_extra_candidate_count else 0,
+        "agentic_extra_candidate_count": agentic_extra_candidate_count,
+        "agentic_extra_filtered_count": agentic_extra_filtered_count,
         "adjacent_added": adjacent_added,
         "pageindex_added": pageindex_added,
         "pageindex_selected": pageindex_selected,
@@ -651,10 +1451,23 @@ def adaptive_retrieve_contexts(db: Session, question: str, user: User, top_k: in
         retrieval_note,
         f"adaptive:{plan['intent']}",
         f"candidates={candidate_count}",
+        f"keyword={keyword_candidate_count}",
         f"filtered={len(filtered)}",
         f"contexts={len(expanded_contexts)}",
         f"rerank={pre_rerank_count}->{len(expanded_contexts)}",
+        f"agentic={'on' if agentic_route.get('enabled') else 'off'}",
+        f"agentic_rounds={1 if agentic_extra_candidate_count else 0}",
     ]
+    if agentic_rewrites:
+        note_parts.append(f"agentic_rewrites={len(agentic_rewrites)}")
+    if agentic_notes:
+        note_parts.extend(agentic_notes[:2])
+    if llm_reranker_meta.get("used"):
+        note_parts.append("llm_reranker=used")
+    elif llm_reranker_meta.get("enabled"):
+        note_parts.append("llm_reranker=failed")
+    else:
+        note_parts.append("llm_reranker=disabled")
     if adjacent_added:
         note_parts.append(f"adjacent_added={adjacent_added}")
     if pageindex_added:

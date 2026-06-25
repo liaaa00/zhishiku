@@ -143,6 +143,10 @@ def build_citation(context: dict, index: int = 0) -> dict:
         "relevance_score": normalized_score(context.get("score")),
         "similarity": normalized_score(context.get("score")),
         "confidence": normalized_score(context.get("score")),
+        "rerank_score": normalized_score(context.get("rerank_score")),
+        "llm_rerank_score": normalized_score(context.get("llm_rerank_score")),
+        "llm_rerank_reason": context.get("llm_rerank_reason") or "",
+        "retrieval_channel": context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "semantic"),
         "match_reason": context.get("match_reason") or citation_match_reason(context, context.get("match_terms") or []),
         "matched_snippet": context.get("matched_snippet") or snippet_text(content),
         "highlight_ranges": context.get("highlight_ranges") or build_highlight_ranges(content, context.get("match_terms") or []),
@@ -164,6 +168,10 @@ def build_citation(context: dict, index: int = 0) -> dict:
         "index_source": "pageindex" if context.get("pageindex_source") else "chunk",
         "chunks_used": context.get("chunks_used"),
         "total_chunks": context.get("total_chunks"),
+        "table_row": context.get("table_row"),
+        "table_row_id": context.get("table_row_id"),
+        "sheet_name": context.get("sheet_name"),
+        "row_number": context.get("row_number"),
     }
     return citation
 
@@ -173,14 +181,23 @@ def serialize_sources(contexts: List[dict]) -> List[dict]:
 
 
 def compute_grounding_confidence(contexts: List[dict]) -> float:
-    scores = [normalized_score(c.get("score")) for c in contexts]
-    scores = [s for s in scores if s is not None]
+    scores = []
+    for context in contexts:
+        candidates = [
+            normalized_score(context.get("llm_rerank_score")),
+            normalized_score(context.get("rerank_score")),
+            normalized_score(context.get("score")),
+        ]
+        candidates = [item for item in candidates if item is not None]
+        if candidates:
+            scores.append(max(candidates))
     if not contexts:
         return 0.0
     if scores:
         best = max(scores)
         lexical_boost = 0.12 if any(c.get("match_terms") for c in contexts) else 0.0
-        return round(max(0.0, min(best + lexical_boost, 1.0)), 4)
+        pageindex_boost = 0.08 if any(c.get("pageindex_source") for c in contexts) else 0.0
+        return round(max(0.0, min(best + lexical_boost + pageindex_boost, 1.0)), 4)
     return 0.45 if any(c.get("match_terms") for c in contexts) else 0.0
 
 

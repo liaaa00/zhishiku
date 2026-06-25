@@ -289,6 +289,67 @@ def _build_record_digest(records: list[dict], contexts: list[dict]) -> list[str]
     return lines
 
 
+def build_table_structured_digest(question: str, contexts: list[dict]) -> str:
+    lines: list[str] = []
+    lines.append("## 表格结构化证据包")
+    lines.append("- 整理方式：系统已按 Excel/CSV 的工作表与行号读取结构化行，回答统计类问题时应基于这些表格行，而不是按普通切片猜测。")
+    lines.append(f"- 命中表格行数：{len([c for c in contexts if not c.get('is_header')])}")
+    if question:
+        lines.append(f"- 用户问题：{_clean(question, 140)}")
+
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for context in contexts:
+        title = context.get("document_title") or context.get("filename") or "未知表格"
+        grouped[str(title)].append(context)
+
+    for title, items in grouped.items():
+        lines.append(f"\n### {title}")
+        by_sheet: dict[str, list[dict]] = defaultdict(list)
+        for item in items:
+            by_sheet[str(item.get("sheet_name") or "Sheet1")].append(item)
+        for sheet, sheet_items in by_sheet.items():
+            rows = [item for item in sheet_items if not item.get("is_header")]
+            lines.append(f"- 工作表：{sheet}；行数：{len(rows)}")
+            header = next((item.get("table_row") for item in sheet_items if item.get("is_header") and item.get("table_row")), None)
+            if isinstance(header, dict) and header:
+                lines.append("- 字段：" + "、".join(str(v) for v in header.values() if v)[:300])
+            lines.append("| 行号 | 省份 | 城市 | 单位/公司 | 银行账户 | 社保公积金账户 | 公积金比例 | 社保截止 | 医保截止 | 公积金截止 | 社保规则 | 公积金规则 |")
+            lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+            for item in rows[:80]:
+                row = item.get("table_row") or {}
+                if not isinstance(row, dict):
+                    row = {}
+                company = row.get("单位名称") or row.get("当前进度-4.开设公司名称") or row.get("开设公司名称") or ""
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        _clean(str(value), 80)
+                        for value in [
+                            item.get("row_number") or "",
+                            row.get("省份") or "",
+                            row.get("城市") or "",
+                            company,
+                            row.get("当前进度-1.银行账户是否开具完成") or "",
+                            row.get("当前进度-2.社保公积金账户是否开具完成") or "",
+                            row.get("当前进度-3.公积金比例") or "",
+                            row.get("截止时间-社保") or "",
+                            row.get("截止时间-医保") or "",
+                            row.get("截止时间-公积金") or "",
+                            row.get("操作规则-社保") or "",
+                            row.get("操作规则-公积金") or "",
+                        ]
+                    )
+                    + " |"
+                )
+            if len(rows) > 80:
+                lines.append(f"- 还有 {len(rows) - 80} 行未展开，必要时请提示用户缩小筛选条件。")
+    lines.append("\n## 回答要求")
+    lines.append("- 如果问题是统计有效网点，应优先按字段判断：银行账户是否开具完成=是 且 社保公积金账户是否开具完成=是。")
+    lines.append("- 如果问题是城市/月份时间节点，应定位相应工作表和城市行，给出社保、医保、公积金规则、截止时间和预计缴款时间。")
+    lines.append("- 不要展示 chunk 编号；引用来源面板会显示文档、工作表和行号。")
+    return "\n".join(lines)
+
+
 def _build_generic_digest(contexts: list[dict], summary_mode: bool = False) -> list[str]:
     lines: list[str] = []
     lines.append("- 整理方式：按文档去重汇总，再按对象范围、流程要求、时间金额、风险例外进行主题归类。")
@@ -355,6 +416,9 @@ def _build_generic_digest(contexts: list[dict], summary_mode: bool = False) -> l
 def build_structured_digest(question: str, contexts: list[dict], summary_mode: bool = False) -> str:
     if not contexts:
         return ""
+
+    if any(context.get("retrieval_channel") == "table" for context in contexts):
+        return build_table_structured_digest(question, contexts)
 
     records = parse_excel_like_records(contexts) or _parse_key_value_records(contexts)
     doc_titles = _unique_doc_titles(contexts)

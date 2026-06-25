@@ -97,15 +97,18 @@ def _maybe_build_pageindex(db: Session, doc: Document, pages: list[tuple[int | N
     allowed, reason = can_build_pageindex(doc, pages)
     if not allowed:
         _record_pageindex_skipped(db, doc, reason)
+        db.commit()
         return
     try:
         cfg = get_model_config(db)
         mark_pageindex_pending(db, doc, "building")
-        db.flush()
+        db.commit()
         build_pageindex_for_document(db, doc, pages, cfg=cfg)
     except Exception as exc:
+        db.rollback()
         # PageIndex is a sidecar index. It must never make the traditional chunk index fail.
         _record_pageindex_failed(db, doc, exc)
+        db.commit()
 
 
 def parse_document_to_chunks(db: Session, doc: Document) -> int:
@@ -118,9 +121,11 @@ def parse_document_to_chunks(db: Session, doc: Document) -> int:
     if source_type == "chat_image" or ext in IMAGE_EXTENSIONS:
         cfg = get_model_config(db)
         set_doc_status(db, doc, "processing", "vision_ocr", "正在调用视觉模型提取图片文字和内容。")
+        db.commit()
         text_content = image_to_text(str(storage_path), cfg["api_key"], cfg["base_url"], cfg["model"])
         pages = [(1, text_content)] if text_content else []
         chunks = add_chunks(db, doc.id, pages)
+        db.commit()
         _maybe_build_pageindex(db, doc, pages)
         return chunks
 
@@ -136,12 +141,15 @@ def parse_document_to_chunks(db: Session, doc: Document) -> int:
             ".markdown": "markdown_extract",
         }.get(ext, "document_extract")
         set_doc_status(db, doc, "processing", stage, "正在解析文档内容。")
+        db.commit()
         pages = extract_supported_document(str(storage_path))
         if ext == ".pdf" and _total_extracted_chars(pages) == 0:
             cfg = get_model_config(db)
             set_doc_status(db, doc, "processing", "pdf_vision_ocr", f"PDF 未提取到文本，正在对前 {PDF_OCR_MAX_PAGES} 页进行视觉 OCR。")
+            db.commit()
             pages = _ocr_pdf_pages(storage_path, cfg)
         chunks = add_chunks(db, doc.id, pages)
+        db.commit()
         _maybe_build_pageindex(db, doc, pages)
         return chunks
 
@@ -245,6 +253,26 @@ def initialize_runtime_schema():
         add_column_if_missing(conn, "feedback", "handled_by_user_id", "handled_by_user_id TEXT")
         add_column_if_missing(conn, "feedback", "handled_by_username", "handled_by_username TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(conn, "feedback", "handled_at", "handled_at DATETIME")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS document_table_rows (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                sheet_name TEXT NOT NULL DEFAULT '',
+                row_number INTEGER,
+                row_key TEXT NOT NULL DEFAULT '',
+                row_json TEXT NOT NULL,
+                row_text TEXT NOT NULL,
+                is_header BOOLEAN NOT NULL DEFAULT 0,
+                source_chunk_index INTEGER,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_document_table_rows_document_id ON document_table_rows(document_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_document_table_rows_sheet_name ON document_table_rows(sheet_name)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_document_table_rows_row_key ON document_table_rows(row_key)")
 
 
 def bootstrap_default_admin():

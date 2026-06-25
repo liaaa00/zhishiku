@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .config import UPLOAD_DIR
-from .models import BackgroundTask, Document, DocumentChunk, DocumentPageIndex, DocumentProcessingStatus, document_group_link
+from .models import BackgroundTask, Document, DocumentChunk, DocumentPageIndex, DocumentProcessingStatus, DocumentTableRow, document_group_link
 from .pageindex_adapter import delete_pageindex_files
 from .retrieval import has_document_access
 from .vector_store import QdrantUnavailable, delete_document_vectors
@@ -35,6 +35,7 @@ def ensure_admin_document(db: Session, document_id: str) -> Document:
 
 def cleanup_document_rows(db: Session, document_id: str):
     db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
+    db.query(DocumentTableRow).filter(DocumentTableRow.document_id == document_id).delete()
     db.query(DocumentPageIndex).filter(DocumentPageIndex.document_id == document_id).delete()
     db.query(DocumentProcessingStatus).filter(DocumentProcessingStatus.document_id == document_id).delete()
     db.query(BackgroundTask).filter(BackgroundTask.document_id == document_id).delete()

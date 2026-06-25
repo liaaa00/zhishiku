@@ -492,7 +492,7 @@ def build_pageindex_for_document(
     row.engine = "processing"
     row.error_message = ""
     row.updated_at = _utcnow()
-    db.flush()
+    db.commit()
 
     delete_pageindex_files(doc.id)
     output_path = _index_json_path(doc.id)

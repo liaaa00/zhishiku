@@ -51,6 +51,7 @@ class Document(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     groups = relationship("Group", secondary=document_group_link, back_populates="documents")
     chunks = relationship("DocumentChunk", cascade="all, delete-orphan", back_populates="document")
+    table_rows = relationship("DocumentTableRow", cascade="all, delete-orphan", back_populates="document")
     page_index = relationship("DocumentPageIndex", cascade="all, delete-orphan", back_populates="document", uselist=False)
 
 
@@ -63,6 +64,22 @@ class DocumentChunk(Base):
     content = Column(Text, nullable=False)
     embedding_json = Column(Text, nullable=False)
     document = relationship("Document", back_populates="chunks")
+
+
+class DocumentTableRow(Base):
+    __tablename__ = "document_table_rows"
+    id = Column(String, primary_key=True)
+    document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False)
+    sheet_name = Column(String(120), nullable=False, default="")
+    row_number = Column(Integer, nullable=True)
+    row_key = Column(String(200), nullable=False, default="")
+    row_json = Column(Text, nullable=False)
+    row_text = Column(Text, nullable=False)
+    is_header = Column(Boolean, nullable=False, default=False)
+    source_chunk_index = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    document = relationship("Document", back_populates="table_rows")
 
 
 class DocumentPageIndex(Base):

@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..citation_utils import bounded_limit
 from ..database import get_db
@@ -13,15 +13,18 @@ router = APIRouter()
 
 
 @router.get("/api/admin/tasks")
-def list_tasks(limit: int = Query(200, ge=1, le=500), db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    row_limit = bounded_limit(limit, 200, 500)
-    rows = db.execute(select(BackgroundTask).order_by(BackgroundTask.created_at.desc()).limit(row_limit)).scalars().all()
+def list_tasks(limit: int = Query(500, ge=1, le=500), db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    row_limit = bounded_limit(limit, 500, 500)
+    rows = db.execute(
+        select(BackgroundTask).options(selectinload(BackgroundTask.document)).order_by(BackgroundTask.created_at.desc()).limit(row_limit)
+    ).scalars().all()
     return [
         {
             "id": t.id,
             "task_type": t.task_type,
             "document_id": t.document_id,
             "document_title": t.document.title if t.document else "",
+            "document_filename": t.document.filename if t.document else "",
             "status": t.status,
             "attempts": t.attempts,
             "last_error": t.last_error,

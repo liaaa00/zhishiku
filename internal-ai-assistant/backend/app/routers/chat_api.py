@@ -31,6 +31,7 @@ from ..retrieval import adaptive_retrieve_contexts
 from ..routers.admin_feedback import FEEDBACK_CATEGORIES
 from ..settings_service import get_model_config
 from ..structured_digest import build_structured_digest, should_use_structured_digest
+from ..table_query import build_table_answer
 from ..task_service import enqueue_document_task
 from ..upload_policy import CHAT_FILE_EXTENSIONS, IMAGE_EXTENSIONS
 from ..upload_security import validate_upload_file
@@ -54,6 +55,17 @@ def _main_compat_callable(name: str):
     except ImportError:
         return None
     return getattr(app_main, name, None)
+
+
+def _is_default_ai_client_callable(func, name: str) -> bool:
+    """Return True for the default ai_client implementation imported by app.main.
+
+    app.main imports the old chat_answer for backwards compatibility. Treat that
+    default import as non-overridden so the router can use the newer v2 grounded
+    answer path in real runtime, while still allowing tests to monkeypatch it.
+    """
+    module = str(getattr(func, "__module__", ""))
+    return getattr(func, "__name__", "") == name and module.endswith("ai_client")
 
 
 @router.post("/api/chat/attachments")
@@ -105,7 +117,7 @@ def model_contexts_for_answer(contexts: list[dict], summary_mode: bool, max_cont
 
 def _call_knowledge_answer(question: str, contexts: list[dict], api_key: str | None, base_url: str | None, model: str | None, history: list[dict] | None = None, structured_digest: str = "") -> str:
     legacy_answer = _main_compat_callable("chat_answer")
-    if callable(legacy_answer):
+    if callable(legacy_answer) and not _is_default_ai_client_callable(legacy_answer, "chat_answer"):
         try:
             return legacy_answer(question, contexts, api_key, base_url, model, history=history)
         except TypeError:
@@ -237,9 +249,14 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         answer = append_interaction_footer(answer, suggestions)
     else:
         mode = "knowledge"
-        answer = _call_knowledge_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest)
-        if confidence < LOW_CONFIDENCE_THRESHOLD and not summary_mode and not recent_context_used:
-            answer = "未在知识库中找到充分依据：以下仅根据检索到的知识库片段生成，请结合引用片段核验。\n\n" + answer
+        table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
+        if table_answer_mode:
+            answer = build_table_answer(question, answer_contexts)
+        else:
+            answer = _call_knowledge_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest)
+            if confidence < LOW_CONFIDENCE_THRESHOLD and not summary_mode and not recent_context_used:
+                answer = "未在知识库中找到充分依据：以下仅根据检索到的知识库片段生成，请结合引用片段核验。\n\n" + answer
+        retrieval_meta["answer_composer"] = "table_local" if table_answer_mode else "llm_grounded"
         answer = append_interaction_footer(answer, suggestions)
     answer = strip_inline_source_markers(answer)
     session_id = req.session_id or new_id()
@@ -426,23 +443,32 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                     yield _sse_event("delta", footer)
             else:
                 prefix = ""
-                if confidence < LOW_CONFIDENCE_THRESHOLD and not summary_mode and not recent_context_used:
+                table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
+                if confidence < LOW_CONFIDENCE_THRESHOLD and not summary_mode and not recent_context_used and not table_answer_mode:
                     prefix = "未在知识库中找到充分依据：以下仅根据检索到的知识库片段生成，请结合引用片段核验。\n\n"
                     answer_parts.append(prefix)
                     yield _sse_event("delta", prefix)
-                legacy_answer = _main_compat_callable("chat_answer")
-                if callable(legacy_answer):
-                    try:
-                        answer_text = legacy_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history)
-                    except TypeError:
-                        answer_text = legacy_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"])
+                if table_answer_mode:
+                    answer_text = build_table_answer(question, answer_contexts)
+                    retrieval_meta["answer_composer"] = "table_local"
                     for piece in [answer_text[i : i + 80] for i in range(0, len(answer_text), 80)]:
                         answer_parts.append(piece)
                         yield _sse_event("delta", piece)
                 else:
-                    for piece in stream_chat_answer_v2(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest):
-                        answer_parts.append(piece)
-                        yield _sse_event("delta", piece)
+                    retrieval_meta["answer_composer"] = "llm_grounded"
+                    legacy_answer = _main_compat_callable("chat_answer")
+                    if callable(legacy_answer) and not _is_default_ai_client_callable(legacy_answer, "chat_answer"):
+                        try:
+                            answer_text = legacy_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history)
+                        except TypeError:
+                            answer_text = legacy_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"])
+                        for piece in [answer_text[i : i + 80] for i in range(0, len(answer_text), 80)]:
+                            answer_parts.append(piece)
+                            yield _sse_event("delta", piece)
+                    else:
+                        for piece in stream_chat_answer_v2(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest):
+                            answer_parts.append(piece)
+                            yield _sse_event("delta", piece)
                 footer = ""
                 if suggestions:
                     footer = "\n\n你可以继续问：\n" + "\n".join(f"- {item}" for item in suggestions[:3])
@@ -497,6 +523,29 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
         raise HTTPException(status_code=400, detail="请输入测试问题")
     contexts, retrieval_backend, retrieval_note, candidate_count, retrieval_meta = retrieve_contexts(db, question, user, req.top_k)
     sources = serialize_sources(contexts)
+    source_diagnostics = []
+    for index, context in enumerate(contexts, start=1):
+        content = " ".join(str(context.get("content") or "").split())
+        source_diagnostics.append({
+            "rank": index,
+            "document_id": context.get("document_id") or "",
+            "document_title": context.get("document_title") or context.get("filename") or "未知文档",
+            "filename": context.get("filename") or "",
+            "page_number": context.get("page_number"),
+            "chunk_id": context.get("chunk_id") or "",
+            "chunk_index": context.get("chunk_index"),
+            "source_type": context.get("source_type") or "document",
+            "score": context.get("score"),
+            "rerank_score": context.get("rerank_score"),
+            "llm_rerank_score": context.get("llm_rerank_score"),
+            "llm_rerank_reason": context.get("llm_rerank_reason") or "",
+            "match_reason": context.get("match_reason") or "",
+            "match_terms": context.get("match_terms") or [],
+            "pageindex_source": bool(context.get("pageindex_source")),
+            "retrieval_channel": context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "semantic"),
+            "location": context.get("location") or "",
+            "preview": content[:360],
+        })
     return {
         "question": question,
         "retrieval_backend": retrieval_backend,
@@ -504,7 +553,11 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
         "candidate_count": candidate_count,
         "confidence": compute_grounding_confidence(contexts),
         "sources": sources,
+        "source_diagnostics": source_diagnostics,
         "source_count": len(sources),
+        "query_analysis": retrieval_meta.get("query_analysis") or {},
+        "retrieval_route": retrieval_meta.get("retrieval_route") or {},
+        "evidence_check": retrieval_meta.get("evidence_check") or {},
         "retrieval_meta": retrieval_meta,
     }
 
