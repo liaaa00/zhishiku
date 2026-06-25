@@ -248,6 +248,27 @@ def _distinct_column(question: str) -> str:
     return ""
 
 
+def _select_columns(question: str, value_filters: list[dict[str, str]] | None = None) -> list[str]:
+    compact = _compact(question)
+    for item in value_filters or []:
+        column = item.get("column") or ""
+        value = item.get("value") or ""
+        if not column or not value:
+            continue
+        for alias in COLUMN_ALIASES.get(column, ()):
+            compact = re.sub(rf"{re.escape(alias)}(?:是|为|=|：|:){re.escape(value)}", "", compact)
+
+    candidates: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for group, aliases in COLUMN_ALIASES.items():
+        positions = [compact.find(alias) for alias in aliases if alias and compact.find(alias) >= 0]
+        if positions and group not in seen:
+            seen.add(group)
+            candidates.append((min(positions), group))
+    candidates.sort(key=lambda item: item[0])
+    return [group for _position, group in candidates[:8]]
+
+
 def _query_operation(question: str, group_by: str = "", distinct_by: str = "") -> str:
     compact = _compact(question)
     if group_by:
@@ -371,6 +392,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     value_filters = [] if branch_completion_query else _explicit_value_filters(question)
     group_by = _group_by_column(question)
     distinct_by = _distinct_column(question)
+    select_columns = [] if branch_completion_query else _select_columns(question, value_filters)
     query_op = "branch_completion_count" if branch_completion_query else _query_operation(question, group_by, distinct_by)
 
     for doc_rank, doc in enumerate(docs):
@@ -440,6 +462,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "value_filter_matched_rows": value_filter_matched_rows,
             "group_by": group_by,
             "distinct_by": distinct_by,
+            "select_columns": select_columns,
             "query_op": query_op,
         }
     if len(selected) < max_contexts:
@@ -467,5 +490,6 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "value_filter_matched_rows": value_filter_matched_rows,
         "group_by": group_by,
         "distinct_by": distinct_by,
+        "select_columns": select_columns,
         "query_op": query_op,
     }

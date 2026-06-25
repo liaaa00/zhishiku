@@ -363,6 +363,27 @@ def _group_by_column(question: str) -> str:
     return ""
 
 
+def _select_columns(question: str, value_filters: list[dict[str, str]] | None = None) -> list[str]:
+    compact = _compact(question)
+    for item in value_filters or []:
+        column = item.get("column") or ""
+        value = item.get("value") or ""
+        if not column or not value:
+            continue
+        for alias in COLUMN_ALIASES.get(column, ()):
+            compact = re.sub(rf"{re.escape(alias)}(?:是|为|=|：|:){re.escape(value)}", "", compact)
+
+    candidates: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for group, aliases in COLUMN_ALIASES.items():
+        positions = [compact.find(alias) for alias in aliases if alias and compact.find(alias) >= 0]
+        if positions and group not in seen:
+            seen.add(group)
+            candidates.append((min(positions), group))
+    candidates.sort(key=lambda item: item[0])
+    return [group for _position, group in candidates[:8]]
+
+
 def _query_operation(question: str, group_by: str = "", distinct_by: str = "") -> str:
     compact = _compact(question)
     if group_by:
@@ -462,6 +483,7 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     distinct_by = _distinct_column(question)
     query_op = "branch_completion_count" if branch_completion else _query_operation(question, group_by, distinct_by)
     value_filters = [] if branch_completion else _question_value_filters(question)
+    select_columns = [] if branch_completion else _select_columns(question, value_filters)
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
     distinct_values: list[str] = []
     group_counts: dict[str, int] = defaultdict(int)
@@ -541,6 +563,9 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     if value_filters:
         filter_text = "；".join(f"{COLUMN_LABELS.get(item.get('column') or '', item.get('column') or '字段')} 包含 {item.get('value')}" for item in value_filters)
         lines.append(f"- 过滤条件：{filter_text}。")
+    if select_columns:
+        select_text = "、".join(COLUMN_LABELS.get(column, column) for column in select_columns)
+        lines.append(f"- 展示字段：{select_text}。")
     if distinct_by:
         label = "城市" if distinct_by == "city" else "公司"
         lines.append(f"- 对命中的 `{label}` 列按非空值去重统计。")
@@ -569,6 +594,11 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
         for item in items[:20]:
             row = item.get("table_row") or {}
             parts = []
+            if select_columns:
+                for column in select_columns:
+                    value = _first_alias_value(row, column)
+                    if value:
+                        parts.append(f"{COLUMN_LABELS.get(column, column)}={value}")
             for key in preferred_columns:
                 value = _clean(row.get(key, ""))
                 if value:
@@ -577,7 +607,7 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
                 parts = [f"{k}={_clean(v)}" for k, v in list(row.items())[:8] if _clean(v)]
             row_no = item.get("row_number") or ""
             prefix = f"行{row_no}：" if row_no else "- "
-            lines.append(prefix + " | ".join(parts[:12]))
+            lines.append(prefix + " | ".join(list(dict.fromkeys(parts))[:12]))
         if len(items) > 20:
             lines.append(f"- 另有 {len(items) - 20} 行未在预览中展开。")
     return "\n".join(lines)

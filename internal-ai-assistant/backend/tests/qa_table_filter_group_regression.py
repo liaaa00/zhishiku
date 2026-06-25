@@ -95,6 +95,16 @@ def main() -> None:
         if "查询操作：明细列举" not in multi_answer:
             raise AssertionError(f"answer should explain list operation; answer={multi_answer}")
 
+        projection_question = "列出城市=上海且状态=有效的公司名称、城市、状态"
+        projection_contexts, projection_meta = table_mode_contexts(db, projection_question, user, top_k=10)
+        if projection_meta.get("select_columns") != ["company", "city", "status"]:
+            raise AssertionError(f"projection should detect company/city/status, got {projection_meta}")
+        projection_answer = build_table_answer(projection_question, projection_contexts)
+        if "展示字段：公司、城市、状态" not in projection_answer:
+            raise AssertionError(f"answer should explain selected columns; answer={projection_answer}")
+        if "公司=上海一号网点 | 城市=上海 | 状态=有效" not in projection_answer:
+            raise AssertionError(f"preview should prioritize projected fields; answer={projection_answer}")
+
         group_question = "有效网点按城市统计分别有多少个？"
         group_contexts, group_meta = table_mode_contexts(db, group_question, user, top_k=10)
         if group_meta.get("query_op") != "group_count":
