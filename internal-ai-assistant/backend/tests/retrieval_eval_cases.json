@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "description": "数据驱动的检索评测集。默认使用 fixture 文档构造隔离 SQLite 库；后续可把真实业务问题逐步补到 cases 里。",
+  "defaults": {
+    "top_k": 8,
+    "user_id": "eval-user"
+  },
+  "fixture": {
+    "admin": {
+      "id": "eval-admin",
+      "username": "eval_admin",
+      "password": "eval_admin_password"
+    },
+    "users": [
+      {
+        "id": "eval-user",
+        "username": "eval_user",
+        "password": "eval_user_password",
+        "groups": ["eval-group"]
+      }
+    ],
+    "groups": [
+      {
+        "id": "eval-group",
+        "name": "Eval Group"
+      }
+    ],
+    "documents": [
+      {
+        "id": "eval-doc-employee-esign",
+        "title": "员工服务操作说明2026",
+        "filename": "eval_employee_service_guide.txt",
+        "source_type": "txt",
+        "groups": ["eval-group"],
+        "chunks": [
+          "员工收到短信后，登录外服云或微助手进入员工服务入口，打开电子合同页面，核对劳动合同信息后点击签署。签署完成后系统提示完成。"
+        ]
+      },
+      {
+        "id": "eval-doc-micro-assistant",
+        "title": "外服云微助手注册登录流程",
+        "filename": "eval_micro_assistant_login.txt",
+        "source_type": "txt",
+        "groups": ["eval-group"],
+        "chunks": [
+          "微助手注册流程：员工先关注微助手，完成手机号验证和身份绑定，再进入员工服务入口办理劳动合同签署等事项。"
+        ]
+      },
+      {
+        "id": "eval-doc-workorder-internal",
+        "title": "劳动合同续签工单系统需求说明",
+        "filename": "eval_workorder_internal.txt",
+        "source_type": "txt",
+        "groups": ["eval-group"],
+        "chunks": [
+          "劳动合同续签工单系统需求说明：HR在工单系统中发起续签申请，合同组内部审核并盖章归档。该材料用于内部审批流配置。"
+        ]
+      },
+      {
+        "id": "eval-doc-form-noise",
+        "title": "全职员工入职人员信息表",
+        "filename": "eval_form_noise.xlsx",
+        "source_type": "xlsx",
+        "groups": ["eval-group"],
+        "chunks": [
+          "表格数据 A1:员工姓名 B1:劳动合同起始日 C1:劳动合同终止日。全职员工入职人员信息表。"
+        ]
+      },
+      {
+        "id": "eval-doc-shanghai-social-security-table",
+        "title": "上海社保公积金截止时间表",
+        "filename": "eval_shanghai_social_security_table.xlsx",
+        "source_type": "xlsx",
+        "groups": ["eval-group"],
+        "chunks": [
+          "上海社保公积金截止时间表：202603 社保截止时间为 2026-03-15，公积金预计缴款时间为 2026-03-20。"
+        ],
+        "table_rows": [
+          {
+            "id": "eval-table-header",
+            "sheet_name": "202603",
+            "row_number": 1,
+            "row_key": "header",
+            "row_json": {
+              "城市": "城市",
+              "截止时间-社保": "截止时间-社保",
+              "预计缴款时间-公积金": "预计缴款时间-公积金",
+              "操作规则-社保": "操作规则-社保"
+            },
+            "is_header": true
+          },
+          {
+            "id": "eval-table-shanghai-202603",
+            "sheet_name": "202603",
+            "row_number": 2,
+            "row_key": "上海",
+            "row_json": {
+              "城市": "上海",
+              "截止时间-社保": "2026-03-15",
+              "预计缴款时间-公积金": "2026-03-20",
+              "操作规则-社保": "当月15日前"
+            },
+            "is_header": false
+          }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "employee_esign_process_prefers_employee_guide",
+      "question": "劳动合同电子签流程是什么？",
+      "intent": "employee_esign_process",
+      "expected": {
+        "top_doc": "eval-doc-employee-esign",
+        "must_include_docs": ["eval-doc-employee-esign"],
+        "must_not_include_docs": ["eval-doc-workorder-internal", "eval-doc-form-noise"],
+        "query_profile": {
+          "task": "esign_process",
+          "actor": "employee"
+        },
+        "must_have_positive_signals": ["外服云", "微助手", "点击签署"]
+      }
+    },
+    {
+      "id": "employee_esign_registration_support_can_be_recalled",
+      "question": "微助手注册后怎么进入劳动合同签署入口？",
+      "intent": "employee_esign_support",
+      "expected": {
+        "top_n": 3,
+        "top_n_must_include_docs": ["eval-doc-micro-assistant", "eval-doc-employee-esign"],
+        "must_not_include_docs": ["eval-doc-workorder-internal"],
+        "query_profile": {
+          "task": "esign_process",
+          "actor": "employee"
+        }
+      }
+    },
+    {
+      "id": "internal_contract_workflow_retrieves_workorder",
+      "question": "合同组内部审核和盖章归档流程是什么？",
+      "intent": "internal_contract_workflow",
+      "expected": {
+        "top_n": 3,
+        "top_n_must_include_docs": ["eval-doc-workorder-internal"],
+        "must_include_terms": ["合同组", "盖章", "归档"]
+      }
+    },
+    {
+      "id": "table_deadline_uses_table_backend",
+      "question": "上海社保公积金截止时间表里2026年3月社保截止时间是什么？",
+      "intent": "table_deadline",
+      "expected": {
+        "backend": "table",
+        "must_include_docs": ["eval-doc-shanghai-social-security-table"],
+        "must_not_include_docs": ["eval-doc-employee-esign", "eval-doc-workorder-internal"],
+        "must_include_terms": ["2026-03-15"]
+      }
+    }
+  ]
+}

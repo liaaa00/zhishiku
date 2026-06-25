@@ -1,0 +1,83 @@
+{
+  "description": "真实知识库检索评测模板：只判断证据是否找对，不要求最终回答文字完全一致。先用 --real-db 跑当前 backend/data/app.db。",
+  "defaults": {
+    "username": "admin",
+    "top_k": 8
+  },
+  "cases": [
+    {
+      "id": "real_employee_esign_standard_001",
+      "category": "高频标准问法",
+      "question": "员工怎么签署电子劳动合同？",
+      "why": "用户明确问员工侧电子劳动合同签署流程，应该优先找员工操作指南和微助手入口资料。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": ["电子劳动合同", "微助手"],
+        "top_n_must_not_match_titles": ["工单系统"],
+        "must_include_terms": ["微助手"],
+        "must_have_positive_signals": ["微助手"]
+      }
+    },
+    {
+      "id": "real_employee_esign_colloquial_001",
+      "category": "口语化问法",
+      "question": "我收到签劳动合同的通知了，从哪里进去处理？",
+      "why": "真实用户不一定会说“电子签”，但语义仍是员工签署入口。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": ["电子劳动合同", "微助手"],
+        "top_n_must_not_match_titles": ["工单系统"],
+        "must_include_terms": ["微助手"]
+      }
+    },
+    {
+      "id": "real_micro_assistant_registration_001",
+      "category": "入口/前置流程",
+      "question": "外服云微助手怎么注册？",
+      "why": "注册问题应该优先命中微助手平台注册流程，而不是劳动合同操作或工单系统。",
+      "expected": {
+        "top_n": 3,
+        "top_n_must_match_titles": ["微助手"],
+        "top_n_must_not_match_titles": ["工单系统"],
+        "must_include_terms": ["微助手"]
+      }
+    },
+    {
+      "id": "real_internal_workorder_contract_001",
+      "category": "角色冲突/内部流程",
+      "question": "合同组在工单系统里怎么处理劳动合同续签交付？",
+      "why": "这里问的是内部合同组/工单处理，不应该被员工签署指南压过去。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": ["工单系统"],
+        "must_include_terms": ["合同组"],
+        "must_match_contexts": [["线下交付"], ["交付完成"]]
+      }
+    },
+    {
+      "id": "real_beilun_dispatch_deadline_001",
+      "category": "表格精确查询",
+      "question": "2026年3月北仑派单截止时间是什么时候？",
+      "why": "这类问题应该走表格检索，答案证据应该来自北仑派单截止时间表。",
+      "expected": {
+        "backend": "table",
+        "top_n": 5,
+        "top_n_must_match_titles": ["北仑", "派单截止时间"],
+        "must_not_match_titles": ["电子劳动合同", "工单系统"],
+        "must_include_terms": ["北仑"]
+      }
+    },
+    {
+      "id": "real_no_evidence_guardrail_001",
+      "category": "无资料/防幻觉",
+      "question": "深圳2027年医保缴费规则是什么？",
+      "why": "当前库里没有深圳2027医保缴费规则；即使召回弱相关材料，也不能把电子合同或工单材料当成强证据。",
+      "expected": {
+        "backend": "table",
+        "max_contexts": 0,
+        "top_n": 5,
+        "top_n_must_not_match_titles": ["电子劳动合同", "工单系统"]
+      }
+    }
+  ]
+}
