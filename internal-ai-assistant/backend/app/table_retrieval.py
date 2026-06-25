@@ -24,6 +24,26 @@ CITY_TERMS = (
     "石家庄",
 )
 
+COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "city": ("城市", "所在城市", "地市", "地区", "省市"),
+    "province": ("省份", "省", "所在省份"),
+    "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称"),
+    "bank_account": ("银行账户",),
+    "social_account": ("社保公积金账户", "社保账户", "公积金账户"),
+    "fund_ratio": ("公积金比例", "比例"),
+    "status": ("当前进度", "状态", "是否完成", "完成情况"),
+}
+
+QUESTION_COLUMN_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("city", ("城市", "地市", "地区")),
+    ("province", ("省份", "省")),
+    ("company", ("公司名称", "开设公司名称", "单位名称", "分公司", "网点")),
+    ("bank_account", ("银行账户",)),
+    ("social_account", ("社保公积金账户", "社保账户", "公积金账户")),
+    ("fund_ratio", ("公积金比例", "比例")),
+    ("status", ("当前进度", "状态", "是否完成", "完成情况")),
+)
+
 
 def _clean(value: Any) -> str:
     return " ".join(str(value or "").replace("\u3000", " ").split()).strip()
@@ -104,6 +124,111 @@ def _row_matches_city(context: dict, city_tokens: list[str]) -> bool:
         focused_values = [str(value or "") for value in row.values()]
     haystack = " ".join(focused_values)
     return any(city in haystack for city in city_tokens)
+
+
+def _column_matches(key: str, alias_group: str) -> bool:
+    key_text = str(key or "")
+    aliases = COLUMN_ALIASES.get(alias_group, ())
+    return any(alias in key_text for alias in aliases)
+
+
+def _row_values_for_alias(row: dict, alias_group: str) -> list[str]:
+    values: list[str] = []
+    for key, value in row.items():
+        if _column_matches(str(key), alias_group):
+            cleaned = _clean(value)
+            if cleaned:
+                values.append(cleaned)
+    return values
+
+
+def _row_text_for_aliases(row: dict, alias_groups: tuple[str, ...]) -> str:
+    values: list[str] = []
+    for group in alias_groups:
+        values.extend(_row_values_for_alias(row, group))
+    if not values:
+        values = [_clean(value) for value in row.values() if _clean(value)]
+    return " ".join(values)
+
+
+def _literal_after_marker(compact_question: str, marker: str) -> str:
+    match = re.search(rf"{re.escape(marker)}(?:是|为|=|：|:)([^，。；;、?？]+)", compact_question)
+    if not match:
+        return ""
+    value = _clean(match.group(1))
+    for stop_word in ("的", "清单", "名单", "列表", "明细", "统计", "有多少", "多少"):
+        index = value.find(stop_word)
+        if index > 0:
+            value = value[:index]
+    return _clean(value)
+
+
+def _explicit_value_filters(question: str) -> list[dict[str, str]]:
+    compact = _compact(question)
+    filters: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_filter(alias: str, value: str) -> None:
+        value = _clean(value)
+        if not value:
+            return
+        key = (alias, value)
+        if key in seen:
+            return
+        seen.add(key)
+        filters.append({"column": alias, "value": value})
+
+    for alias, markers in QUESTION_COLUMN_TERMS:
+        for marker in markers:
+            value = _literal_after_marker(compact, marker)
+            if value:
+                add_filter(alias, value)
+
+    for city in CITY_TERMS:
+        if city in compact:
+            add_filter("city", city)
+
+    quoted_values = re.findall(r"[‘'\"]([^‘’'\"]{1,30})[’'\"]", question or "")
+    for value in quoted_values:
+        if any(marker in compact for marker in ("公司", "单位", "网点", "分公司")):
+            add_filter("company", value)
+
+    return filters
+
+
+def _row_matches_value_filters(context: dict, filters: list[dict[str, str]]) -> bool:
+    if not filters:
+        return True
+    row = context.get("table_row") if isinstance(context.get("table_row"), dict) else {}
+    for item in filters:
+        column = item.get("column") or ""
+        value = item.get("value") or ""
+        if not value:
+            continue
+        focused = _row_text_for_aliases(row, (column,))
+        if value not in focused:
+            return False
+    return True
+
+
+def _group_by_column(question: str) -> str:
+    compact = _compact(question)
+    if any(term in compact for term in ("按城市", "各城市", "每个城市", "分城市", "城市分布", "城市分别")):
+        return "city"
+    if any(term in compact for term in ("按省份", "各省", "每个省", "分省", "省份分布")):
+        return "province"
+    if any(term in compact for term in ("按公司", "各公司", "每家公司", "分公司分别")):
+        return "company"
+    return ""
+
+
+def _distinct_column(question: str) -> str:
+    compact = _compact(question)
+    if any(term in compact for term in ("多少个城市", "多少座城市", "几个城市", "哪些城市")):
+        return "city"
+    if any(term in compact for term in ("多少家公司", "多少个公司", "几家公司")):
+        return "company"
+    return ""
 
 
 def _compact(value: Any) -> str:
@@ -213,6 +338,9 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     year_tokens = _year_tokens(question)
     branch_completion_query = _is_branch_completion_query(question)
     city_tokens = [] if branch_completion_query else _city_tokens(question)
+    value_filters = [] if branch_completion_query else _explicit_value_filters(question)
+    group_by = _group_by_column(question)
+    distinct_by = _distinct_column(question)
 
     for doc_rank, doc in enumerate(docs):
         rows = table_rows_for_documents(db, [doc.id], include_headers=True, limit=1000)
@@ -254,6 +382,12 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         if city_matched:
             scored_contexts = city_matched
 
+    value_filter_matched_rows = 0
+    if value_filters:
+        value_matched = [item for item in scored_contexts if _row_matches_value_filters(item[3], value_filters)]
+        value_filter_matched_rows = len(value_matched)
+        scored_contexts = value_matched
+
     branch_completion_matched_rows = 0
     if branch_completion_query:
         branch_matched = [item for item in scored_contexts if _row_matches_branch_completion(item[3])]
@@ -271,6 +405,10 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "document_ids": [doc.id for doc in docs],
             "branch_completion_filter": branch_completion_query,
             "branch_completion_matched_rows": branch_completion_matched_rows,
+            "value_filters": value_filters,
+            "value_filter_matched_rows": value_filter_matched_rows,
+            "group_by": group_by,
+            "distinct_by": distinct_by,
         }
     if len(selected) < max_contexts:
         selected_doc_ids = list(dict.fromkeys(str(item.get("document_id") or "") for item in selected if item.get("document_id")))
@@ -293,4 +431,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "document_ids": [doc.id for doc in docs],
         "branch_completion_filter": branch_completion_query,
         "branch_completion_matched_rows": branch_completion_matched_rows,
+        "value_filters": value_filters,
+        "value_filter_matched_rows": value_filter_matched_rows,
+        "group_by": group_by,
+        "distinct_by": distinct_by,
     }

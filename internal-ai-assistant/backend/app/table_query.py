@@ -75,6 +75,12 @@ TABLE_CITY_TERMS = (
     "石家庄",
 )
 
+COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "city": ("城市", "所在城市", "地市", "地区", "省市"),
+    "province": ("省份", "省", "所在省份"),
+    "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称"),
+}
+
 NON_TABLE_PROCESS_TERMS = (
     "流程",
     "步骤",
@@ -298,6 +304,50 @@ def table_rows_for_documents(
     return [(row, doc) for row, doc in rows if not row.is_header]
 
 
+def _compact(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def _column_matches(key: str, alias_group: str) -> bool:
+    return any(alias in str(key or "") for alias in COLUMN_ALIASES.get(alias_group, ()))
+
+
+def _first_alias_value(row: dict, alias_group: str) -> str:
+    for key, value in row.items():
+        if _column_matches(str(key), alias_group):
+            cleaned = _clean(value)
+            if cleaned:
+                return cleaned
+    return ""
+
+
+def _row_identity(context: dict) -> str:
+    return "|".join(
+        str(context.get(key) or "")
+        for key in ("document_id", "sheet_name", "row_number", "table_row_id")
+    )
+
+
+def _distinct_column(question: str) -> str:
+    compact = _compact(question)
+    if any(term in compact for term in ("多少个城市", "多少座城市", "几个城市", "哪些城市")):
+        return "city"
+    if any(term in compact for term in ("多少家公司", "多少个公司", "几家公司")):
+        return "company"
+    return ""
+
+
+def _group_by_column(question: str) -> str:
+    compact = _compact(question)
+    if any(term in compact for term in ("按城市", "各城市", "每个城市", "分城市", "城市分布", "城市分别")):
+        return "city"
+    if any(term in compact for term in ("按省份", "各省", "每个省", "分省", "省份分布")):
+        return "province"
+    if any(term in compact for term in ("按公司", "各公司", "每家公司", "分公司分别")):
+        return "company"
+    return ""
+
+
 def row_to_context(doc: Document, row: DocumentTableRow) -> dict:
     payload = _row_json(row)
     location = f"table | {doc.filename or doc.title or ''} | {row.sheet_name or ''} | 行{row.row_number or ''}"
@@ -324,7 +374,15 @@ def row_to_context(doc: Document, row: DocumentTableRow) -> dict:
 
 
 def build_table_answer(question: str, contexts: list[dict]) -> str:
-    data_rows = [item for item in contexts or [] if not item.get("is_header")]
+    raw_data_rows = [item for item in contexts or [] if not item.get("is_header")]
+    seen_rows: set[str] = set()
+    data_rows: list[dict] = []
+    for item in raw_data_rows:
+        identity = _row_identity(item)
+        if identity in seen_rows:
+            continue
+        seen_rows.add(identity)
+        data_rows.append(item)
     if not data_rows:
         return "没有在表格里找到足够相关的记录。"
 
@@ -332,7 +390,20 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     branch_completion = all(term in compact_question for term in ("银行账户", "社保公积金", "公积金比例")) and any(
         term in compact_question for term in ("全部完成", "全部", "全都", "完成")
     )
+    group_by = _group_by_column(question)
+    distinct_by = _distinct_column(question)
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
+    distinct_values: list[str] = []
+    group_counts: dict[str, int] = defaultdict(int)
+    for item in data_rows:
+        row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
+        if distinct_by:
+            value = _first_alias_value(row, distinct_by)
+            if value and value not in distinct_values:
+                distinct_values.append(value)
+        if group_by:
+            value = _first_alias_value(row, group_by) or "未标明"
+            group_counts[value] += 1
 
     docs: dict[tuple[str, str], list[dict]] = defaultdict(list)
     hit_columns: list[str] = []
@@ -374,17 +445,35 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
                     break
 
     lines = ["## 表格统计结果"]
-    lines.append(f"结论：共有 {len(data_rows)} {count_unit}命中记录。")
+    if distinct_by:
+        unit = "个城市" if distinct_by == "city" else "家公司"
+        lines.append(f"结论：共有 {len(distinct_values)} {unit}，涉及 {len(data_rows)} 条命中记录。")
+        if distinct_values:
+            lines.append(f"去重结果：{'、'.join(distinct_values[:30])}" + ("。" if len(distinct_values) <= 30 else f" 等，另有 {len(distinct_values) - 30} 项未展开。"))
+    else:
+        lines.append(f"结论：共有 {len(data_rows)} {count_unit}命中记录。")
     lines.append("")
     lines.append("### 统计口径")
     if branch_completion:
         lines.append("- 仅统计同时满足：银行账户完成、社保公积金账户完成、公积金比例有值、公司名称有值的表格数据行。")
     else:
         lines.append("- 仅统计本次表格检索命中的数据行，已排除表头行；同一表格行只计 1 次。")
+    if distinct_by:
+        label = "城市" if distinct_by == "city" else "公司"
+        lines.append(f"- 对命中的 `{label}` 列按非空值去重统计。")
     lines.append(f"- 来源范围：{len(docs)} 个文件/Sheet 分组。")
     if hit_columns:
         lines.append(f"- 命中列：{'、'.join(hit_columns[:12])}")
     lines.append("")
+
+    if group_counts:
+        group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
+        lines.append(f"### 按{group_label}统计")
+        for value, count in sorted(group_counts.items(), key=lambda item: (-item[1], item[0]))[:30]:
+            lines.append(f"- {value}：{count} 条")
+        if len(group_counts) > 30:
+            lines.append(f"- 另有 {len(group_counts) - 30} 个分组未展开。")
+        lines.append("")
 
     lines.append("### 来源明细")
     for (title, sheet), items in docs.items():
