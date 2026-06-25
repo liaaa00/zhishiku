@@ -3223,6 +3223,11 @@ body.admin-scroll-page {
   background: #fff7ed;
 }
 
+.admin-router-diagnostic-card.is-muted {
+  border-color: #f3f4f6;
+  background: #f9fafb;
+}
+
 .admin-router-diagnostic-card span {
   color: #8e8ea0;
   font-size: 12px;

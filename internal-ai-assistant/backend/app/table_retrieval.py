@@ -156,11 +156,28 @@ def _literal_after_marker(compact_question: str, marker: str) -> str:
     if not match:
         return ""
     value = _clean(match.group(1))
-    for stop_word in ("的", "清单", "名单", "列表", "明细", "统计", "有多少", "多少"):
+    stop_words = (
+        "并且",
+        "同时",
+        "而且",
+        "以及",
+        "且",
+        "的",
+        "清单",
+        "名单",
+        "列表",
+        "明细",
+        "统计",
+        "有多少",
+        "多少",
+        "按",
+    )
+    cut_at = len(value)
+    for stop_word in stop_words:
         index = value.find(stop_word)
         if index > 0:
-            value = value[:index]
-    return _clean(value)
+            cut_at = min(cut_at, index)
+    return _clean(value[:cut_at])
 
 
 def _explicit_value_filters(question: str) -> list[dict[str, str]]:

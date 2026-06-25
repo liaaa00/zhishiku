@@ -494,6 +494,12 @@
                 <p>{{ routerEvidence.reason || '-' }}</p>
                 <p>来源 {{ routerEvidence.source_count ?? 0 }} · 文档 {{ routerEvidence.document_count ?? 0 }}</p>
               </article>
+              <article class="admin-router-diagnostic-card" :class="tableQueryDiagnostics.hasTableSignals ? '' : 'is-muted'">
+                <span>Table Query</span>
+                <strong>{{ tableQueryDiagnostics.summary }}</strong>
+                <p>过滤：{{ formatTableFilters(tableQueryDiagnostics.value_filters) || '无' }}</p>
+                <p>分组：{{ tableQueryDiagnostics.group_by || '无' }} · 去重：{{ tableQueryDiagnostics.distinct_by || '无' }}</p>
+              </article>
             </div>
 
             <div class="admin-search-test-meta-grid">
@@ -692,11 +698,30 @@ const searchTestResult = ref<any | null>(null)
 const routerAnalysis = computed(() => searchTestResult.value?.query_analysis || searchTestResult.value?.retrieval_meta?.query_analysis || {})
 const routerRoute = computed(() => searchTestResult.value?.retrieval_route || searchTestResult.value?.retrieval_meta?.retrieval_route || {})
 const routerEvidence = computed(() => searchTestResult.value?.evidence_check || searchTestResult.value?.retrieval_meta?.evidence_check || {})
+const tableQueryDiagnostics = computed(() => {
+  const meta = searchTestResult.value?.retrieval_meta || {}
+  const valueFilters = Array.isArray(meta.value_filters) ? meta.value_filters : []
+  const groupBy = meta.group_by || ''
+  const distinctBy = meta.distinct_by || ''
+  return {
+    value_filters: valueFilters,
+    group_by: groupBy,
+    distinct_by: distinctBy,
+    matched_rows: meta.value_filter_matched_rows,
+    hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy),
+    summary: valueFilters.length > 0 || groupBy || distinctBy
+      ? `${valueFilters.length} filters · ${meta.value_filter_matched_rows ?? '-'} rows`
+      : '未识别结构化条件',
+  }
+})
 const flattenedRetrievalMeta = computed(() => {
   const meta = { ...(searchTestResult.value?.retrieval_meta || {}) }
   delete meta.query_analysis
   delete meta.retrieval_route
   delete meta.evidence_check
+  delete meta.value_filters
+  delete meta.group_by
+  delete meta.distinct_by
   return meta
 })
 
@@ -1145,6 +1170,15 @@ function formatDiagnosticValue(value: any) {
   if (value === true) return 'true'
   if (value === false) return 'false'
   return value ?? '-'
+}
+
+function formatTableFilters(value: any) {
+  if (!Array.isArray(value) || !value.length) return ''
+  return value
+    .map((item: any) => `${item?.column || 'field'}=${item?.value ?? ''}`)
+    .filter(Boolean)
+    .slice(0, 6)
+    .join('；')
 }
 
 async function runSearchTest() {

@@ -79,6 +79,21 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "city": ("城市", "所在城市", "地市", "地区", "省市"),
     "province": ("省份", "省", "所在省份"),
     "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称"),
+    "status": ("当前进度", "状态", "是否完成", "完成情况", "网点状态"),
+}
+
+QUESTION_COLUMN_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("city", ("城市", "地市", "地区")),
+    ("province", ("省份", "省")),
+    ("company", ("公司名称", "开设公司名称", "单位名称", "分公司", "网点")),
+    ("status", ("当前进度", "状态", "是否完成", "完成情况", "网点状态")),
+)
+
+COLUMN_LABELS = {
+    "city": "城市",
+    "province": "省份",
+    "company": "公司",
+    "status": "状态",
 }
 
 NON_TABLE_PROCESS_TERMS = (
@@ -348,6 +363,46 @@ def _group_by_column(question: str) -> str:
     return ""
 
 
+def _literal_after_marker(compact_question: str, marker: str) -> str:
+    match = re.search(rf"{re.escape(marker)}(?:是|为|=|：|:)([^，。；;、?？]+)", compact_question)
+    if not match:
+        return ""
+    value = _clean(match.group(1))
+    cut_at = len(value)
+    for stop_word in ("并且", "同时", "而且", "以及", "且", "的", "清单", "名单", "列表", "明细", "统计", "有多少", "多少", "按"):
+        index = value.find(stop_word)
+        if index > 0:
+            cut_at = min(cut_at, index)
+    return _clean(value[:cut_at])
+
+
+def _question_value_filters(question: str) -> list[dict[str, str]]:
+    compact = _compact(question)
+    filters: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_filter(alias: str, value: str) -> None:
+        value = _clean(value)
+        if not value:
+            return
+        key = (alias, value)
+        if key in seen:
+            return
+        seen.add(key)
+        filters.append({"column": alias, "value": value})
+
+    for alias, markers in QUESTION_COLUMN_TERMS:
+        for marker in markers:
+            value = _literal_after_marker(compact, marker)
+            if value:
+                add_filter(alias, value)
+
+    for city in TABLE_CITY_TERMS:
+        if city in compact:
+            add_filter("city", city)
+    return filters
+
+
 def row_to_context(doc: Document, row: DocumentTableRow) -> dict:
     payload = _row_json(row)
     location = f"table | {doc.filename or doc.title or ''} | {row.sheet_name or ''} | 行{row.row_number or ''}"
@@ -392,6 +447,7 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     )
     group_by = _group_by_column(question)
     distinct_by = _distinct_column(question)
+    value_filters = [] if branch_completion else _question_value_filters(question)
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
     distinct_values: list[str] = []
     group_counts: dict[str, int] = defaultdict(int)
@@ -458,6 +514,9 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
         lines.append("- 仅统计同时满足：银行账户完成、社保公积金账户完成、公积金比例有值、公司名称有值的表格数据行。")
     else:
         lines.append("- 仅统计本次表格检索命中的数据行，已排除表头行；同一表格行只计 1 次。")
+    if value_filters:
+        filter_text = "；".join(f"{COLUMN_LABELS.get(item.get('column') or '', item.get('column') or '字段')} 包含 {item.get('value')}" for item in value_filters)
+        lines.append(f"- 过滤条件：{filter_text}。")
     if distinct_by:
         label = "城市" if distinct_by == "city" else "公司"
         lines.append(f"- 对命中的 `{label}` 列按非空值去重统计。")

@@ -65,8 +65,9 @@ def main() -> None:
             [
                 _row("row-sh-1", 2, "上海", "上海一号网点"),
                 _row("row-sh-2", 3, "上海", "上海二号网点"),
-                _row("row-bj-1", 4, "北京", "北京一号网点"),
-                _row("row-cd-1", 5, "成都", "成都一号网点"),
+                _row("row-sh-disabled", 4, "上海", "上海停用网点", "停用"),
+                _row("row-bj-1", 5, "北京", "北京一号网点"),
+                _row("row-cd-1", 6, "成都", "成都一号网点"),
             ]
         )
         db.commit()
@@ -74,15 +75,24 @@ def main() -> None:
         filter_question = "列出城市=上海的有效网点清单"
         contexts, meta = table_mode_contexts(db, filter_question, user, top_k=10)
         row_ids = {str(item.get("table_row_id")) for item in contexts if not item.get("is_header")}
-        if row_ids != {"row-sh-1", "row-sh-2"}:
+        if row_ids != {"row-sh-1", "row-sh-2", "row-sh-disabled"}:
             raise AssertionError(f"city filter should keep only Shanghai rows, got {sorted(row_ids)}; meta={meta}")
-        if meta.get("value_filter_matched_rows") != 2:
-            raise AssertionError(f"expected 2 value-filter matches, got {meta}")
+        if meta.get("value_filter_matched_rows") != 3:
+            raise AssertionError(f"expected 3 value-filter matches, got {meta}")
+
+        multi_filter_question = "列出城市=上海且状态=有效的网点清单"
+        multi_contexts, multi_meta = table_mode_contexts(db, multi_filter_question, user, top_k=10)
+        multi_row_ids = {str(item.get("table_row_id")) for item in multi_contexts if not item.get("is_header")}
+        if multi_row_ids != {"row-sh-1", "row-sh-2"}:
+            raise AssertionError(f"multi filters should keep only active Shanghai rows, got {sorted(multi_row_ids)}; meta={multi_meta}")
+        multi_answer = build_table_answer(multi_filter_question, multi_contexts)
+        if "过滤条件：城市 包含 上海；状态 包含 有效" not in multi_answer:
+            raise AssertionError(f"answer should explain multi filters; answer={multi_answer}")
 
         group_question = "有效网点按城市统计分别有多少个？"
         group_contexts, group_meta = table_mode_contexts(db, group_question, user, top_k=10)
         answer = build_table_answer(group_question, group_contexts)
-        if "按城市统计" not in answer or "上海：2 条" not in answer or "北京：1 条" not in answer:
+        if "按城市统计" not in answer or "上海：3 条" not in answer or "北京：1 条" not in answer:
             raise AssertionError(f"grouped answer missing expected city counts; meta={group_meta}; answer={answer}")
 
         distinct_question = "有效网点覆盖多少个城市？"
