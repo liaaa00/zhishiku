@@ -417,6 +417,8 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     aggregate_op = plan.aggregate_op
     measure_column = plan.measure_column
     select_columns = plan.select_columns
+    sort_by = plan.sort_by or "desc"
+    result_limit = max(1, min(100, int(plan.limit or 20)))
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
     distinct_values: list[str] = []
     group_counts: dict[str, int] = defaultdict(int)
@@ -529,6 +531,9 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     if distinct_by:
         label = "城市" if distinct_by == "city" else "公司"
         lines.append(f"- 对命中的 `{label}` 列按非空值去重统计。")
+    if group_by or aggregate_op:
+        order_label = "升序" if sort_by == "asc" else "降序"
+        lines.append(f"- 结果排序：按结果值{order_label}，最多展开 {result_limit} 项。")
     lines.append(f"- 来源范围：{len(docs)} 个文件/Sheet 分组。")
     if hit_columns:
         lines.append(f"- 命中列：{'、'.join(hit_columns[:12])}")
@@ -539,22 +544,25 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
         for value, values in group_aggregate_values.items()
         if (result := _aggregate_result(aggregate_op, values)) is not None
     }
+    result_sort_key = (lambda item: (item[1], item[0])) if sort_by == "asc" else (lambda item: (-item[1], item[0]))
     if group_aggregate_results:
         group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
         lines.append(f"### 按{group_label}{aggregate_label}{measure_label}")
-        for value, result in sorted(group_aggregate_results.items(), key=lambda item: (-item[1], item[0]))[:30]:
+        ranked_results = sorted(group_aggregate_results.items(), key=result_sort_key)
+        for value, result in ranked_results[:result_limit]:
             count = len(group_aggregate_values.get(value, []))
             lines.append(f"- {value}：{_format_number(result)}（{count} 条可计算记录）")
-        if len(group_aggregate_results) > 30:
-            lines.append(f"- 另有 {len(group_aggregate_results) - 30} 个分组未展开。")
+        if len(group_aggregate_results) > result_limit:
+            lines.append(f"- 另有 {len(group_aggregate_results) - result_limit} 个分组未展开。")
         lines.append("")
     elif group_counts:
         group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
         lines.append(f"### 按{group_label}统计")
-        for value, count in sorted(group_counts.items(), key=lambda item: (-item[1], item[0]))[:30]:
+        ranked_counts = sorted(group_counts.items(), key=result_sort_key)
+        for value, count in ranked_counts[:result_limit]:
             lines.append(f"- {value}：{count} 条")
-        if len(group_counts) > 30:
-            lines.append(f"- 另有 {len(group_counts) - 30} 个分组未展开。")
+        if len(group_counts) > result_limit:
+            lines.append(f"- 另有 {len(group_counts) - result_limit} 个分组未展开。")
         lines.append("")
 
     lines.append("### 来源明细")

@@ -146,6 +146,8 @@ class TableQueryPlan:
             "aggregate_op": self.aggregate_op,
             "measure_column": self.measure_column,
             "select_columns": self.select_columns,
+            "sort_by": self.sort_by,
+            "limit": self.limit,
             "query_op": self.query_op,
             "branch_completion_filter": self.branch_completion_filter,
         }
@@ -300,11 +302,12 @@ def parse_filter_expression(
 
 def group_by_column(question: str) -> str:
     text = compact(question)
-    if any(term in text for term in ("按城市", "各城市", "每个城市", "分城市", "城市分布", "城市分别")):
+    ranking_intent = any(term in text for term in ("最多", "最少", "倒数", "前", "top", "bottom"))
+    if any(term in text for term in ("按城市", "各城市", "每个城市", "分城市", "城市分布", "城市分别")) or (ranking_intent and "城市" in text):
         return "city"
-    if any(term in text for term in ("按省份", "各省", "每个省", "分省", "省份分布")):
+    if any(term in text for term in ("按省份", "各省", "每个省", "分省", "省份分布")) or (ranking_intent and "省" in text):
         return "province"
-    if any(term in text for term in ("按公司", "各公司", "每家公司", "分公司分别")):
+    if any(term in text for term in ("按公司", "各公司", "每家公司", "分公司分别")) or (ranking_intent and any(term in text for term in ("公司", "单位", "网点", "机构"))):
         return "company"
     return ""
 
@@ -389,6 +392,30 @@ def query_operation(question: str, group_by: str = "", distinct_by: str = "", ag
     return "retrieve"
 
 
+def sort_direction(question: str) -> str:
+    text = compact(question).lower()
+    if any(term in text for term in ("最少", "倒数", "升序", "asc", "bottom")):
+        return "asc"
+    if any(term in text for term in ("最多", "前", "降序", "top", "desc")):
+        return "desc"
+    return "desc"
+
+
+def result_limit(question: str, default: int = 20) -> int:
+    text = compact(question).lower()
+    patterns = (
+        r"前(\d{1,3})(?:个|名|条|家)?",
+        r"top(\d{1,3})",
+        r"limit(\d{1,3})",
+        r"最多(?:展示|显示|列出)?(\d{1,3})(?:个|名|条|家)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return max(1, min(100, int(match.group(1))))
+    return default
+
+
 def format_filter_condition(item: dict[str, Any]) -> str:
     column = str(item.get("column") or "")
     operator = str(item.get("operator") or "contains")
@@ -435,4 +462,6 @@ def parse_table_query_plan(question: str, *, branch_completion: bool | None = No
         distinct_by=distinct_by,
         aggregate_op=aggregate_op,
         measure_column=measure,
+        sort_by=sort_direction(question),
+        limit=result_limit(question),
     )

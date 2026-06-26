@@ -316,6 +316,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     aggregate_op = plan.aggregate_op
     measure_column = plan.measure_column
     select_columns = plan.select_columns
+    sort_by = plan.sort_by
+    result_limit = plan.limit
     query_op = plan.query_op
     plan_meta = plan.to_dict()
 
@@ -409,6 +411,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "aggregate_op": aggregate_op,
             "measure_column": measure_column,
             "select_columns": select_columns,
+            "sort_by": sort_by,
+            "limit": result_limit,
             "query_op": query_op,
         }
     if len(selected) < max_contexts:
@@ -443,5 +447,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "aggregate_op": aggregate_op,
         "measure_column": measure_column,
         "select_columns": select_columns,
+        "sort_by": sort_by,
+        "limit": result_limit,
         "query_op": query_op,
     }

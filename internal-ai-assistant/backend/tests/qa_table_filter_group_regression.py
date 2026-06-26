@@ -280,6 +280,28 @@ def main() -> None:
         if "查询操作：分组计数" not in answer:
             raise AssertionError(f"answer should explain group_count operation; answer={answer}")
 
+        top_question = "有效网点最多的前2个城市"
+        top_plan = parse_table_query_plan(top_question).to_dict()
+        if top_plan.get("query_op") != "group_count" or top_plan.get("group_by") != "city" or top_plan.get("sort_by") != "desc" or top_plan.get("limit") != 2:
+            raise AssertionError(f"topN plan should detect grouped count, desc sort, and limit=2, got {top_plan}")
+        top_contexts, top_meta = table_mode_contexts(db, top_question, user, top_k=10)
+        if top_meta.get("sort_by") != "desc" or top_meta.get("limit") != 2:
+            raise AssertionError(f"topN retrieval meta should expose sort/limit, got {top_meta}")
+        top_answer = build_table_answer(top_question, top_contexts)
+        if "结果排序：按结果值降序，最多展开 2 项" not in top_answer:
+            raise AssertionError(f"topN answer should explain desc limit; meta={top_meta}; answer={top_answer}")
+        if "上海：5 条" not in top_answer or "北京：2 条" not in top_answer or "成都：1 条" in top_answer or "另有 1 个分组未展开" not in top_answer:
+            raise AssertionError(f"topN answer should include only top 2 cities; meta={top_meta}; answer={top_answer}")
+
+        bottom_question = "有效网点最少的前1个城市"
+        bottom_plan = parse_table_query_plan(bottom_question).to_dict()
+        if bottom_plan.get("query_op") != "group_count" or bottom_plan.get("group_by") != "city" or bottom_plan.get("sort_by") != "asc" or bottom_plan.get("limit") != 1:
+            raise AssertionError(f"bottomN plan should detect grouped count, asc sort, and limit=1, got {bottom_plan}")
+        bottom_contexts, bottom_meta = table_mode_contexts(db, bottom_question, user, top_k=10)
+        bottom_answer = build_table_answer(bottom_question, bottom_contexts)
+        if "结果排序：按结果值升序，最多展开 1 项" not in bottom_answer or "成都：1 条" not in bottom_answer or "北京：2 条" in bottom_answer:
+            raise AssertionError(f"bottomN answer should include only the least city; meta={bottom_meta}; answer={bottom_answer}")
+
         distinct_question = "有效网点覆盖多少个城市？"
         distinct_contexts, distinct_meta = table_mode_contexts(db, distinct_question, user, top_k=10)
         if distinct_meta.get("query_op") != "distinct_count":
