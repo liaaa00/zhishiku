@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from sqlalchemy import select
@@ -367,6 +368,41 @@ def _aggregate_result(operation: str, values: list[float]) -> float | None:
     return None
 
 
+PREFERRED_TABLE_PREVIEW_COLUMNS = (
+    "省份",
+    "城市",
+    "单位名称",
+    "开设公司名称",
+    "公司名称",
+    "当前进度-1.银行账户是否开具完成",
+    "当前进度-2.社保公积金账户是否开具完成",
+    "当前进度-3.公积金比例",
+    "当前进度-4.开设公司名称",
+    "银行账户",
+    "社保公积金账户",
+    "公积金比例",
+    "操作规则-社保",
+    "操作规则-医保",
+    "操作规则-公积金",
+    "截止时间-社保",
+    "截止时间-医保",
+    "截止时间-公积金",
+    "预计缴款时间-社保",
+    "预计缴款时间-公积金",
+)
+
+
+@dataclass(slots=True)
+class TableAnswerData:
+    data_rows: list[dict]
+    distinct_values: list[str] = field(default_factory=list)
+    group_counts: dict[str, int] = field(default_factory=dict)
+    aggregate_values: list[float] = field(default_factory=list)
+    group_aggregate_values: dict[str, list[float]] = field(default_factory=dict)
+    docs: dict[tuple[str, str], list[dict]] = field(default_factory=dict)
+    hit_columns: list[str] = field(default_factory=list)
+
+
 def row_to_context(doc: Document, row: DocumentTableRow) -> dict:
     payload = _row_json(row)
     location = f"table | {doc.filename or doc.title or ''} | {row.sheet_name or ''} | 行{row.row_number or ''}"
@@ -392,19 +428,79 @@ def row_to_context(doc: Document, row: DocumentTableRow) -> dict:
     }
 
 
-def build_table_answer(question: str, contexts: list[dict]) -> str:
-    raw_data_rows = [item for item in contexts or [] if not item.get("is_header")]
-    seen_rows: set[str] = set()
-    data_rows: list[dict] = []
-    for item in raw_data_rows:
-        identity = _row_identity(item)
-        if identity in seen_rows:
-            continue
-        seen_rows.add(identity)
-        data_rows.append(item)
-    if not data_rows:
-        return "没有在表格里找到足够相关的记录。"
+class TableAnswerComposer:
+    """Compose deterministic answers for structured table retrieval contexts."""
 
+    def __init__(self, question: str, contexts: list[dict] | None) -> None:
+        self.question = question
+        self.contexts = contexts or []
+
+    def render(self) -> str:
+        data_rows = self._unique_data_rows()
+        if not data_rows:
+            return "没有在表格里找到足够相关的记录。"
+        return _render_table_answer(self.question, data_rows)
+
+    def _unique_data_rows(self) -> list[dict]:
+        raw_data_rows = [item for item in self.contexts if not item.get("is_header")]
+        seen_rows: set[str] = set()
+        data_rows: list[dict] = []
+        for item in raw_data_rows:
+            identity = _row_identity(item)
+            if identity in seen_rows:
+                continue
+            seen_rows.add(identity)
+            data_rows.append(item)
+        return data_rows
+
+
+def build_table_answer(question: str, contexts: list[dict]) -> str:
+    return TableAnswerComposer(question, contexts).render()
+
+
+def _build_table_answer_data(data_rows: list[dict], *, distinct_by: str, group_by: str, aggregate_op: str, measure_column: str) -> TableAnswerData:
+    answer_data = TableAnswerData(
+        data_rows=data_rows,
+        group_counts=defaultdict(int),
+        group_aggregate_values=defaultdict(list),
+        docs=defaultdict(list),
+    )
+    for item in data_rows:
+        row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
+        semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
+        if distinct_by:
+            value = _first_alias_value(row, distinct_by, semantic_map)
+            if value and value not in answer_data.distinct_values:
+                answer_data.distinct_values.append(value)
+        group_value = ""
+        if group_by:
+            group_value = _first_alias_value(row, group_by, semantic_map) or "未标明"
+            answer_data.group_counts[group_value] += 1
+        if aggregate_op and measure_column:
+            measure_raw = _first_alias_value(row, measure_column, semantic_map)
+            numeric = _numeric_value(measure_raw)
+            if numeric is not None:
+                answer_data.aggregate_values.append(numeric)
+                if group_by:
+                    answer_data.group_aggregate_values[group_value or "未标明"].append(numeric)
+
+    for context in data_rows:
+        key = (context.get("document_title") or context.get("filename") or "未知文档", context.get("sheet_name") or "")
+        answer_data.docs[key].append(context)
+        row = context.get("table_row") or {}
+        for column in PREFERRED_TABLE_PREVIEW_COLUMNS:
+            if column in row and _clean(row.get(column, "")) and column not in answer_data.hit_columns:
+                answer_data.hit_columns.append(column)
+        if len(answer_data.hit_columns) < 12:
+            for column, value in row.items():
+                if _clean(value) and column not in answer_data.hit_columns:
+                    answer_data.hit_columns.append(str(column))
+                if len(answer_data.hit_columns) >= 12:
+                    break
+    return answer_data
+
+
+def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     compact_question = re.sub(r"\s+", "", question or "")
     plan = parse_table_query_plan(question, include_quoted_company=False)
     branch_completion = plan.branch_completion_filter
@@ -420,80 +516,26 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     sort_by = plan.sort_by or "desc"
     result_limit = max(1, min(100, int(plan.limit or 20)))
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
-    distinct_values: list[str] = []
-    group_counts: dict[str, int] = defaultdict(int)
-    aggregate_values: list[float] = []
-    group_aggregate_values: dict[str, list[float]] = defaultdict(list)
-    for item in data_rows:
-        row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
-        semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
-        if distinct_by:
-            value = _first_alias_value(row, distinct_by, semantic_map)
-            if value and value not in distinct_values:
-                distinct_values.append(value)
-        group_value = ""
-        if group_by:
-            group_value = _first_alias_value(row, group_by, semantic_map) or "未标明"
-            group_counts[group_value] += 1
-        if aggregate_op and measure_column:
-            measure_raw = _first_alias_value(row, measure_column, semantic_map)
-            numeric = _numeric_value(measure_raw)
-            if numeric is not None:
-                aggregate_values.append(numeric)
-                if group_by:
-                    group_aggregate_values[group_value or "未标明"].append(numeric)
-
-    docs: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    hit_columns: list[str] = []
-    preferred_columns = (
-        "省份",
-        "城市",
-        "单位名称",
-        "开设公司名称",
-        "公司名称",
-        "当前进度-1.银行账户是否开具完成",
-        "当前进度-2.社保公积金账户是否开具完成",
-        "当前进度-3.公积金比例",
-        "当前进度-4.开设公司名称",
-        "银行账户",
-        "社保公积金账户",
-        "公积金比例",
-        "操作规则-社保",
-        "操作规则-医保",
-        "操作规则-公积金",
-        "截止时间-社保",
-        "截止时间-医保",
-        "截止时间-公积金",
-        "预计缴款时间-社保",
-        "预计缴款时间-公积金",
+    answer_data = _build_table_answer_data(
+        data_rows,
+        distinct_by=distinct_by,
+        group_by=group_by,
+        aggregate_op=aggregate_op,
+        measure_column=measure_column,
     )
-
-    for context in data_rows:
-        key = (context.get("document_title") or context.get("filename") or "未知文档", context.get("sheet_name") or "")
-        docs[key].append(context)
-        row = context.get("table_row") or {}
-        for column in preferred_columns:
-            if column in row and _clean(row.get(column, "")) and column not in hit_columns:
-                hit_columns.append(column)
-        if len(hit_columns) < 12:
-            for column, value in row.items():
-                if _clean(value) and column not in hit_columns:
-                    hit_columns.append(str(column))
-                if len(hit_columns) >= 12:
-                    break
 
     lines = ["## 表格统计结果"]
     measure_label = COLUMN_LABELS.get(measure_column, measure_column or "指标")
     aggregate_label = AGGREGATE_LABELS.get(aggregate_op, aggregate_op)
-    aggregate_result = _aggregate_result(aggregate_op, aggregate_values) if aggregate_op else None
+    aggregate_result = _aggregate_result(aggregate_op, answer_data.aggregate_values) if aggregate_op else None
     if aggregate_op:
         result_text = _format_number(aggregate_result) if aggregate_result is not None else "无可计算结果"
-        lines.append(f"结论：{measure_label}{aggregate_label}为 {result_text}，基于 {len(aggregate_values)} 条可计算记录；本次共命中 {len(data_rows)} 条记录。")
+        lines.append(f"结论：{measure_label}{aggregate_label}为 {result_text}，基于 {len(answer_data.aggregate_values)} 条可计算记录；本次共命中 {len(data_rows)} 条记录。")
     elif distinct_by:
         unit = "个城市" if distinct_by == "city" else "家公司"
-        lines.append(f"结论：共有 {len(distinct_values)} {unit}，涉及 {len(data_rows)} 条命中记录。")
-        if distinct_values:
-            lines.append(f"去重结果：{'、'.join(distinct_values[:30])}" + ("。" if len(distinct_values) <= 30 else f" 等，另有 {len(distinct_values) - 30} 项未展开。"))
+        lines.append(f"结论：共有 {len(answer_data.distinct_values)} {unit}，涉及 {len(data_rows)} 条命中记录。")
+        if answer_data.distinct_values:
+            lines.append(f"去重结果：{'、'.join(answer_data.distinct_values[:30])}" + ("。" if len(answer_data.distinct_values) <= 30 else f" 等，另有 {len(answer_data.distinct_values) - 30} 项未展开。"))
     else:
         lines.append(f"结论：共有 {len(data_rows)} {count_unit}命中记录。")
     lines.append("")
@@ -534,14 +576,14 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     if group_by or aggregate_op:
         order_label = "升序" if sort_by == "asc" else "降序"
         lines.append(f"- 结果排序：按结果值{order_label}，最多展开 {result_limit} 项。")
-    lines.append(f"- 来源范围：{len(docs)} 个文件/Sheet 分组。")
-    if hit_columns:
-        lines.append(f"- 命中列：{'、'.join(hit_columns[:12])}")
+    lines.append(f"- 来源范围：{len(answer_data.docs)} 个文件/Sheet 分组。")
+    if answer_data.hit_columns:
+        lines.append(f"- 命中列：{'、'.join(answer_data.hit_columns[:12])}")
     lines.append("")
 
     group_aggregate_results = {
         value: result
-        for value, values in group_aggregate_values.items()
+        for value, values in answer_data.group_aggregate_values.items()
         if (result := _aggregate_result(aggregate_op, values)) is not None
     }
     result_sort_key = (lambda item: (item[1], item[0])) if sort_by == "asc" else (lambda item: (-item[1], item[0]))
@@ -550,28 +592,28 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
         lines.append(f"### 按{group_label}{aggregate_label}{measure_label}")
         ranked_results = sorted(group_aggregate_results.items(), key=result_sort_key)
         for value, result in ranked_results[:result_limit]:
-            count = len(group_aggregate_values.get(value, []))
+            count = len(answer_data.group_aggregate_values.get(value, []))
             lines.append(f"- {value}：{_format_number(result)}（{count} 条可计算记录）")
         if len(group_aggregate_results) > result_limit:
             lines.append(f"- 另有 {len(group_aggregate_results) - result_limit} 个分组未展开。")
         lines.append("")
-    elif group_counts:
+    elif answer_data.group_counts:
         group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
         lines.append(f"### 按{group_label}统计")
-        ranked_counts = sorted(group_counts.items(), key=result_sort_key)
+        ranked_counts = sorted(answer_data.group_counts.items(), key=result_sort_key)
         for value, count in ranked_counts[:result_limit]:
             lines.append(f"- {value}：{count} 条")
-        if len(group_counts) > result_limit:
-            lines.append(f"- 另有 {len(group_counts) - result_limit} 个分组未展开。")
+        if len(answer_data.group_counts) > result_limit:
+            lines.append(f"- 另有 {len(answer_data.group_counts) - result_limit} 个分组未展开。")
         lines.append("")
 
     lines.append("### 来源明细")
-    for (title, sheet), items in docs.items():
+    for (title, sheet), items in answer_data.docs.items():
         lines.append(f"- {title}" + (f" / Sheet：{sheet}" if sheet else "") + f"：{len(items)} 行")
     lines.append("")
 
     lines.append("### 命中行预览")
-    for (title, sheet), items in docs.items():
+    for (title, sheet), items in answer_data.docs.items():
         lines.append(f"#### {title}" + (f" / {sheet}" if sheet else ""))
         for item in items[:20]:
             row = item.get("table_row") or {}
@@ -582,7 +624,7 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
                     value = _first_alias_value(row, column, semantic_map)
                     if value:
                         parts.append(f"{COLUMN_LABELS.get(column, column)}={value}")
-            for key in preferred_columns:
+            for key in PREFERRED_TABLE_PREVIEW_COLUMNS:
                 value = _clean(row.get(key, ""))
                 if value:
                     parts.append(f"{key}={value}")
