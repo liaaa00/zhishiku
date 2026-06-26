@@ -25,6 +25,7 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "bank_account": ("银行账户",),
     "social_account": ("社保公积金账户", "社保账户", "公积金账户"),
     "fund_ratio": ("公积金比例", "比例"),
+    "amount": ("缴费金额", "金额", "费用", "应缴金额", "实缴金额", "付款金额", "缴款金额"),
     "status": ("当前进度", "状态", "是否完成", "完成情况", "网点状态"),
 }
 
@@ -35,6 +36,7 @@ QUESTION_COLUMN_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("bank_account", ("银行账户",)),
     ("social_account", ("社保公积金账户", "社保账户", "公积金账户")),
     ("fund_ratio", ("公积金比例", "比例")),
+    ("amount", ("缴费金额", "金额", "费用", "应缴金额", "实缴金额", "付款金额", "缴款金额")),
     ("status", ("当前进度", "状态", "是否完成", "完成情况", "网点状态")),
 )
 
@@ -45,6 +47,7 @@ COLUMN_LABELS = {
     "bank_account": "银行账户",
     "social_account": "社保公积金账户",
     "fund_ratio": "公积金比例",
+    "amount": "金额",
     "status": "状态",
 }
 
@@ -124,6 +127,8 @@ class TableQueryPlan:
     select_columns: list[str] = field(default_factory=list)
     group_by: str = ""
     distinct_by: str = ""
+    aggregate_op: str = ""
+    measure_column: str = ""
     sort_by: str = ""
     limit: int = 20
     branch_completion_filter: bool = False
@@ -138,6 +143,8 @@ class TableQueryPlan:
             "filter_groups": self.filter_groups,
             "group_by": self.group_by,
             "distinct_by": self.distinct_by,
+            "aggregate_op": self.aggregate_op,
+            "measure_column": self.measure_column,
             "select_columns": self.select_columns,
             "query_op": self.query_op,
             "branch_completion_filter": self.branch_completion_filter,
@@ -342,8 +349,29 @@ def select_columns(question: str, value_filters: list[dict[str, str]] | None = N
     return [group for _position, group in candidates[:8]]
 
 
-def query_operation(question: str, group_by: str = "", distinct_by: str = "") -> str:
+def aggregate_operation(question: str) -> str:
     text = compact(question)
+    if any(term in text for term in ("总和", "合计", "求和", "汇总金额", "金额汇总", "sum")):
+        return "sum"
+    return ""
+
+
+def measure_column(question: str) -> str:
+    text = compact(question)
+    measure_candidates = ("amount", "fund_ratio")
+    best: tuple[int, str] | None = None
+    for column in measure_candidates:
+        for alias in COLUMN_ALIASES.get(column, ()):
+            position = text.find(compact(alias))
+            if position >= 0 and (best is None or position < best[0]):
+                best = (position, column)
+    return best[1] if best else ""
+
+
+def query_operation(question: str, group_by: str = "", distinct_by: str = "", aggregate_op: str = "") -> str:
+    text = compact(question)
+    if aggregate_op:
+        return f"{aggregate_op}_group" if group_by else aggregate_op
     if group_by:
         return "group_count"
     if distinct_by:
@@ -388,13 +416,17 @@ def parse_table_query_plan(question: str, *, branch_completion: bool | None = No
     filters, filter_logic, filter_groups = parse_filter_expression(question, include_quoted_company=include_quoted_company)
     group_by = group_by_column(question)
     distinct_by = distinct_column(question)
+    aggregate_op = aggregate_operation(question)
+    measure = measure_column(question) if aggregate_op else ""
     selected = select_columns(question, filters)
     return TableQueryPlan(
-        query_op=query_operation(question, group_by, distinct_by),
+        query_op=query_operation(question, group_by, distinct_by, aggregate_op),
         filters=filters,
         filter_logic=filter_logic,
         filter_groups=filter_groups,
         select_columns=selected,
         group_by=group_by,
         distinct_by=distinct_by,
+        aggregate_op=aggregate_op,
+        measure_column=measure,
     )

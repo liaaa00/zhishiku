@@ -13,6 +13,7 @@ SEMANTIC_ALIASES: dict[str, tuple[str, ...]] = {
     "bank_account": ("银行账户", "开户银行", "银行账号", "账户状态"),
     "social_account": ("社保公积金账户", "社保账户", "公积金账户", "社保公积金"),
     "fund_ratio": ("公积金比例", "比例", "缴存比例"),
+    "amount": ("缴费金额", "金额", "费用", "应缴金额", "实缴金额", "付款金额", "缴款金额"),
 }
 
 SEMANTIC_LABELS = {
@@ -23,6 +24,7 @@ SEMANTIC_LABELS = {
     "bank_account": "银行账户",
     "social_account": "社保公积金账户",
     "fund_ratio": "公积金比例",
+    "amount": "金额",
 }
 
 CITY_VALUE_HINTS = (

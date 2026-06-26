@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Document, DocumentTableRow, User, document_group_link
-from .table_plan import COLUMN_ALIASES, COLUMN_LABELS, format_filter_condition, format_filter_groups, parse_table_query_plan
+from .table_plan import COLUMN_ALIASES, COLUMN_LABELS, clean as plan_clean, format_filter_condition, format_filter_groups, parse_table_query_plan
 from .table_schema import infer_column_semantics, semantic_value
 
 TABLE_QUERY_VERBS = (
@@ -325,6 +325,26 @@ def _row_identity(context: dict) -> str:
     )
 
 
+def _numeric_value(value: Any) -> float | None:
+    text = plan_clean(value)
+    if not text:
+        return None
+    normalized = text.replace(",", "").replace("，", "")
+    match = re.search(r"-?\d+(?:\.\d+)?", normalized)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _format_number(value: float) -> str:
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
 
 def row_to_context(doc: Document, row: DocumentTableRow) -> dict:
     payload = _row_json(row)
@@ -373,10 +393,16 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     value_filters = plan.filters
     filter_logic = plan.filter_logic
     filter_groups = plan.filter_groups
+    aggregate_op = plan.aggregate_op
+    measure_column = plan.measure_column
     select_columns = plan.select_columns
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
     distinct_values: list[str] = []
     group_counts: dict[str, int] = defaultdict(int)
+    group_sums: dict[str, float] = defaultdict(float)
+    group_sum_counts: dict[str, int] = defaultdict(int)
+    total_sum = 0.0
+    total_sum_count = 0
     for item in data_rows:
         row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
         semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
@@ -384,9 +410,19 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
             value = _first_alias_value(row, distinct_by, semantic_map)
             if value and value not in distinct_values:
                 distinct_values.append(value)
+        group_value = ""
         if group_by:
-            value = _first_alias_value(row, group_by, semantic_map) or "未标明"
-            group_counts[value] += 1
+            group_value = _first_alias_value(row, group_by, semantic_map) or "未标明"
+            group_counts[group_value] += 1
+        if aggregate_op == "sum" and measure_column:
+            measure_raw = _first_alias_value(row, measure_column, semantic_map)
+            numeric = _numeric_value(measure_raw)
+            if numeric is not None:
+                total_sum += numeric
+                total_sum_count += 1
+                if group_by:
+                    group_sums[group_value or "未标明"] += numeric
+                    group_sum_counts[group_value or "未标明"] += 1
 
     docs: dict[tuple[str, str], list[dict]] = defaultdict(list)
     hit_columns: list[str] = []
@@ -428,7 +464,10 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
                     break
 
     lines = ["## 表格统计结果"]
-    if distinct_by:
+    measure_label = COLUMN_LABELS.get(measure_column, measure_column or "指标")
+    if aggregate_op == "sum":
+        lines.append(f"结论：{measure_label}总和为 {_format_number(total_sum)}，基于 {total_sum_count} 条可计算记录；本次共命中 {len(data_rows)} 条记录。")
+    elif distinct_by:
         unit = "个城市" if distinct_by == "city" else "家公司"
         lines.append(f"结论：共有 {len(distinct_values)} {unit}，涉及 {len(data_rows)} 条命中记录。")
         if distinct_values:
@@ -440,6 +479,8 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     op_label = {
         "branch_completion_count": "分公司完成度统计",
         "group_count": "分组计数",
+        "sum": "求和汇总",
+        "sum_group": "分组求和",
         "distinct_count": "去重计数",
         "distinct_list": "去重列举",
         "list": "明细列举",
@@ -454,6 +495,8 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     if value_filters:
         filter_text = format_filter_groups(filter_groups, filter_logic) or "；".join(format_filter_condition(item) for item in value_filters)
         lines.append(f"- 过滤条件：{filter_text}。")
+    if aggregate_op:
+        lines.append(f"- 聚合方式：{COLUMN_LABELS.get(measure_column, measure_column or '指标')} {aggregate_op}。")
     if select_columns:
         select_text = "、".join(COLUMN_LABELS.get(column, column) for column in select_columns)
         lines.append(f"- 展示字段：{select_text}。")
@@ -465,7 +508,16 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
         lines.append(f"- 命中列：{'、'.join(hit_columns[:12])}")
     lines.append("")
 
-    if group_counts:
+    if group_sums:
+        group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
+        lines.append(f"### 按{group_label}汇总{measure_label}")
+        for value, amount in sorted(group_sums.items(), key=lambda item: (-item[1], item[0]))[:30]:
+            count = group_sum_counts.get(value, 0)
+            lines.append(f"- {value}：{_format_number(amount)}（{count} 条可计算记录）")
+        if len(group_sums) > 30:
+            lines.append(f"- 另有 {len(group_sums) - 30} 个分组未展开。")
+        lines.append("")
+    elif group_counts:
         group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
         lines.append(f"### 按{group_label}统计")
         for value, count in sorted(group_counts.items(), key=lambda item: (-item[1], item[0]))[:30]:

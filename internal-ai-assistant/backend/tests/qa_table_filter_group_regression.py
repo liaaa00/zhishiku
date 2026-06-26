@@ -36,6 +36,7 @@ def _row(
     status: str = "有效",
     bank_account: str = "已开通",
     fund_ratio: str = "8",
+    amount: str = "0",
 ) -> DocumentTableRow:
     payload = {
         "城市": city,
@@ -44,6 +45,7 @@ def _row(
         "当前进度": "已完成",
         "银行账户": bank_account,
         "公积金比例": fund_ratio,
+        "缴费金额": amount,
     }
     return DocumentTableRow(
         id=row_id,
@@ -101,11 +103,11 @@ def main() -> None:
         db.add(nonstandard_doc)
         db.add_all(
             [
-                _row("row-sh-1", 2, "上海", "上海一号网点", bank_account="已开通", fund_ratio="8"),
-                _row("row-sh-2", 3, "上海", "上海二号网点", bank_account="", fund_ratio=""),
-                _row("row-sh-disabled", 4, "上海", "上海停用网点", "停用", bank_account="已开通", fund_ratio="3"),
-                _row("row-bj-1", 5, "北京", "北京一号网点", bank_account="已开通", fund_ratio="5"),
-                _row("row-cd-1", 6, "成都", "成都一号网点", bank_account="", fund_ratio=""),
+                _row("row-sh-1", 2, "上海", "上海一号网点", bank_account="已开通", fund_ratio="8", amount="1000"),
+                _row("row-sh-2", 3, "上海", "上海二号网点", bank_account="", fund_ratio="", amount="2500"),
+                _row("row-sh-disabled", 4, "上海", "上海停用网点", "停用", bank_account="已开通", fund_ratio="3", amount="300"),
+                _row("row-bj-1", 5, "北京", "北京一号网点", bank_account="已开通", fund_ratio="5", amount="800"),
+                _row("row-cd-1", 6, "成都", "成都一号网点", bank_account="", fund_ratio="", amount="200"),
                 _nonstandard_row("row-ns-sh-1", 2, "上海", "上海新表机构", "有效"),
                 _nonstandard_row("row-ns-sh-off", 3, "上海", "上海新表停用机构", "停用"),
                 _nonstandard_row("row-ns-bj-1", 4, "北京", "北京新表机构", "有效"),
@@ -223,6 +225,19 @@ def main() -> None:
             raise AssertionError(f"greater-than filter should keep only ratio above 5, got {sorted(greater_row_ids)}; meta={greater_meta}")
         if {"column": "fund_ratio", "operator": "gt", "value": "5"} not in greater_meta.get("value_filters", []):
             raise AssertionError(f"greater-than operator should be in meta filters, got {greater_meta}")
+
+        sum_question = "按城市统计缴费金额总和"
+        sum_plan = parse_table_query_plan(sum_question).to_dict()
+        if sum_plan.get("query_op") != "sum_group" or sum_plan.get("aggregate_op") != "sum" or sum_plan.get("measure_column") != "amount":
+            raise AssertionError(f"sum plan should detect grouped amount sum, got {sum_plan}")
+        sum_contexts, sum_meta = table_mode_contexts(db, sum_question, user, top_k=10)
+        if sum_meta.get("aggregate_op") != "sum" or sum_meta.get("measure_column") != "amount":
+            raise AssertionError(f"sum retrieval meta should expose aggregate plan, got {sum_meta}")
+        sum_answer = build_table_answer(sum_question, sum_contexts)
+        if "查询操作：分组求和" not in sum_answer or "按城市汇总金额" not in sum_answer:
+            raise AssertionError(f"sum answer should explain grouped sum; meta={sum_meta}; answer={sum_answer}")
+        if "上海：3800" not in sum_answer or "北京：800" not in sum_answer or "成都：200" not in sum_answer:
+            raise AssertionError(f"sum answer should include expected city totals; meta={sum_meta}; answer={sum_answer}")
 
         group_question = "有效网点按城市统计分别有多少个？"
         group_contexts, group_meta = table_mode_contexts(db, group_question, user, top_k=10)
