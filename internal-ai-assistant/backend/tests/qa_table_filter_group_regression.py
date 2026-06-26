@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from app.database import Base, engine, SessionLocal  # noqa: E402
 from app.models import Document, DocumentTableRow, User  # noqa: E402
+from app.table_plan import parse_table_query_plan  # noqa: E402
 from app.table_query import build_table_answer  # noqa: E402
 from app.table_retrieval import table_mode_contexts  # noqa: E402
 
@@ -130,7 +131,16 @@ def main() -> None:
             raise AssertionError(f"answer should explain list operation; answer={multi_answer}")
 
         projection_question = "列出城市=上海且状态=有效的公司名称、城市、状态"
+        parsed_plan = parse_table_query_plan(projection_question).to_dict()
+        if parsed_plan.get("query_op") != "list":
+            raise AssertionError(f"plan should detect list operation, got {parsed_plan}")
+        if parsed_plan.get("filters") != [{"column": "city", "value": "上海"}, {"column": "status", "value": "有效"}]:
+            raise AssertionError(f"plan should detect city/status filters, got {parsed_plan}")
+        if parsed_plan.get("select_columns") != ["company", "city", "status"]:
+            raise AssertionError(f"plan should detect company/city/status projection, got {parsed_plan}")
         projection_contexts, projection_meta = table_mode_contexts(db, projection_question, user, top_k=10)
+        if projection_meta.get("table_query_plan") != parsed_plan:
+            raise AssertionError(f"retrieval meta should expose unified table query plan, got {projection_meta}")
         if projection_meta.get("select_columns") != ["company", "city", "status"]:
             raise AssertionError(f"projection should detect company/city/status, got {projection_meta}")
         projection_answer = build_table_answer(projection_question, projection_contexts)

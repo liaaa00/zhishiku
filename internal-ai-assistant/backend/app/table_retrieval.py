@@ -6,44 +6,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .models import User
+from .table_plan import CITY_TERMS, COLUMN_ALIASES, compact as _compact, parse_table_query_plan
 from .table_query import row_to_context, select_table_documents, table_rows_for_documents
 from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_value
 
 MONTH_RE = re.compile(r"(20\d{2})\s*年\s*(\d{1,2})\s*月")
 MONTH_SEP_RE = re.compile(r"(20\d{2})\s*[-/]\s*(\d{1,2})")
-CITY_TERMS = (
-    "北京",
-    "上海",
-    "成都",
-    "宁波",
-    "北仑",
-    "重庆",
-    "杭州",
-    "长沙",
-    "西安",
-    "郑州",
-    "石家庄",
-)
-
-COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    "city": ("城市", "所在城市", "地市", "地区", "省市"),
-    "province": ("省份", "省", "所在省份"),
-    "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称"),
-    "bank_account": ("银行账户",),
-    "social_account": ("社保公积金账户", "社保账户", "公积金账户"),
-    "fund_ratio": ("公积金比例", "比例"),
-    "status": ("当前进度", "状态", "是否完成", "完成情况"),
-}
-
-QUESTION_COLUMN_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("city", ("城市", "地市", "地区")),
-    ("province", ("省份", "省")),
-    ("company", ("公司名称", "开设公司名称", "单位名称", "分公司", "网点")),
-    ("bank_account", ("银行账户",)),
-    ("social_account", ("社保公积金账户", "社保账户", "公积金账户")),
-    ("fund_ratio", ("公积金比例", "比例")),
-    ("status", ("当前进度", "状态", "是否完成", "完成情况")),
-)
 
 
 def _clean(value: Any) -> str:
@@ -155,67 +123,6 @@ def _row_text_for_aliases(row: dict, alias_groups: tuple[str, ...], semantic_map
     return " ".join(dict.fromkeys(values))
 
 
-def _literal_after_marker(compact_question: str, marker: str) -> str:
-    match = re.search(rf"{re.escape(marker)}(?:是|为|=|：|:)([^，。；;、?？]+)", compact_question)
-    if not match:
-        return ""
-    value = _clean(match.group(1))
-    stop_words = (
-        "并且",
-        "同时",
-        "而且",
-        "以及",
-        "且",
-        "的",
-        "清单",
-        "名单",
-        "列表",
-        "明细",
-        "统计",
-        "有多少",
-        "多少",
-        "按",
-    )
-    cut_at = len(value)
-    for stop_word in stop_words:
-        index = value.find(stop_word)
-        if index > 0:
-            cut_at = min(cut_at, index)
-    return _clean(value[:cut_at])
-
-
-def _explicit_value_filters(question: str) -> list[dict[str, str]]:
-    compact = _compact(question)
-    filters: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-
-    def add_filter(alias: str, value: str) -> None:
-        value = _clean(value)
-        if not value:
-            return
-        key = (alias, value)
-        if key in seen:
-            return
-        seen.add(key)
-        filters.append({"column": alias, "value": value})
-
-    for alias, markers in QUESTION_COLUMN_TERMS:
-        for marker in markers:
-            value = _literal_after_marker(compact, marker)
-            if value:
-                add_filter(alias, value)
-
-    for city in CITY_TERMS:
-        if city in compact:
-            add_filter("city", city)
-
-    quoted_values = re.findall(r"[‘'\"]([^‘’'\"]{1,30})[’'\"]", question or "")
-    for value in quoted_values:
-        if any(marker in compact for marker in ("公司", "单位", "网点", "分公司")):
-            add_filter("company", value)
-
-    return filters
-
 
 def _row_matches_value_filters(context: dict, filters: list[dict[str, str]]) -> bool:
     if not filters:
@@ -232,73 +139,6 @@ def _row_matches_value_filters(context: dict, filters: list[dict[str, str]]) -> 
             return False
     return True
 
-
-def _group_by_column(question: str) -> str:
-    compact = _compact(question)
-    if any(term in compact for term in ("按城市", "各城市", "每个城市", "分城市", "城市分布", "城市分别")):
-        return "city"
-    if any(term in compact for term in ("按省份", "各省", "每个省", "分省", "省份分布")):
-        return "province"
-    if any(term in compact for term in ("按公司", "各公司", "每家公司", "分公司分别")):
-        return "company"
-    return ""
-
-
-def _distinct_column(question: str) -> str:
-    compact = _compact(question)
-    if any(term in compact for term in ("多少个城市", "多少座城市", "几个城市", "哪些城市")):
-        return "city"
-    if any(term in compact for term in ("多少家公司", "多少个公司", "几家公司")):
-        return "company"
-    return ""
-
-
-def _select_columns(question: str, value_filters: list[dict[str, str]] | None = None) -> list[str]:
-    compact = _compact(question)
-    for item in value_filters or []:
-        column = item.get("column") or ""
-        value = item.get("value") or ""
-        if not column or not value:
-            continue
-        for alias in COLUMN_ALIASES.get(column, ()):
-            compact = re.sub(rf"{re.escape(alias)}(?:是|为|=|：|:){re.escape(value)}", "", compact)
-
-    candidates: list[tuple[int, str]] = []
-    seen: set[str] = set()
-    for group, aliases in COLUMN_ALIASES.items():
-        positions = [compact.find(alias) for alias in aliases if alias and compact.find(alias) >= 0]
-        if positions and group not in seen:
-            seen.add(group)
-            candidates.append((min(positions), group))
-    candidates.sort(key=lambda item: item[0])
-    return [group for _position, group in candidates[:8]]
-
-
-def _query_operation(question: str, group_by: str = "", distinct_by: str = "") -> str:
-    compact = _compact(question)
-    if group_by:
-        return "group_count"
-    if distinct_by:
-        return "distinct_count" if any(term in compact for term in ("多少", "几个", "几家")) else "distinct_list"
-    if any(term in compact for term in ("列出", "清单", "名单", "明细", "有哪些", "哪些")):
-        return "list"
-    if any(term in compact for term in ("多少", "几个", "几家", "统计", "汇总", "总数", "数量")):
-        return "count"
-    return "retrieve"
-
-
-def _compact(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or ""))
-
-
-def _is_branch_completion_query(question: str) -> bool:
-    compact = _compact(question)
-    branch_hit = any(term in compact for term in ("北仑", "分公司", "开设公司", "公司名称", "开了多少", "开设了多少"))
-    bank_hit = any(term in compact for term in ("银行账户", "银行"))
-    social_hit = any(term in compact for term in ("社保公积金账户", "社保公积金", "社保账户", "公积金账户"))
-    ratio_hit = any(term in compact for term in ("公积金比例", "比例"))
-    complete_hit = any(term in compact for term in ("全部", "全都", "都", "完成", "开设完成", "开具完成"))
-    return branch_hit and bank_hit and social_hit and ratio_hit and complete_hit
 
 
 def _row_value_by_key_markers(row: dict, markers: tuple[str, ...]) -> str:
@@ -400,13 +240,15 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     table_schema_by_doc: dict[str, list[dict]] = {}
     month_tokens = _month_tokens(question)
     year_tokens = _year_tokens(question)
-    branch_completion_query = _is_branch_completion_query(question)
+    plan = parse_table_query_plan(question)
+    branch_completion_query = plan.branch_completion_filter
     city_tokens = [] if branch_completion_query else _city_tokens(question)
-    value_filters = [] if branch_completion_query else _explicit_value_filters(question)
-    group_by = _group_by_column(question)
-    distinct_by = _distinct_column(question)
-    select_columns = [] if branch_completion_query else _select_columns(question, value_filters)
-    query_op = "branch_completion_count" if branch_completion_query else _query_operation(question, group_by, distinct_by)
+    value_filters = plan.filters
+    group_by = plan.group_by
+    distinct_by = plan.distinct_by
+    select_columns = plan.select_columns
+    query_op = plan.query_op
+    plan_meta = plan.to_dict()
 
     for doc_rank, doc in enumerate(docs):
         rows = table_rows_for_documents(db, [doc.id], include_headers=True, limit=1000)
@@ -481,6 +323,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "enabled": True,
             "document_ids": [doc.id for doc in docs],
             "table_schema": table_schema_by_doc,
+            "table_query_plan": plan_meta,
             "branch_completion_filter": branch_completion_query,
             "branch_completion_matched_rows": branch_completion_matched_rows,
             "value_filters": value_filters,
@@ -510,6 +353,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "enabled": True,
         "document_ids": [doc.id for doc in docs],
         "table_schema": table_schema_by_doc,
+        "table_query_plan": plan_meta,
         "branch_completion_filter": branch_completion_query,
         "branch_completion_matched_rows": branch_completion_matched_rows,
         "value_filters": value_filters,

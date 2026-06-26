@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Document, DocumentTableRow, User, document_group_link
+from .table_plan import COLUMN_ALIASES, COLUMN_LABELS, parse_table_query_plan
 from .table_schema import infer_column_semantics, semantic_value
 
 TABLE_QUERY_VERBS = (
@@ -62,40 +63,6 @@ TABLE_BUSINESS_TERMS = (
     "城市",
 )
 
-TABLE_CITY_TERMS = (
-    "北京",
-    "上海",
-    "成都",
-    "宁波",
-    "北仑",
-    "重庆",
-    "杭州",
-    "长沙",
-    "西安",
-    "郑州",
-    "石家庄",
-)
-
-COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    "city": ("城市", "所在城市", "地市", "地区", "省市"),
-    "province": ("省份", "省", "所在省份"),
-    "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称"),
-    "status": ("当前进度", "状态", "是否完成", "完成情况", "网点状态"),
-}
-
-QUESTION_COLUMN_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("city", ("城市", "地市", "地区")),
-    ("province", ("省份", "省")),
-    ("company", ("公司名称", "开设公司名称", "单位名称", "分公司", "网点")),
-    ("status", ("当前进度", "状态", "是否完成", "完成情况", "网点状态")),
-)
-
-COLUMN_LABELS = {
-    "city": "城市",
-    "province": "省份",
-    "company": "公司",
-    "status": "状态",
-}
 
 NON_TABLE_PROCESS_TERMS = (
     "流程",
@@ -358,99 +325,6 @@ def _row_identity(context: dict) -> str:
     )
 
 
-def _distinct_column(question: str) -> str:
-    compact = _compact(question)
-    if any(term in compact for term in ("多少个城市", "多少座城市", "几个城市", "哪些城市")):
-        return "city"
-    if any(term in compact for term in ("多少家公司", "多少个公司", "几家公司")):
-        return "company"
-    return ""
-
-
-def _group_by_column(question: str) -> str:
-    compact = _compact(question)
-    if any(term in compact for term in ("按城市", "各城市", "每个城市", "分城市", "城市分布", "城市分别")):
-        return "city"
-    if any(term in compact for term in ("按省份", "各省", "每个省", "分省", "省份分布")):
-        return "province"
-    if any(term in compact for term in ("按公司", "各公司", "每家公司", "分公司分别")):
-        return "company"
-    return ""
-
-
-def _select_columns(question: str, value_filters: list[dict[str, str]] | None = None) -> list[str]:
-    compact = _compact(question)
-    for item in value_filters or []:
-        column = item.get("column") or ""
-        value = item.get("value") or ""
-        if not column or not value:
-            continue
-        for alias in COLUMN_ALIASES.get(column, ()):
-            compact = re.sub(rf"{re.escape(alias)}(?:是|为|=|：|:){re.escape(value)}", "", compact)
-
-    candidates: list[tuple[int, str]] = []
-    seen: set[str] = set()
-    for group, aliases in COLUMN_ALIASES.items():
-        positions = [compact.find(alias) for alias in aliases if alias and compact.find(alias) >= 0]
-        if positions and group not in seen:
-            seen.add(group)
-            candidates.append((min(positions), group))
-    candidates.sort(key=lambda item: item[0])
-    return [group for _position, group in candidates[:8]]
-
-
-def _query_operation(question: str, group_by: str = "", distinct_by: str = "") -> str:
-    compact = _compact(question)
-    if group_by:
-        return "group_count"
-    if distinct_by:
-        return "distinct_count" if any(term in compact for term in ("多少", "几个", "几家")) else "distinct_list"
-    if any(term in compact for term in ("列出", "清单", "名单", "明细", "有哪些", "哪些")):
-        return "list"
-    if any(term in compact for term in ("多少", "几个", "几家", "统计", "汇总", "总数", "数量")):
-        return "count"
-    return "retrieve"
-
-
-def _literal_after_marker(compact_question: str, marker: str) -> str:
-    match = re.search(rf"{re.escape(marker)}(?:是|为|=|：|:)([^，。；;、?？]+)", compact_question)
-    if not match:
-        return ""
-    value = _clean(match.group(1))
-    cut_at = len(value)
-    for stop_word in ("并且", "同时", "而且", "以及", "且", "的", "清单", "名单", "列表", "明细", "统计", "有多少", "多少", "按"):
-        index = value.find(stop_word)
-        if index > 0:
-            cut_at = min(cut_at, index)
-    return _clean(value[:cut_at])
-
-
-def _question_value_filters(question: str) -> list[dict[str, str]]:
-    compact = _compact(question)
-    filters: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-
-    def add_filter(alias: str, value: str) -> None:
-        value = _clean(value)
-        if not value:
-            return
-        key = (alias, value)
-        if key in seen:
-            return
-        seen.add(key)
-        filters.append({"column": alias, "value": value})
-
-    for alias, markers in QUESTION_COLUMN_TERMS:
-        for marker in markers:
-            value = _literal_after_marker(compact, marker)
-            if value:
-                add_filter(alias, value)
-
-    for city in TABLE_CITY_TERMS:
-        if city in compact:
-            add_filter("city", city)
-    return filters
-
 
 def row_to_context(doc: Document, row: DocumentTableRow) -> dict:
     payload = _row_json(row)
@@ -491,14 +365,13 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
         return "没有在表格里找到足够相关的记录。"
 
     compact_question = re.sub(r"\s+", "", question or "")
-    branch_completion = all(term in compact_question for term in ("银行账户", "社保公积金", "公积金比例")) and any(
-        term in compact_question for term in ("全部完成", "全部", "全都", "完成")
-    )
-    group_by = _group_by_column(question)
-    distinct_by = _distinct_column(question)
-    query_op = "branch_completion_count" if branch_completion else _query_operation(question, group_by, distinct_by)
-    value_filters = [] if branch_completion else _question_value_filters(question)
-    select_columns = [] if branch_completion else _select_columns(question, value_filters)
+    plan = parse_table_query_plan(question, include_quoted_company=False)
+    branch_completion = plan.branch_completion_filter
+    group_by = plan.group_by
+    distinct_by = plan.distinct_by
+    query_op = plan.query_op
+    value_filters = plan.filters
+    select_columns = plan.select_columns
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
     distinct_values: list[str] = []
     group_counts: dict[str, int] = defaultdict(int)

@@ -703,11 +703,12 @@ const routerRoute = computed(() => searchTestResult.value?.retrieval_route || se
 const routerEvidence = computed(() => searchTestResult.value?.evidence_check || searchTestResult.value?.retrieval_meta?.evidence_check || {})
 const tableQueryDiagnostics = computed(() => {
   const meta = searchTestResult.value?.retrieval_meta || {}
-  const valueFilters = Array.isArray(meta.value_filters) ? meta.value_filters : []
-  const groupBy = meta.group_by || ''
-  const distinctBy = meta.distinct_by || ''
-  const queryOp = meta.query_op || ''
-  const selectColumns = Array.isArray(meta.select_columns) ? meta.select_columns : []
+  const plan = meta.table_query_plan || {}
+  const valueFilters = Array.isArray(plan.filters) ? plan.filters : (Array.isArray(meta.value_filters) ? meta.value_filters : [])
+  const groupBy = plan.group_by || meta.group_by || ''
+  const distinctBy = plan.distinct_by || meta.distinct_by || ''
+  const queryOp = plan.query_op || meta.query_op || ''
+  const selectColumns = Array.isArray(plan.select_columns) ? plan.select_columns : (Array.isArray(meta.select_columns) ? meta.select_columns : [])
   const tableSchema = meta.table_schema || {}
   return {
     value_filters: valueFilters,
@@ -733,6 +734,7 @@ const flattenedRetrievalMeta = computed(() => {
   delete meta.distinct_by
   delete meta.select_columns
   delete meta.table_schema
+  delete meta.table_query_plan
   delete meta.query_op
   return meta
 })
