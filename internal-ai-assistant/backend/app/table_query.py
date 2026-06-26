@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Document, DocumentTableRow, User, document_group_link
-from .table_plan import COLUMN_ALIASES, COLUMN_LABELS, clean as plan_clean, format_filter_condition, format_filter_groups, parse_table_query_plan
+from .table_plan import AGGREGATE_OPERATION_LABELS, COLUMN_ALIASES, COLUMN_LABELS, QUERY_OPERATION_LABELS, clean as plan_clean, describe_table_query_plan, format_filter_condition, format_filter_groups, parse_table_query_plan
 from .table_schema import infer_column_semantics, semantic_value
 
 TABLE_QUERY_VERBS = (
@@ -346,13 +346,6 @@ def _format_number(value: float) -> str:
     return f"{value:.4f}".rstrip("0").rstrip(".")
 
 
-AGGREGATE_LABELS = {
-    "sum": "汇总",
-    "avg": "平均值",
-    "max": "最大值",
-    "min": "最小值",
-}
-
 
 def _aggregate_result(operation: str, values: list[float]) -> float | None:
     if not values:
@@ -526,7 +519,7 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
 
     lines = ["## 表格统计结果"]
     measure_label = COLUMN_LABELS.get(measure_column, measure_column or "指标")
-    aggregate_label = AGGREGATE_LABELS.get(aggregate_op, aggregate_op)
+    aggregate_label = AGGREGATE_OPERATION_LABELS.get(aggregate_op, aggregate_op)
     aggregate_result = _aggregate_result(aggregate_op, answer_data.aggregate_values) if aggregate_op else None
     if aggregate_op:
         result_text = _format_number(aggregate_result) if aggregate_result is not None else "无可计算结果"
@@ -540,23 +533,10 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
         lines.append(f"结论：共有 {len(data_rows)} {count_unit}命中记录。")
     lines.append("")
     lines.append("### 统计口径")
-    op_label = {
-        "branch_completion_count": "分公司完成度统计",
-        "group_count": "分组计数",
-        "sum": "求和汇总",
-        "sum_group": "分组求和",
-        "avg": "平均值汇总",
-        "avg_group": "分组平均",
-        "max": "最大值汇总",
-        "max_group": "分组最大值",
-        "min": "最小值汇总",
-        "min_group": "分组最小值",
-        "distinct_count": "去重计数",
-        "distinct_list": "去重列举",
-        "list": "明细列举",
-        "count": "命中行计数",
-        "retrieve": "表格检索",
-    }.get(query_op, query_op)
+    plan_explanation = describe_table_query_plan(plan)
+    op_label = QUERY_OPERATION_LABELS.get(query_op, query_op)
+    if plan_explanation.get("summary"):
+        lines.append(f"- 计划解释：{plan_explanation['summary']}。")
     lines.append(f"- 查询操作：{op_label}。")
     if branch_completion:
         lines.append("- 仅统计同时满足：银行账户完成、社保公积金账户完成、公积金比例有值、公司名称有值的表格数据行。")

@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .models import User
-from .table_plan import CITY_TERMS, COLUMN_ALIASES, clean as plan_clean, compact as _compact, parse_table_query_plan
+from .table_plan import CITY_TERMS, COLUMN_ALIASES, clean as plan_clean, compact as _compact, describe_table_query_plan, parse_table_query_plan
 from .table_query import row_to_context, select_table_documents, table_rows_for_documents
 from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_value
 
@@ -320,6 +320,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     result_limit = plan.limit
     query_op = plan.query_op
     plan_meta = plan.to_dict()
+    plan_explanation = describe_table_query_plan(plan)
 
     for doc_rank, doc in enumerate(docs):
         rows = table_rows_for_documents(db, [doc.id], include_headers=True, limit=1000)
@@ -400,6 +401,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "document_ids": [doc.id for doc in docs],
             "table_schema": table_schema_by_doc,
             "table_query_plan": plan_meta,
+            "table_query_explanation": plan_explanation,
             "branch_completion_filter": branch_completion_query,
             "branch_completion_matched_rows": branch_completion_matched_rows,
             "value_filters": value_filters,
@@ -436,6 +438,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "document_ids": [doc.id for doc in docs],
         "table_schema": table_schema_by_doc,
         "table_query_plan": plan_meta,
+        "table_query_explanation": plan_explanation,
         "branch_completion_filter": branch_completion_query,
         "branch_completion_matched_rows": branch_completion_matched_rows,
         "value_filters": value_filters,

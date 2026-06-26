@@ -64,6 +64,31 @@ FILTER_OPERATOR_LABELS = {
     "lte": "小于等于",
 }
 
+QUERY_OPERATION_LABELS = {
+    "branch_completion_count": "分公司完成度统计",
+    "group_count": "分组计数",
+    "sum": "求和汇总",
+    "sum_group": "分组求和",
+    "avg": "平均值汇总",
+    "avg_group": "分组平均",
+    "max": "最大值汇总",
+    "max_group": "分组最大值",
+    "min": "最小值汇总",
+    "min_group": "分组最小值",
+    "distinct_count": "去重计数",
+    "distinct_list": "去重列举",
+    "list": "明细列举",
+    "count": "命中行计数",
+    "retrieve": "表格检索",
+}
+
+AGGREGATE_OPERATION_LABELS = {
+    "sum": "汇总",
+    "avg": "平均值",
+    "max": "最大值",
+    "min": "最小值",
+}
+
 _VALUE_OPERATORS: tuple[tuple[str, str], ...] = (
     ("!=", "ne"),
     ("<>", "ne"),
@@ -439,6 +464,47 @@ def format_filter_groups(groups: list[list[dict[str, Any]]] | None, logic: str =
     if logic == "or" and len(formatted_groups) > 1:
         return "；或 ".join(formatted_groups)
     return "；".join(formatted_groups)
+
+
+def describe_table_query_plan(plan: TableQueryPlan) -> dict[str, Any]:
+    group_label = COLUMN_LABELS.get(plan.group_by, plan.group_by) if plan.group_by else ""
+    distinct_label = COLUMN_LABELS.get(plan.distinct_by, plan.distinct_by) if plan.distinct_by else ""
+    measure_label = COLUMN_LABELS.get(plan.measure_column, plan.measure_column) if plan.measure_column else ""
+    select_labels = [COLUMN_LABELS.get(column, column) for column in plan.select_columns]
+    filter_text = format_filter_groups(plan.filter_groups, plan.filter_logic) or "；".join(
+        format_filter_condition(item) for item in plan.filters
+    )
+    sort_label = "升序" if plan.sort_by == "asc" else "降序"
+    operation_label = QUERY_OPERATION_LABELS.get(plan.query_op, plan.query_op or "表格检索")
+    aggregate_label = AGGREGATE_OPERATION_LABELS.get(plan.aggregate_op, plan.aggregate_op)
+    parts = [f"识别为：{operation_label}"]
+    if filter_text:
+        parts.append(f"过滤条件：{filter_text}")
+    if group_label:
+        parts.append(f"分组字段：{group_label}")
+    if distinct_label:
+        parts.append(f"去重字段：{distinct_label}")
+    if measure_label:
+        parts.append(f"指标字段：{measure_label}")
+    if select_labels:
+        parts.append(f"展示字段：{'、'.join(select_labels)}")
+    if plan.group_by or plan.aggregate_op:
+        parts.append(f"排序：{sort_label}")
+        parts.append(f"展开：前 {plan.limit} 项")
+    return {
+        "operation": operation_label,
+        "operation_code": plan.query_op,
+        "filters": filter_text,
+        "filter_logic": plan.filter_logic,
+        "group_by": group_label,
+        "distinct_by": distinct_label,
+        "aggregate": aggregate_label,
+        "measure": measure_label,
+        "select_columns": select_labels,
+        "sort": sort_label if plan.group_by or plan.aggregate_op else "",
+        "limit": plan.limit if plan.group_by or plan.aggregate_op else "",
+        "summary": "；".join(parts),
+    }
 
 
 def parse_table_query_plan(question: str, *, branch_completion: bool | None = None, include_quoted_company: bool = True) -> TableQueryPlan:

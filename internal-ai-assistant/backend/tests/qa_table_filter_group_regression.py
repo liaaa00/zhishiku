@@ -233,8 +233,11 @@ def main() -> None:
         sum_contexts, sum_meta = table_mode_contexts(db, sum_question, user, top_k=10)
         if sum_meta.get("aggregate_op") != "sum" or sum_meta.get("measure_column") != "amount":
             raise AssertionError(f"sum retrieval meta should expose aggregate plan, got {sum_meta}")
+        sum_explanation = sum_meta.get("table_query_explanation") or {}
+        if "识别为：分组求和" not in sum_explanation.get("summary", "") or sum_explanation.get("group_by") != "城市" or sum_explanation.get("measure") != "金额":
+            raise AssertionError(f"sum retrieval meta should expose plan explanation, got {sum_meta}")
         sum_answer = build_table_answer(sum_question, sum_contexts)
-        if "查询操作：分组求和" not in sum_answer or "按城市汇总金额" not in sum_answer:
+        if "查询操作：分组求和" not in sum_answer or "按城市汇总金额" not in sum_answer or "计划解释：识别为：分组求和" not in sum_answer:
             raise AssertionError(f"sum answer should explain grouped sum; meta={sum_meta}; answer={sum_answer}")
         if "上海：3800" not in sum_answer or "北京：800" not in sum_answer or "成都：200" not in sum_answer:
             raise AssertionError(f"sum answer should include expected city totals; meta={sum_meta}; answer={sum_answer}")
@@ -287,6 +290,9 @@ def main() -> None:
         top_contexts, top_meta = table_mode_contexts(db, top_question, user, top_k=10)
         if top_meta.get("sort_by") != "desc" or top_meta.get("limit") != 2:
             raise AssertionError(f"topN retrieval meta should expose sort/limit, got {top_meta}")
+        top_explanation = top_meta.get("table_query_explanation") or {}
+        if top_explanation.get("sort") != "降序" or top_explanation.get("limit") != 2 or "展开：前 2 项" not in top_explanation.get("summary", ""):
+            raise AssertionError(f"topN retrieval meta should explain sort/limit, got {top_meta}")
         top_answer = build_table_answer(top_question, top_contexts)
         if "结果排序：按结果值降序，最多展开 2 项" not in top_answer:
             raise AssertionError(f"topN answer should explain desc limit; meta={top_meta}; answer={top_answer}")

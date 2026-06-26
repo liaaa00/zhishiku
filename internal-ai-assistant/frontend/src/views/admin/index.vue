@@ -497,6 +497,7 @@
               <article class="admin-router-diagnostic-card" :class="tableQueryDiagnostics.hasTableSignals ? '' : 'is-muted'">
                 <span>Table Query</span>
                 <strong>{{ tableQueryDiagnostics.summary }}</strong>
+                <p>解释：{{ tableQueryDiagnostics.explanation?.summary || '无' }}</p>
                 <p>操作：{{ tableQueryDiagnostics.query_op || '无' }}</p>
                 <p>过滤：{{ formatTableFilters(tableQueryDiagnostics.value_filters, tableQueryDiagnostics.filter_logic, tableQueryDiagnostics.filter_groups) || '无' }}</p>
                 <p>展示：{{ formatDiagnosticList(tableQueryDiagnostics.select_columns) || '默认字段' }}</p>
@@ -717,6 +718,7 @@ const tableQueryDiagnostics = computed(() => {
   const selectColumns = Array.isArray(plan.select_columns) ? plan.select_columns : (Array.isArray(meta.select_columns) ? meta.select_columns : [])
   const sortBy = plan.sort_by || meta.sort_by || ''
   const limit = plan.limit || meta.limit || ''
+  const explanation = meta.table_query_explanation || {}
   const tableSchema = meta.table_schema || {}
   return {
     value_filters: valueFilters,
@@ -726,6 +728,7 @@ const tableQueryDiagnostics = computed(() => {
     distinct_by: distinctBy,
     select_columns: selectColumns,
     table_schema: tableSchema,
+    explanation,
     query_op: queryOp,
     aggregate_op: aggregateOp,
     measure_column: measureColumn,
@@ -733,9 +736,9 @@ const tableQueryDiagnostics = computed(() => {
     limit,
     matched_rows: meta.value_filter_matched_rows,
     hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy) || Boolean(aggregateOp) || selectColumns.length > 0 || Boolean(sortBy) || Boolean(limit) || Boolean(queryOp),
-    summary: valueFilters.length > 0 || groupBy || distinctBy || aggregateOp || selectColumns.length > 0 || sortBy || limit || queryOp
+    summary: explanation.summary || (valueFilters.length > 0 || groupBy || distinctBy || aggregateOp || selectColumns.length > 0 || sortBy || limit || queryOp
       ? `${valueFilters.length} filters · ${meta.value_filter_matched_rows ?? '-'} rows`
-      : '未识别结构化条件',
+      : '未识别结构化条件'),
   }
 })
 const flattenedRetrievalMeta = computed(() => {
@@ -755,6 +758,7 @@ const flattenedRetrievalMeta = computed(() => {
   delete meta.limit
   delete meta.table_schema
   delete meta.table_query_plan
+  delete meta.table_query_explanation
   delete meta.query_op
   return meta
 })
