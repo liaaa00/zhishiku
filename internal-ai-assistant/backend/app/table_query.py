@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Document, DocumentTableRow, User, document_group_link
-from .table_plan import COLUMN_ALIASES, COLUMN_LABELS, format_filter_condition, parse_table_query_plan
+from .table_plan import COLUMN_ALIASES, COLUMN_LABELS, format_filter_condition, format_filter_groups, parse_table_query_plan
 from .table_schema import infer_column_semantics, semantic_value
 
 TABLE_QUERY_VERBS = (
@@ -371,6 +371,8 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     distinct_by = plan.distinct_by
     query_op = plan.query_op
     value_filters = plan.filters
+    filter_logic = plan.filter_logic
+    filter_groups = plan.filter_groups
     select_columns = plan.select_columns
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
     distinct_values: list[str] = []
@@ -450,7 +452,7 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     else:
         lines.append("- 仅统计本次表格检索命中的数据行，已排除表头行；同一表格行只计 1 次。")
     if value_filters:
-        filter_text = "；".join(format_filter_condition(item) for item in value_filters)
+        filter_text = format_filter_groups(filter_groups, filter_logic) or "；".join(format_filter_condition(item) for item in value_filters)
         lines.append(f"- 过滤条件：{filter_text}。")
     if select_columns:
         select_text = "、".join(COLUMN_LABELS.get(column, column) for column in select_columns)

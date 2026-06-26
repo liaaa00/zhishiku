@@ -135,7 +135,7 @@ def main() -> None:
         if multi_meta.get("query_op") != "list":
             raise AssertionError(f"multi filter list query should be query_op=list, got {multi_meta}")
         multi_answer = build_table_answer(multi_filter_question, multi_contexts)
-        if "过滤条件：城市 等于 上海；状态 等于 有效" not in multi_answer:
+        if "过滤条件：城市 等于 上海 且 状态 等于 有效" not in multi_answer:
             raise AssertionError(f"answer should explain multi filters; answer={multi_answer}")
         if "查询操作：明细列举" not in multi_answer:
             raise AssertionError(f"answer should explain list operation; answer={multi_answer}")
@@ -149,6 +149,8 @@ def main() -> None:
             {"column": "status", "operator": "eq", "value": "有效"},
         ]:
             raise AssertionError(f"plan should detect city/status filters, got {parsed_plan}")
+        if parsed_plan.get("filter_logic") != "and" or parsed_plan.get("filter_groups") != [parsed_plan.get("filters")]:
+            raise AssertionError(f"plan should expose AND filter group, got {parsed_plan}")
         if parsed_plan.get("select_columns") != ["company", "city", "status"]:
             raise AssertionError(f"plan should detect company/city/status projection, got {parsed_plan}")
         projection_contexts, projection_meta = table_mode_contexts(db, projection_question, user, top_k=10)
@@ -163,6 +165,29 @@ def main() -> None:
             raise AssertionError(f"preview should prioritize projected fields; answer={projection_answer}")
         if "公司=上海新表机构 | 城市=上海 | 状态=有效" not in projection_answer:
             raise AssertionError(f"preview should project fields through nonstandard schema; answer={projection_answer}")
+
+        or_question = "列出城市=上海或城市=北京的网点清单"
+        or_plan = parse_table_query_plan(or_question).to_dict()
+        if or_plan.get("filter_logic") != "or" or len(or_plan.get("filter_groups") or []) != 2:
+            raise AssertionError(f"OR plan should expose two filter groups, got {or_plan}")
+        or_contexts, or_meta = table_mode_contexts(db, or_question, user, top_k=10)
+        or_row_ids = {str(item.get("table_row_id")) for item in or_contexts if not item.get("is_header")}
+        if or_row_ids != {"row-sh-1", "row-sh-2", "row-sh-disabled", "row-bj-1", "row-ns-sh-1", "row-ns-sh-off", "row-ns-bj-1"}:
+            raise AssertionError(f"OR city filter should keep Shanghai or Beijing rows, got {sorted(or_row_ids)}; meta={or_meta}")
+        if or_meta.get("filter_logic") != "or":
+            raise AssertionError(f"retrieval meta should expose OR logic, got {or_meta}")
+
+        inherited_or_question = "列出城市=上海且状态=有效或状态=停用的公司名称、城市、状态"
+        inherited_or_plan = parse_table_query_plan(inherited_or_question).to_dict()
+        if inherited_or_plan.get("filter_logic") != "or" or len(inherited_or_plan.get("filter_groups") or []) != 2:
+            raise AssertionError(f"inherited OR plan should expose two filter groups, got {inherited_or_plan}")
+        inherited_or_contexts, inherited_or_meta = table_mode_contexts(db, inherited_or_question, user, top_k=10)
+        inherited_or_row_ids = {str(item.get("table_row_id")) for item in inherited_or_contexts if not item.get("is_header")}
+        if inherited_or_row_ids != {"row-sh-1", "row-sh-2", "row-sh-disabled", "row-ns-sh-1", "row-ns-sh-off"}:
+            raise AssertionError(f"inherited OR should stay within Shanghai and include active/stopped rows, got {sorted(inherited_or_row_ids)}; meta={inherited_or_meta}")
+        inherited_or_answer = build_table_answer(inherited_or_question, inherited_or_contexts)
+        if "或" not in inherited_or_answer or "状态 等于 停用" not in inherited_or_answer:
+            raise AssertionError(f"answer should explain OR filter groups; answer={inherited_or_answer}")
 
         not_equal_question = "列出城市=上海且状态!=停用的公司名称、城市、状态"
         not_equal_contexts, not_equal_meta = table_mode_contexts(db, not_equal_question, user, top_k=10)

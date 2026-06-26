@@ -119,6 +119,8 @@ _STOP_WORDS = (
 class TableQueryPlan:
     query_op: str = "retrieve"
     filters: list[dict[str, str]] = field(default_factory=list)
+    filter_logic: str = "and"
+    filter_groups: list[list[dict[str, str]]] = field(default_factory=list)
     select_columns: list[str] = field(default_factory=list)
     group_by: str = ""
     distinct_by: str = ""
@@ -132,6 +134,8 @@ class TableQueryPlan:
     def legacy_meta(self) -> dict[str, Any]:
         return {
             "value_filters": self.filters,
+            "filter_logic": self.filter_logic,
+            "filter_groups": self.filter_groups,
             "group_by": self.group_by,
             "distinct_by": self.distinct_by,
             "select_columns": self.select_columns,
@@ -187,60 +191,104 @@ def literal_after_marker(compact_question: str, marker: str) -> str:
     return _extract_value_after_operator(match.group(1), 0)
 
 
-def _parse_marker_filter(text: str, alias: str, marker: str) -> dict[str, str] | None:
+def _parse_marker_filters(text: str, alias: str, marker: str) -> list[dict[str, str]]:
+    filters: list[dict[str, str]] = []
     start = 0
     while True:
         marker_index = text.find(marker, start)
         if marker_index < 0:
-            return None
+            return filters
         start = marker_index + len(marker)
         tail = text[start:]
 
+        parsed: dict[str, str] | None = None
         for phrase, operator in _EMPTY_OPERATORS:
             if tail.startswith(phrase):
-                return _normalize_filter(alias, operator=operator)
+                parsed = _normalize_filter(alias, operator=operator)
+                break
 
-        for phrase, operator in _VALUE_OPERATORS:
-            if not tail.startswith(phrase):
-                continue
-            value = _extract_value_after_operator(tail, len(phrase))
-            if value:
-                return _normalize_filter(alias, value, operator)
+        if parsed is None:
+            for phrase, operator in _VALUE_OPERATORS:
+                if not tail.startswith(phrase):
+                    continue
+                value = _extract_value_after_operator(tail, len(phrase))
+                if value:
+                    parsed = _normalize_filter(alias, value, operator)
+                break
+        if parsed:
+            filters.append(parsed)
         # A marker appearing as a selected/display column should not become a filter.
 
 
-def parse_value_filters(question: str, include_quoted_company: bool = True) -> list[dict[str, str]]:
-    text = compact(question)
-    filters: list[dict[str, str]] = []
+def _dedupe_filters(filters: list[dict[str, str]]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
-
-    def add_filter(alias: str, value: str = "", operator: str = "contains") -> None:
-        item = _normalize_filter(alias, value, operator)
+    for item in filters:
         key = _filter_key(item.get("column", ""), item.get("operator", "contains"), item.get("value", ""))
         if key in seen:
-            return
+            continue
         if item.get("operator") not in {"is_empty", "is_not_empty"} and not item.get("value"):
-            return
+            continue
         seen.add(key)
-        filters.append(item)
+        result.append(item)
+    return result
 
+
+def _split_or_segments(text: str) -> list[str]:
+    return [segment for segment in re.split(r"(?:或者|或|OR|or)", text) if segment]
+
+
+def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> list[dict[str, str]]:
+    filters: list[dict[str, str]] = []
     for alias, markers in QUESTION_COLUMN_TERMS:
         for marker in markers:
-            parsed = _parse_marker_filter(text, alias, marker)
-            if parsed:
-                add_filter(parsed.get("column", alias), parsed.get("value", ""), parsed.get("operator", "contains"))
+            filters.extend(_parse_marker_filters(text, alias, marker))
 
-    for city in CITY_TERMS:
-        if city in text and not any(item.get("column") == "city" and item.get("value") == city for item in filters):
-            add_filter("city", city, "contains")
+    if include_city_tokens:
+        for city in CITY_TERMS:
+            if city in text and not any(item.get("column") == "city" and item.get("value") == city for item in filters):
+                filters.append(_normalize_filter("city", city, "contains"))
+    return _dedupe_filters(filters)
+
+
+def parse_value_filters(question: str, include_quoted_company: bool = True) -> list[dict[str, str]]:
+    filters, _logic, _groups = parse_filter_expression(question, include_quoted_company=include_quoted_company)
+    return filters
+
+
+def parse_filter_expression(
+    question: str,
+    include_quoted_company: bool = True,
+) -> tuple[list[dict[str, str]], str, list[list[dict[str, str]]]]:
+    text = compact(question)
+    or_segments = _split_or_segments(text)
+    groups: list[list[dict[str, str]]] = []
+    if len(or_segments) > 1:
+        previous_context: list[dict[str, str]] = []
+        for segment in or_segments:
+            current = _parse_filters_from_text(segment, include_city_tokens=True)
+            inherited: list[dict[str, str]] = []
+            current_columns = {item.get("column") for item in current}
+            for item in previous_context:
+                if item.get("column") not in current_columns:
+                    inherited.append(item)
+            group = _dedupe_filters(inherited + current)
+            if group:
+                groups.append(group)
+            previous_context = group or previous_context
+        filters = _dedupe_filters([item for group in groups for item in group])
+        return filters, "or", groups
+
+    filters = _parse_filters_from_text(text, include_city_tokens=True)
 
     if include_quoted_company:
         quoted_values = re.findall(r"[‘'\"]([^‘’'\"]{1,30})[’'\"]", question or "")
         for value in quoted_values:
             if any(marker in text for marker in ("公司", "单位", "网点", "分公司")):
-                add_filter("company", value, "contains")
+                filters.append(_normalize_filter("company", value, "contains"))
 
-    return filters
+    filters = _dedupe_filters(filters)
+    return filters, "and", [filters] if filters else []
 
 
 def group_by_column(question: str) -> str:
@@ -318,18 +366,34 @@ def format_filter_condition(item: dict[str, Any]) -> str:
     return f"{label} {op_label} {value}"
 
 
+def format_filter_groups(groups: list[list[dict[str, Any]]] | None, logic: str = "and") -> str:
+    resolved_groups = groups or []
+    if not resolved_groups:
+        return ""
+    formatted_groups: list[str] = []
+    for group in resolved_groups:
+        parts = [format_filter_condition(item) for item in group]
+        if parts:
+            formatted_groups.append(" 且 ".join(parts))
+    if logic == "or" and len(formatted_groups) > 1:
+        return "；或 ".join(formatted_groups)
+    return "；".join(formatted_groups)
+
+
 def parse_table_query_plan(question: str, *, branch_completion: bool | None = None, include_quoted_company: bool = True) -> TableQueryPlan:
     branch = is_branch_completion_query(question) if branch_completion is None else branch_completion
     if branch:
         return TableQueryPlan(query_op="branch_completion_count", branch_completion_filter=True)
 
-    filters = parse_value_filters(question, include_quoted_company=include_quoted_company)
+    filters, filter_logic, filter_groups = parse_filter_expression(question, include_quoted_company=include_quoted_company)
     group_by = group_by_column(question)
     distinct_by = distinct_column(question)
     selected = select_columns(question, filters)
     return TableQueryPlan(
         query_op=query_operation(question, group_by, distinct_by),
         filters=filters,
+        filter_logic=filter_logic,
+        filter_groups=filter_groups,
         select_columns=selected,
         group_by=group_by,
         distinct_by=distinct_by,

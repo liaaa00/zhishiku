@@ -177,30 +177,32 @@ def _compare_values(row_value: str, expected: str, operator: str) -> bool:
     return expected_clean in row_clean
 
 
-def _row_matches_value_filters(context: dict, filters: list[dict[str, str]]) -> bool:
-    if not filters:
-        return True
+def _row_matches_single_filter(context: dict, item: dict[str, str]) -> bool:
     row = context.get("table_row") if isinstance(context.get("table_row"), dict) else {}
     semantic_map = context.get("table_semantic_map") if isinstance(context.get("table_semantic_map"), dict) else {}
-    for item in filters:
-        column = item.get("column") or ""
-        operator = item.get("operator") or "contains"
-        value = item.get("value") or ""
-        focused_values = _row_values_for_aliases(row, (column,), semantic_map)
-        combined = " ".join(value for value in focused_values if value)
-        if operator in {"contains", "not_contains"}:
-            matched = _compare_values(combined, value, operator)
-        elif operator == "is_empty":
-            matched = all(_compare_values(candidate, value, operator) for candidate in focused_values) if focused_values else True
-        elif operator == "is_not_empty":
-            matched = any(_compare_values(candidate, value, operator) for candidate in focused_values)
-        elif operator == "ne":
-            matched = all(_compare_values(candidate, value, operator) for candidate in focused_values) if focused_values else True
-        else:
-            matched = any(_compare_values(candidate, value, operator) for candidate in focused_values)
-        if not matched:
-            return False
-    return True
+    column = item.get("column") or ""
+    operator = item.get("operator") or "contains"
+    value = item.get("value") or ""
+    focused_values = _row_values_for_aliases(row, (column,), semantic_map)
+    combined = " ".join(value for value in focused_values if value)
+    if operator in {"contains", "not_contains"}:
+        return _compare_values(combined, value, operator)
+    if operator == "is_empty":
+        return all(_compare_values(candidate, value, operator) for candidate in focused_values) if focused_values else True
+    if operator == "is_not_empty":
+        return any(_compare_values(candidate, value, operator) for candidate in focused_values)
+    if operator == "ne":
+        return all(_compare_values(candidate, value, operator) for candidate in focused_values) if focused_values else True
+    return any(_compare_values(candidate, value, operator) for candidate in focused_values)
+
+
+def _row_matches_filter_plan(context: dict, filters: list[dict[str, str]], logic: str = "and", groups: list[list[dict[str, str]]] | None = None) -> bool:
+    resolved_groups = groups or ([filters] if filters else [])
+    if not resolved_groups:
+        return True
+    if logic == "or":
+        return any(all(_row_matches_single_filter(context, item) for item in group) for group in resolved_groups)
+    return all(_row_matches_single_filter(context, item) for item in filters)
 
 
 
@@ -307,6 +309,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     branch_completion_query = plan.branch_completion_filter
     city_tokens = [] if branch_completion_query else _city_tokens(question)
     value_filters = plan.filters
+    filter_logic = plan.filter_logic
+    filter_groups = plan.filter_groups
     group_by = plan.group_by
     distinct_by = plan.distinct_by
     select_columns = plan.select_columns
@@ -367,7 +371,11 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
 
     value_filter_matched_rows = 0
     if value_filters:
-        value_matched = [item for item in scored_contexts if _row_matches_value_filters(item[3], value_filters)]
+        value_matched = [
+            item
+            for item in scored_contexts
+            if _row_matches_filter_plan(item[3], value_filters, filter_logic, filter_groups)
+        ]
         value_filter_matched_rows = len(value_matched)
         scored_contexts = value_matched
 
@@ -391,6 +399,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "branch_completion_filter": branch_completion_query,
             "branch_completion_matched_rows": branch_completion_matched_rows,
             "value_filters": value_filters,
+            "filter_logic": filter_logic,
+            "filter_groups": filter_groups,
             "value_filter_matched_rows": value_filter_matched_rows,
             "group_by": group_by,
             "distinct_by": distinct_by,
@@ -421,6 +431,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "branch_completion_filter": branch_completion_query,
         "branch_completion_matched_rows": branch_completion_matched_rows,
         "value_filters": value_filters,
+        "filter_logic": filter_logic,
+        "filter_groups": filter_groups,
         "value_filter_matched_rows": value_filter_matched_rows,
         "group_by": group_by,
         "distinct_by": distinct_by,

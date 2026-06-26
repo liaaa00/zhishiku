@@ -498,7 +498,7 @@
                 <span>Table Query</span>
                 <strong>{{ tableQueryDiagnostics.summary }}</strong>
                 <p>操作：{{ tableQueryDiagnostics.query_op || '无' }}</p>
-                <p>过滤：{{ formatTableFilters(tableQueryDiagnostics.value_filters) || '无' }}</p>
+                <p>过滤：{{ formatTableFilters(tableQueryDiagnostics.value_filters, tableQueryDiagnostics.filter_logic, tableQueryDiagnostics.filter_groups) || '无' }}</p>
                 <p>展示：{{ formatDiagnosticList(tableQueryDiagnostics.select_columns) || '默认字段' }}</p>
                 <p>映射：{{ formatTableSchema(tableQueryDiagnostics.table_schema) || '无' }}</p>
                 <p>分组：{{ tableQueryDiagnostics.group_by || '无' }} · 去重：{{ tableQueryDiagnostics.distinct_by || '无' }}</p>
@@ -705,6 +705,8 @@ const tableQueryDiagnostics = computed(() => {
   const meta = searchTestResult.value?.retrieval_meta || {}
   const plan = meta.table_query_plan || {}
   const valueFilters = Array.isArray(plan.filters) ? plan.filters : (Array.isArray(meta.value_filters) ? meta.value_filters : [])
+  const filterLogic = plan.filter_logic || meta.filter_logic || 'and'
+  const filterGroups = Array.isArray(plan.filter_groups) ? plan.filter_groups : (Array.isArray(meta.filter_groups) ? meta.filter_groups : [])
   const groupBy = plan.group_by || meta.group_by || ''
   const distinctBy = plan.distinct_by || meta.distinct_by || ''
   const queryOp = plan.query_op || meta.query_op || ''
@@ -712,6 +714,8 @@ const tableQueryDiagnostics = computed(() => {
   const tableSchema = meta.table_schema || {}
   return {
     value_filters: valueFilters,
+    filter_logic: filterLogic,
+    filter_groups: filterGroups,
     group_by: groupBy,
     distinct_by: distinctBy,
     select_columns: selectColumns,
@@ -730,6 +734,8 @@ const flattenedRetrievalMeta = computed(() => {
   delete meta.retrieval_route
   delete meta.evidence_check
   delete meta.value_filters
+  delete meta.filter_logic
+  delete meta.filter_groups
   delete meta.group_by
   delete meta.distinct_by
   delete meta.select_columns
@@ -1186,7 +1192,7 @@ function formatDiagnosticValue(value: any) {
   return value ?? '-'
 }
 
-function formatTableFilters(value: any) {
+function formatTableFilters(value: any, logic = 'and', groups: any = []) {
   if (!Array.isArray(value) || !value.length) return ''
   const opLabels: Record<string, string> = {
     eq: '=',
@@ -1200,13 +1206,21 @@ function formatTableFilters(value: any) {
     lt: '<',
     lte: '<=',
   }
+  const formatOne = (item: any) => {
+    const op = item?.operator || 'contains'
+    const label = opLabels[op] || op
+    if (op === 'is_empty' || op === 'is_not_empty') return `${item?.column || 'field'} ${label}`
+    return `${item?.column || 'field'} ${label} ${item?.value ?? ''}`
+  }
+  if (logic === 'or' && Array.isArray(groups) && groups.length) {
+    return groups
+      .map((group: any) => Array.isArray(group) ? group.map(formatOne).filter(Boolean).join(' 且 ') : '')
+      .filter(Boolean)
+      .slice(0, 4)
+      .join('；或 ')
+  }
   return value
-    .map((item: any) => {
-      const op = item?.operator || 'contains'
-      const label = opLabels[op] || op
-      if (op === 'is_empty' || op === 'is_not_empty') return `${item?.column || 'field'} ${label}`
-      return `${item?.column || 'field'} ${label} ${item?.value ?? ''}`
-    })
+    .map(formatOne)
     .filter(Boolean)
     .slice(0, 6)
     .join('；')
