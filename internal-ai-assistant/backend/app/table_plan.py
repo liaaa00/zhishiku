@@ -48,6 +48,72 @@ COLUMN_LABELS = {
     "status": "状态",
 }
 
+FILTER_OPERATOR_LABELS = {
+    "eq": "等于",
+    "ne": "不等于",
+    "contains": "包含",
+    "not_contains": "不包含",
+    "is_empty": "为空",
+    "is_not_empty": "非空",
+    "gt": "大于",
+    "gte": "大于等于",
+    "lt": "小于",
+    "lte": "小于等于",
+}
+
+_VALUE_OPERATORS: tuple[tuple[str, str], ...] = (
+    ("!=", "ne"),
+    ("<>", "ne"),
+    ("不等于", "ne"),
+    ("不是", "ne"),
+    ("不为", "ne"),
+    ("不包含", "not_contains"),
+    ("包含", "contains"),
+    (">=", "gte"),
+    ("大于等于", "gte"),
+    ("不小于", "gte"),
+    ("<=", "lte"),
+    ("小于等于", "lte"),
+    ("不大于", "lte"),
+    (">", "gt"),
+    ("大于", "gt"),
+    ("<", "lt"),
+    ("小于", "lt"),
+    ("=", "eq"),
+    ("是", "eq"),
+    ("为", "eq"),
+)
+
+_EMPTY_OPERATORS: tuple[tuple[str, str], ...] = (
+    ("不能为空", "is_not_empty"),
+    ("不为空", "is_not_empty"),
+    ("非空", "is_not_empty"),
+    ("有值", "is_not_empty"),
+    ("为空", "is_empty"),
+    ("空值", "is_empty"),
+    ("没有值", "is_empty"),
+    ("无值", "is_empty"),
+)
+
+_STOP_WORDS = (
+    "并且",
+    "同时",
+    "而且",
+    "以及",
+    "且",
+    "的",
+    "清单",
+    "名单",
+    "列表",
+    "明细",
+    "统计",
+    "有多少",
+    "多少",
+    "按",
+    "列出",
+    "展示",
+)
+
 
 @dataclass(slots=True)
 class TableQueryPlan:
@@ -92,49 +158,87 @@ def is_branch_completion_query(question: str) -> bool:
     return branch_hit and bank_hit and social_hit and ratio_hit and complete_hit
 
 
-def literal_after_marker(compact_question: str, marker: str) -> str:
-    match = re.search(rf"{re.escape(marker)}(?:是|为|=|：|:)([^，。；;、?？]+)", compact_question)
-    if not match:
-        return ""
-    value = clean(match.group(1))
+def _filter_key(column: str, operator: str, value: str) -> tuple[str, str, str]:
+    return (column, operator, clean(value))
+
+
+def _normalize_filter(column: str, value: str = "", operator: str = "contains") -> dict[str, str]:
+    normalized = {"column": column, "operator": operator}
+    cleaned_value = clean(value)
+    if operator not in {"is_empty", "is_not_empty"}:
+        normalized["value"] = cleaned_value
+    return normalized
+
+
+def _extract_value_after_operator(text: str, start_index: int) -> str:
+    value = clean(text[start_index:])
     cut_at = len(value)
-    for stop_word in ("并且", "同时", "而且", "以及", "且", "的", "清单", "名单", "列表", "明细", "统计", "有多少", "多少", "按"):
+    for stop_word in _STOP_WORDS:
         index = value.find(stop_word)
         if index > 0:
             cut_at = min(cut_at, index)
     return clean(value[:cut_at])
 
 
+def literal_after_marker(compact_question: str, marker: str) -> str:
+    match = re.search(rf"{re.escape(marker)}(?:是|为|=|：|:)([^，。；;、?？]+)", compact_question)
+    if not match:
+        return ""
+    return _extract_value_after_operator(match.group(1), 0)
+
+
+def _parse_marker_filter(text: str, alias: str, marker: str) -> dict[str, str] | None:
+    start = 0
+    while True:
+        marker_index = text.find(marker, start)
+        if marker_index < 0:
+            return None
+        start = marker_index + len(marker)
+        tail = text[start:]
+
+        for phrase, operator in _EMPTY_OPERATORS:
+            if tail.startswith(phrase):
+                return _normalize_filter(alias, operator=operator)
+
+        for phrase, operator in _VALUE_OPERATORS:
+            if not tail.startswith(phrase):
+                continue
+            value = _extract_value_after_operator(tail, len(phrase))
+            if value:
+                return _normalize_filter(alias, value, operator)
+        # A marker appearing as a selected/display column should not become a filter.
+
+
 def parse_value_filters(question: str, include_quoted_company: bool = True) -> list[dict[str, str]]:
     text = compact(question)
     filters: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
 
-    def add_filter(alias: str, value: str) -> None:
-        value = clean(value)
-        if not value:
-            return
-        key = (alias, value)
+    def add_filter(alias: str, value: str = "", operator: str = "contains") -> None:
+        item = _normalize_filter(alias, value, operator)
+        key = _filter_key(item.get("column", ""), item.get("operator", "contains"), item.get("value", ""))
         if key in seen:
             return
+        if item.get("operator") not in {"is_empty", "is_not_empty"} and not item.get("value"):
+            return
         seen.add(key)
-        filters.append({"column": alias, "value": value})
+        filters.append(item)
 
     for alias, markers in QUESTION_COLUMN_TERMS:
         for marker in markers:
-            value = literal_after_marker(text, marker)
-            if value:
-                add_filter(alias, value)
+            parsed = _parse_marker_filter(text, alias, marker)
+            if parsed:
+                add_filter(parsed.get("column", alias), parsed.get("value", ""), parsed.get("operator", "contains"))
 
     for city in CITY_TERMS:
-        if city in text:
-            add_filter("city", city)
+        if city in text and not any(item.get("column") == "city" and item.get("value") == city for item in filters):
+            add_filter("city", city, "contains")
 
     if include_quoted_company:
         quoted_values = re.findall(r"[‘'\"]([^‘’'\"]{1,30})[’'\"]", question or "")
         for value in quoted_values:
             if any(marker in text for marker in ("公司", "单位", "网点", "分公司")):
-                add_filter("company", value)
+                add_filter("company", value, "contains")
 
     return filters
 
@@ -164,10 +268,20 @@ def select_columns(question: str, value_filters: list[dict[str, str]] | None = N
     for item in value_filters or []:
         column = item.get("column") or ""
         value = item.get("value") or ""
-        if not column or not value:
+        operator = item.get("operator") or "contains"
+        if not column:
             continue
-        for alias in COLUMN_ALIASES.get(column, ()):
-            text = re.sub(rf"{re.escape(alias)}(?:是|为|=|：|:){re.escape(value)}", "", text)
+        for alias in COLUMN_ALIASES.get(column, ()):  # remove filter expressions before detecting projections
+            if operator in {"is_empty", "is_not_empty"}:
+                for phrase, empty_operator in _EMPTY_OPERATORS:
+                    if empty_operator == operator:
+                        text = text.replace(f"{alias}{phrase}", "")
+                continue
+            if not value:
+                continue
+            for phrase, value_operator in _VALUE_OPERATORS:
+                if value_operator == operator:
+                    text = re.sub(rf"{re.escape(alias)}{re.escape(phrase)}{re.escape(value)}", "", text)
 
     candidates: list[tuple[int, str]] = []
     seen: set[str] = set()
@@ -191,6 +305,17 @@ def query_operation(question: str, group_by: str = "", distinct_by: str = "") ->
     if any(term in text for term in ("多少", "几个", "几家", "统计", "汇总", "总数", "数量")):
         return "count"
     return "retrieve"
+
+
+def format_filter_condition(item: dict[str, Any]) -> str:
+    column = str(item.get("column") or "")
+    operator = str(item.get("operator") or "contains")
+    value = clean(item.get("value", ""))
+    label = COLUMN_LABELS.get(column, column or "字段")
+    op_label = FILTER_OPERATOR_LABELS.get(operator, operator)
+    if operator in {"is_empty", "is_not_empty"}:
+        return f"{label} {op_label}"
+    return f"{label} {op_label} {value}"
 
 
 def parse_table_query_plan(question: str, *, branch_completion: bool | None = None, include_quoted_company: bool = True) -> TableQueryPlan:

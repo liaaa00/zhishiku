@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .models import User
-from .table_plan import CITY_TERMS, COLUMN_ALIASES, compact as _compact, parse_table_query_plan
+from .table_plan import CITY_TERMS, COLUMN_ALIASES, clean as plan_clean, compact as _compact, parse_table_query_plan
 from .table_query import row_to_context, select_table_documents, table_rows_for_documents
 from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_value
 
@@ -111,17 +111,70 @@ def _row_values_for_alias(row: dict, alias_group: str) -> list[str]:
     return values
 
 
-def _row_text_for_aliases(row: dict, alias_groups: tuple[str, ...], semantic_map: dict | None = None) -> str:
+def _row_values_for_aliases(row: dict, alias_groups: tuple[str, ...], semantic_map: dict | None = None) -> list[str]:
     values: list[str] = []
     for group in alias_groups:
-        mapped_value = semantic_value(row, group, semantic_map)
-        if mapped_value:
-            values.append(mapped_value)
+        if semantic_map and group in semantic_map:
+            raw_name = getattr(semantic_map[group], "raw_name", "")
+            if raw_name in row:
+                values.append(_clean(row.get(raw_name, "")))
         values.extend(_row_values_for_alias(row, group))
     if not values:
-        values = [_clean(value) for value in row.values() if _clean(value)]
-    return " ".join(dict.fromkeys(values))
+        values = [_clean(value) for value in row.values()]
+    return list(dict.fromkeys(values))
 
+
+def _row_text_for_aliases(row: dict, alias_groups: tuple[str, ...], semantic_map: dict | None = None) -> str:
+    return " ".join(value for value in _row_values_for_aliases(row, alias_groups, semantic_map) if value)
+
+
+def _to_comparable(value: str) -> float | str:
+    text = plan_clean(value)
+    numeric = re.sub(r"[^0-9.\-]", "", text)
+    if numeric and numeric not in {"-", ".", "-."}:
+        try:
+            return float(numeric)
+        except ValueError:
+            pass
+    return text
+
+
+def _compare_values(row_value: str, expected: str, operator: str) -> bool:
+    row_clean = plan_clean(row_value)
+    expected_clean = plan_clean(expected)
+    if operator == "eq":
+        return row_clean == expected_clean
+    if operator == "ne":
+        return row_clean != expected_clean
+    if operator == "contains":
+        return expected_clean in row_clean
+    if operator == "not_contains":
+        return expected_clean not in row_clean
+    if operator == "is_empty":
+        return not row_clean
+    if operator == "is_not_empty":
+        return bool(row_clean)
+    if operator in {"gt", "gte", "lt", "lte"}:
+        left = _to_comparable(row_clean)
+        right = _to_comparable(expected_clean)
+        if isinstance(left, float) and isinstance(right, float):
+            if operator == "gt":
+                return left > right
+            if operator == "gte":
+                return left >= right
+            if operator == "lt":
+                return left < right
+            return left <= right
+        left_text = str(left)
+        right_text = str(right)
+        if operator == "gt":
+            return left_text > right_text
+        if operator == "gte":
+            return left_text >= right_text
+        if operator == "lt":
+            return left_text < right_text
+        return left_text <= right_text
+    return expected_clean in row_clean
 
 
 def _row_matches_value_filters(context: dict, filters: list[dict[str, str]]) -> bool:
@@ -131,11 +184,21 @@ def _row_matches_value_filters(context: dict, filters: list[dict[str, str]]) -> 
     semantic_map = context.get("table_semantic_map") if isinstance(context.get("table_semantic_map"), dict) else {}
     for item in filters:
         column = item.get("column") or ""
+        operator = item.get("operator") or "contains"
         value = item.get("value") or ""
-        if not value:
-            continue
-        focused = _row_text_for_aliases(row, (column,), semantic_map)
-        if value not in focused:
+        focused_values = _row_values_for_aliases(row, (column,), semantic_map)
+        combined = " ".join(value for value in focused_values if value)
+        if operator in {"contains", "not_contains"}:
+            matched = _compare_values(combined, value, operator)
+        elif operator == "is_empty":
+            matched = all(_compare_values(candidate, value, operator) for candidate in focused_values) if focused_values else True
+        elif operator == "is_not_empty":
+            matched = any(_compare_values(candidate, value, operator) for candidate in focused_values)
+        elif operator == "ne":
+            matched = all(_compare_values(candidate, value, operator) for candidate in focused_values) if focused_values else True
+        else:
+            matched = any(_compare_values(candidate, value, operator) for candidate in focused_values)
+        if not matched:
             return False
     return True
 
@@ -269,9 +332,10 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         # If the question names a month, score the whole table first so later
         # worksheets such as 202603 are not dropped by an early per-doc limit.
         candidate_rows = data_rows if month_tokens else data_rows[:per_doc_limit]
+        min_row_score = 0.2 if value_filters else 0.75
         for order, context in enumerate(candidate_rows):
             score = _row_score(question, context, doc_rank)
-            if score >= 0.75:
+            if score >= min_row_score:
                 scored_contexts.append((score, doc_rank, order, context))
         header_contexts_by_doc[str(doc.id)] = headers[:2]
 

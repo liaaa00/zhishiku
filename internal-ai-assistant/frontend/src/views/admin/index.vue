@@ -1188,8 +1188,25 @@ function formatDiagnosticValue(value: any) {
 
 function formatTableFilters(value: any) {
   if (!Array.isArray(value) || !value.length) return ''
+  const opLabels: Record<string, string> = {
+    eq: '=',
+    ne: '!=',
+    contains: '包含',
+    not_contains: '不包含',
+    is_empty: '为空',
+    is_not_empty: '非空',
+    gt: '>',
+    gte: '>=',
+    lt: '<',
+    lte: '<=',
+  }
   return value
-    .map((item: any) => `${item?.column || 'field'}=${item?.value ?? ''}`)
+    .map((item: any) => {
+      const op = item?.operator || 'contains'
+      const label = opLabels[op] || op
+      if (op === 'is_empty' || op === 'is_not_empty') return `${item?.column || 'field'} ${label}`
+      return `${item?.column || 'field'} ${label} ${item?.value ?? ''}`
+    })
     .filter(Boolean)
     .slice(0, 6)
     .join('；')
