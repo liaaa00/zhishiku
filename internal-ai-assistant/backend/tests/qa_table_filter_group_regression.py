@@ -239,6 +239,37 @@ def main() -> None:
         if "上海：3800" not in sum_answer or "北京：800" not in sum_answer or "成都：200" not in sum_answer:
             raise AssertionError(f"sum answer should include expected city totals; meta={sum_meta}; answer={sum_answer}")
 
+        avg_question = "按城市统计公积金比例平均值"
+        avg_plan = parse_table_query_plan(avg_question).to_dict()
+        if avg_plan.get("query_op") != "avg_group" or avg_plan.get("aggregate_op") != "avg" or avg_plan.get("measure_column") != "fund_ratio":
+            raise AssertionError(f"avg plan should detect grouped fund ratio average, got {avg_plan}")
+        avg_contexts, avg_meta = table_mode_contexts(db, avg_question, user, top_k=10)
+        if avg_meta.get("aggregate_op") != "avg" or avg_meta.get("measure_column") != "fund_ratio":
+            raise AssertionError(f"avg retrieval meta should expose aggregate plan, got {avg_meta}")
+        avg_answer = build_table_answer(avg_question, avg_contexts)
+        if "查询操作：分组平均" not in avg_answer or "按城市平均值公积金比例" not in avg_answer:
+            raise AssertionError(f"avg answer should explain grouped average; meta={avg_meta}; answer={avg_answer}")
+        if "上海：5.5" not in avg_answer or "北京：5" not in avg_answer:
+            raise AssertionError(f"avg answer should include expected city averages; meta={avg_meta}; answer={avg_answer}")
+
+        max_question = "按城市统计缴费金额最大值"
+        max_plan = parse_table_query_plan(max_question).to_dict()
+        if max_plan.get("query_op") != "max_group" or max_plan.get("aggregate_op") != "max" or max_plan.get("measure_column") != "amount":
+            raise AssertionError(f"max plan should detect grouped amount max, got {max_plan}")
+        max_contexts, max_meta = table_mode_contexts(db, max_question, user, top_k=10)
+        max_answer = build_table_answer(max_question, max_contexts)
+        if "查询操作：分组最大值" not in max_answer or "上海：2500" not in max_answer or "北京：800" not in max_answer or "成都：200" not in max_answer:
+            raise AssertionError(f"max answer should include expected city maximums; meta={max_meta}; answer={max_answer}")
+
+        min_question = "按城市统计缴费金额最小值"
+        min_plan = parse_table_query_plan(min_question).to_dict()
+        if min_plan.get("query_op") != "min_group" or min_plan.get("aggregate_op") != "min" or min_plan.get("measure_column") != "amount":
+            raise AssertionError(f"min plan should detect grouped amount min, got {min_plan}")
+        min_contexts, min_meta = table_mode_contexts(db, min_question, user, top_k=10)
+        min_answer = build_table_answer(min_question, min_contexts)
+        if "查询操作：分组最小值" not in min_answer or "上海：300" not in min_answer or "北京：800" not in min_answer or "成都：200" not in min_answer:
+            raise AssertionError(f"min answer should include expected city minimums; meta={min_meta}; answer={min_answer}")
+
         group_question = "有效网点按城市统计分别有多少个？"
         group_contexts, group_meta = table_mode_contexts(db, group_question, user, top_k=10)
         if group_meta.get("query_op") != "group_count":

@@ -351,6 +351,12 @@ def select_columns(question: str, value_filters: list[dict[str, str]] | None = N
 
 def aggregate_operation(question: str) -> str:
     text = compact(question)
+    if any(term in text for term in ("平均值", "平均", "均值", "avg", "average")):
+        return "avg"
+    if any(term in text for term in ("最大值", "最大", "最高值", "最高", "max", "maximum")):
+        return "max"
+    if any(term in text for term in ("最小值", "最小", "最低值", "最低", "min", "minimum")):
+        return "min"
     if any(term in text for term in ("总和", "合计", "求和", "汇总金额", "金额汇总", "sum")):
         return "sum"
     return ""
