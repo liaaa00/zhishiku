@@ -370,11 +370,10 @@ must: [
 | `require_user` | 验证 JWT Token，返回 `User` 对象。Token 无效 → 401。 |
 | `require_admin` | 在 `require_user` 基础上检查 `is_admin`。非管理员 → 403。 |
 
-### 4.3 ⚠️ 已知安全隐患
+### 4.3 ⚠️ 已知安全隐患 / 后续优化
 
 | 问题 | 严重程度 | 说明 |
 |------|----------|------|
-| 密码哈希使用 SHA256 而非 bcrypt | 🔴 高 | `passlib[bcrypt]` 已安装但未使用，`security.py` 实际调用 `hashlib.sha256`。SHA256 无盐且计算过快，易受彩虹表和暴力破解攻击。 |
-| CORS 全开 | 🟡 中 | `allow_origins=["*"]` 允许任意来源跨域请求。 |
 | Token 无刷新机制 | 🟡 中 | 24 小时到期后需重新登录，无 refresh token。 |
-| 单文件巨石架构 | 🟡 中 | `main.py` 1576 行，混入 API 路由 + HTML 模板 + 业务逻辑。 |
+| 响应模型未统一 | 🟢 低 | 多数路由仍直接返回 `dict` / `list`，后续可补充 Pydantic `response_model` 稳定 API 契约。 |
+| Qdrant 回退缺少显式告警 | 🟢 低 | Qdrant 不可用时可回退 SQLite 向量检索，但管理员侧缺少明确健康告警。 |

@@ -1,6 +1,6 @@
 # IMPLEMENTATION_PLAN.md — 逐步构建序列
 
-> 最后更新：2026-05-29  
+> 最后更新：2026-06-27  
 > 本文档将未来开发和优化拆解成**原始人都能看懂的原子化步骤**。  
 > 每一步只修改或创建一个小功能，杜绝 AI 跨步或乱序构建。  
 > 执行过程中请勿跳过任何步骤，也不要合并多步一起做。
@@ -20,34 +20,35 @@
 
 ### 步骤 1.1 — 升级密码哈希为 bcrypt
 
-- [ ] **依赖**：无
-- [ ] **涉及文件**：仅 `backend/app/security.py`
-- [ ] **做什么**：
+- [x] **依赖**：无
+- [x] **涉及文件**：`backend/app/security.py`、`backend/requirements.txt`
+- [x] **做什么**：
   1. 打开 `backend/app/security.py`
-  2. 删除 `hash_password` 函数中的 `hashlib.sha256` 实现
-  3. 改用 `passlib.hash.bcrypt` 的 `hash()` 方法
-  4. 修改 `verify_password` 函数，使用 `passlib.hash.bcrypt` 的 `verify()` 方法
-  5. 不要修改文件中的其他任何函数（`create_token`, `decode_token`）
-- [ ] **验证方式**：启动后端，用管理员账号登录。如果能正常登录 → 通过。
-- [ ] **注意**：此步只替换加密方法。已存在的 SHA256 密码哈希将在步骤 1.2 处理。
+  2. 删除新密码写入路径中的 SHA256 快速哈希实现
+  3. 改用 `bcrypt.hashpw(..., bcrypt.gensalt())` 生成带盐密码哈希
+  4. 修改 `verify_password` 函数，优先使用 `bcrypt.checkpw()` 验证
+  5. 保持 `create_token`、`decode_token` 的 JWT 行为不变
+- [x] **验证方式**：运行 `python tests/qa_security_regression.py`，确认 bcrypt 用户可登录。
+- [x] **注意**：新建用户、默认管理员和重置密码均写入 bcrypt 哈希；旧 SHA256 哈希由步骤 1.2 兼容迁移。
 
 ---
 
 ### 步骤 1.2 — 迁移现有用户的密码哈希
 
-- [ ] **依赖**：步骤 1.1 完成
-- [ ] **涉及文件**：
-  - `backend/app/security.py`（追加函数）
-  - `backend/app/main.py`（修改 `login` 函数）
-- [ ] **做什么**：
+- [x] **依赖**：步骤 1.1 完成
+- [x] **涉及文件**：
+  - `backend/app/security.py`（旧哈希识别与迁移 helper）
+  - `backend/app/routers/auth.py`（登录时自动升级）
+  - `backend/tests/qa_security_regression.py`（新增回归）
+- [x] **做什么**：
   1. 在 `security.py` 追加函数 `is_legacy_hash(hash_str: str) -> bool`：检查哈希是否为 64 位十六进制（SHA256 特征）且不以 `$2b$` 开头（bcrypt 特征）。
-  2. 在 `security.py` 追加函数 `migrate_password(user, plain_password, db)`：调用 `hash_password` 重新生成 bcrypt 哈希，更新 `user.password_hash` 并 commit。
-  3. 修改 `login` 路由：在 `verify_password` 成功后，调用 `is_legacy_hash` 检查。如果是旧格式 → 调用 `migrate_password` 自动升级。
-- [ ] **验证方式**：
-  1. 用旧管理员账号（SHA256 哈希）登录 → 应成功。
-  2. 检查数据库中该用户的 `password_hash` → 应已变为 `$2b$` 开头。
-  3. 用新密码再次登录 → 应成功。
-- [ ] **注意**：自动升级是零停机迁移的最佳实践。不需要写离线迁移脚本。
+  2. 在 `security.py` 追加函数 `migrate_password_if_needed(user, plain_password, db)`：调用 `hash_password` 重新生成 bcrypt 哈希，更新 `user.password_hash` 并 commit。
+  3. 修改登录路由：在 `verify_password` 成功后，调用 `is_legacy_hash` 检查。如果是旧格式 → 自动升级为 bcrypt。
+- [x] **验证方式**：
+  1. `python tests/qa_security_regression.py` 会用旧 SHA256 用户登录 → 成功。
+  2. 登录后检查数据库中该用户的 `password_hash` → 已变为 bcrypt 前缀。
+  3. 新 bcrypt 用户再次登录 → 成功。
+- [x] **注意**：自动升级是零停机迁移的最佳实践。不需要写离线迁移脚本。
 
 ---
 
@@ -55,28 +56,28 @@
 
 ### 步骤 2.1 — 添加全局 401 拦截
 
-- [ ] **依赖**：无
-- [ ] **涉及文件**：仅 `frontend/src/api.ts`
-- [ ] **做什么**：
+- [x] **依赖**：无
+- [x] **涉及文件**：仅 `frontend/src/api.ts`
+- [x] **做什么**：
   1. 打开 `frontend/src/api.ts`
   2. 在 `http.interceptors.response` 中添加错误拦截器
   3. 拦截逻辑：
-     - 如果 `error.response.status === 401` → 清除 `localStorage` 中的 `token` → 跳转到 `/login`
+     - 如果 `error.response.status === 401` → 清除 `localStorage` 中的 `token` 和 `user` → 跳转到 `/login`
      - 其他错误 → 正常 reject
   4. 确保拦截器只在非登录页触发（避免登录失败时的无限重定向）
-- [ ] **验证方式**：
+- [x] **验证方式**：
   1. 登录后，手动将 localStorage 中的 token 改成无效字符串
   2. 在聊天页发送一条消息
   3. 应自动跳转到 `/login` 页面
-- [ ] **注意**：需要引入 `vue-router` 的 router 实例。参考当前 `api.ts` 和 `router.ts` 的导入方式。
+- [x] **注意**：当前实现直接使用 `window.location.href = '/login'`，避免 axios 与 router 循环依赖。
 
 ---
 
 ### 步骤 2.2 — 添加路由守卫
 
-- [ ] **依赖**：步骤 2.1 完成（可选，但建议同时做）
-- [ ] **涉及文件**：仅 `frontend/src/router.ts`
-- [ ] **做什么**：
+- [x] **依赖**：步骤 2.1 完成（可选，但建议同时做）
+- [x] **涉及文件**：仅 `frontend/src/router.ts`
+- [x] **做什么**：
   1. 打开 `frontend/src/router.ts`
   2. 为每个路由添加 `meta.requiresAuth` 字段：
      - `/login` → `requiresAuth: false`
@@ -85,12 +86,12 @@
   3. 添加 `router.beforeEach` 全局守卫：
      - 未登录访问需登录页面 → 跳转 `/login`
      - 已登录访问 `/login` → 跳转 `/chat`
-     - 非管理员访问 `/admin` → 跳转 `/chat` 或显示提示
-- [ ] **验证方式**：
+     - 非管理员访问 `/admin` → 跳转 `/chat`
+- [x] **验证方式**：
   1. 清除 localStorage token → 手动输入 `/chat` URL → 应跳转到 `/login`
   2. 手动输入 `/admin` URL → 应跳转到 `/login`
-  3. 用普通用户登录 → 手动输入 `/admin` URL → 应跳转或提示
-- [ ] **注意**：管理员的判断需要调用 `/api/me` 或从 localStorage 读取缓存。
+  3. 用普通用户登录 → 手动输入 `/admin` URL → 应跳转到 `/chat`
+- [x] **注意**：管理员判断使用 localStorage 中缓存的 user.is_admin。
 
 ---
 
@@ -160,65 +161,57 @@
 
 ### 步骤 4.1 — 拆分 main.py（提取认证路由）
 
-- [ ] **依赖**：无
-- [ ] **涉及文件**：
-  - 新建 `backend/app/routers/__init__.py`
-  - 新建 `backend/app/routers/auth.py`
-  - 修改 `backend/app/main.py`
-- [ ] **做什么**：
+- [x] **依赖**：无
+- [x] **涉及文件**：
+  - `backend/app/routers/__init__.py`
+  - `backend/app/routers/auth.py`
+  - `backend/app/routers/deps.py`
+  - `backend/app/main.py`
+- [x] **做什么**：
   1. 创建 `backend/app/routers/` 目录和 `__init__.py`
   2. 创建 `routers/auth.py`，移动以下内容：
      - `LoginRequest` 模型
      - `POST /api/auth/login` 路由
      - `GET /api/me` 路由
-     - `require_user` 依赖函数
-     - `require_admin` 依赖函数
-  3. 在 `main.py` 中导入并注册 `auth_router`
-  4. 确保所有 import 路径正确（原有 `from .security import` 等）
-- [ ] **验证方式**：
-  1. 运行后端 → 登录 API 仍正常工作
-  2. 用 curl 测试 `POST /api/auth/login` 和 `GET /api/me`
-- [ ] **注意**：只移动代码不修改逻辑。每个提取的模块保持与原代码完全相同。
+  3. 创建 `routers/deps.py`，集中 `require_user`、`require_admin`、`audit`、`row_to_user` 等共享依赖
+  4. 在 `main.py` 中导入并注册 `auth_router`
+- [x] **验证方式**：运行 `python tests/qa_security_regression.py`，确认登录 API 与 `/api/me` 依赖链可用。
+- [x] **注意**：路由拆分后 `main.py` 仅保留应用初始化、router 注册、HTML fallback 和 health check。
 
 ---
 
 ### 步骤 4.2 — 拆分 main.py（提取聊天路由）
 
-- [ ] **依赖**：步骤 4.1 完成
-- [ ] **涉及文件**：
-  - 新建 `backend/app/routers/chat.py`
-  - 修改 `backend/app/main.py`
-- [ ] **做什么**：
-  1. 创建 `routers/chat.py`，移动以下内容：
-     - `ChatRequest` 模型
-     - `POST /api/chat` 路由
-     - `GET /api/chat/sessions` 路由
-     - `GET /api/chat/sessions/{session_id}` 路由
-     - `DELETE /api/chat/sessions/{session_id}` 路由
-     - `POST /api/chat/attachments` 路由
-     - `POST /api/chat/feedback` 路由
-     - 相关的辅助函数（`session_payload`, `message_to_dict`, `serialize_sources` 等）
-  2. 在 `main.py` 中注册 `chat_router`
-- [ ] **验证方式**：
-  1. 发送聊天消息 → 正常返回
-  2. 上传附件 → 正常处理
-  3. 提交反馈 → 正常保存
-- [ ] **注意**：粒度要小，每次只移动一个逻辑分组。
+- [x] **依赖**：步骤 4.1 完成
+- [x] **涉及文件**：
+  - `backend/app/routers/chat.py`
+  - `backend/app/routers/chat_api.py`
+  - `backend/app/main.py`
+- [x] **做什么**：
+  1. 创建 `routers/chat.py`，承载会话列表、会话详情、删除会话等历史会话 API
+  2. 创建 `routers/chat_api.py`，承载 `POST /api/chat`、流式聊天、附件上传、反馈提交和后台检索测试 API
+  3. 在 `main.py` 中注册 `chat_router` 和 `chat_api_router`
+- [x] **验证方式**：运行现有 QA 回归（如 `qa_final_regression.py`、`qa_api_validation.py`）确认聊天、附件、反馈和引用链路正常。
+- [x] **注意**：聊天主流程较大，已按会话管理与聊天执行拆成两个 router，降低 `main.py` 复杂度。
 
 ---
 
 ### 步骤 4.3 — 拆分 main.py（提取管理端路由）
 
-- [ ] **依赖**：步骤 4.2 完成
-- [ ] **涉及文件**：
-  - 新建 `backend/app/routers/admin_users.py`
-  - 新建 `backend/app/routers/admin_documents.py`
-  - 新建 `backend/app/routers/admin_feedback.py`
-  - 新建 `backend/app/routers/admin_config.py`
-  - 修改 `backend/app/main.py`
-- [ ] **做什么**：按功能域拆分管理端路由到 4 个文件。
-- [ ] **验证方式**：管理端所有 Tab 功能正常。
-- [ ] **注意**：这是最复杂的一步，可分多次完成。
+- [x] **依赖**：步骤 4.2 完成
+- [x] **涉及文件**：
+  - `backend/app/routers/admin_users.py`
+  - `backend/app/routers/admin_groups.py`
+  - `backend/app/routers/admin_documents.py`
+  - `backend/app/routers/admin_feedback.py`
+  - `backend/app/routers/admin_model.py`
+  - `backend/app/routers/admin_vector.py`
+  - `backend/app/routers/admin_tasks.py`
+  - `backend/app/routers/admin_table_schema.py`
+  - `backend/app/main.py`
+- [x] **做什么**：按功能域拆分管理端路由到用户、岗位组、文档、反馈、模型配置、向量库、后台任务和表格 schema 管理等文件。
+- [x] **验证方式**：管理端 API 已被 `qa_user_metadata_regression.py`、`qa_table_schema_aliases_regression.py`、`qa_api_validation.py` 等回归覆盖。
+- [x] **注意**：这是最复杂的一步，当前已完成多 router 拆分；`response_model` 统一化仍可作为后续低优先级 API 契约优化。
 
 ---
 
@@ -226,22 +219,24 @@
 
 ### 步骤 5.1 — 引入 Alembic 并生成初始迁移
 
-- [ ] **依赖**：无
-- [ ] **涉及文件**：
+- [x] **依赖**：无
+- [x] **涉及文件**：
   - `backend/requirements.txt`（追加 `alembic`）
-  - 新建 `backend/alembic/` 目录
-  - 新建 `backend/alembic.ini`
-- [ ] **做什么**：
+  - `backend/alembic/` 目录
+  - `backend/alembic.ini`
+  - `backend/tests/qa_alembic_regression.py`（新增回归）
+- [x] **做什么**：
   1. 安装 `alembic` 并添加到 `requirements.txt`
-  2. 运行 `alembic init alembic`
-  3. 配置 `alembic.ini` 中的 `sqlalchemy.url` 指向 SQLite
-  4. 配置 `alembic/env.py` 导入 `Base.metadata`
-  5. 运行 `alembic revision --autogenerate -m "initial"` 生成初始迁移
-  6. 运行 `alembic upgrade head` 确认迁移执行成功
-- [ ] **验证方式**：
-  1. 删除 `app.db`，运行 `alembic upgrade head` → 重新创建所有表
-  2. 启动后端 → 所有功能正常
-- [ ] **注意**：不要修改现有表结构，只生成当前结构的迁移快照。
+  2. 创建 `alembic.ini`、`alembic/env.py` 和迁移脚本模板
+  3. 配置 `alembic.ini` 默认指向 SQLite，并在 `env.py` 中用 `app.config.DATABASE_URL` 覆盖运行时数据库 URL
+  4. 配置 `alembic/env.py` 导入 `Base.metadata` 和 `app.models`
+  5. 生成初始迁移 `20260627_0001_initial_schema.py`，快照当前 SQLAlchemy 模型表结构
+  6. 运行 `alembic upgrade head` 与 `alembic check` 确认迁移执行成功且 schema 与 metadata 对齐
+- [x] **验证方式**：
+  1. `python tests/qa_alembic_regression.py` → 从空 SQLite 库执行 `alembic upgrade head`
+  2. 校验所有核心表和 `alembic_version` 已创建
+  3. 执行 `alembic check` → `No new upgrade operations detected`
+- [x] **注意**：未修改现有业务表结构；`Base.metadata.create_all` 与运行时兼容补表逻辑暂保留，便于旧部署平滑过渡。
 
 ---
 
@@ -249,19 +244,21 @@
 
 ### 步骤 6.1 — 收紧 CORS 配置
 
-- [ ] **依赖**：无
-- [ ] **涉及文件**：
-  - `backend/app/main.py`（行 48）
-  - `.env` 和 `.env.example`（追加配置项）
-- [ ] **做什么**：
-  1. 在 `.env` 中追加 `CORS_ORIGINS=http://localhost:8080,http://localhost:5173`
+- [x] **依赖**：无
+- [x] **涉及文件**：
+  - `backend/app/config.py`
+  - `backend/app/main.py`
+  - `.env.example`
+  - `backend/tests/qa_security_regression.py`（新增回归）
+- [x] **做什么**：
+  1. 在 `.env.example` 中追加 `CORS_ORIGINS=http://localhost:8080,http://localhost:5174`
   2. 在 `config.py` 中读取 `CORS_ORIGINS` 环境变量，解析为列表
   3. 修改 `main.py` 的 `CORSMiddleware` 配置，使用 `config.CORS_ORIGINS` 替代 `["*"]`
-  4. 开发环境默认值保持宽松（`http://localhost:8080,http://localhost:5173`）
-- [ ] **验证方式**：
-  1. 从 `http://localhost:8080` 访问 → 正常
-  2. 从 `http://evil.com`（用 curl 模拟 Origin header）→ 被 CORS 拒绝
-- [ ] **注意**：生产部署时通过环境变量传入实际域名。
+  4. 开发环境默认值保持允许内嵌后端页面 `http://localhost:8080` 与本项目前端 Vite 端口 `http://localhost:5174`
+- [x] **验证方式**：
+  1. `python tests/qa_security_regression.py` → `http://localhost:5174` 预检通过
+  2. `python tests/qa_security_regression.py` → `http://evil.com` 预检返回 400 且无 `access-control-allow-origin`
+- [x] **注意**：生产部署时通过环境变量传入实际域名。
 
 ---
 
@@ -269,15 +266,15 @@
 
 | 阶段 | 步骤 | 状态 | 完成日期 |
 |------|------|------|----------|
-| 1 | 1.1 升级密码哈希为 bcrypt | 待执行 | — |
-| 1 | 1.2 迁移现有用户密码哈希 | 待执行 | — |
+| 1 | 1.1 升级密码哈希为 bcrypt | 已完成 | 2026-06-27 |
+| 1 | 1.2 迁移现有用户密码哈希 | 已完成 | 2026-06-27 |
 | 2 | 2.1 添加全局 401 拦截 | 已完成 | 2026-06-16 |
 | 2 | 2.2 添加路由守卫 | 已完成 | 2026-06-16 |
 | 3 | 3.1 安装飞书 JS-SDK | 已完成 | 2026-06-27 |
 | 3 | 3.2 改造管理员"员工"Tab | 已完成 | 2026-06-27 |
 | 3 | 3.3 确认无元数据泄露 | 已完成 | 2026-06-27 |
-| 4 | 4.1 拆分认证路由 | 待执行 | — |
-| 4 | 4.2 拆分聊天路由 | 待执行 | — |
-| 4 | 4.3 拆分管端路由 | 待执行 | — |
-| 5 | 5.1 引入 Alembic 迁移 | 待执行 | — |
-| 6 | 6.1 收紧 CORS 配置 | 待执行 | — |
+| 4 | 4.1 拆分认证路由 | 已完成 | 2026-06-27 |
+| 4 | 4.2 拆分聊天路由 | 已完成 | 2026-06-27 |
+| 4 | 4.3 拆分管端路由 | 已完成 | 2026-06-27 |
+| 5 | 5.1 引入 Alembic 迁移 | 已完成 | 2026-06-27 |
+| 6 | 6.1 收紧 CORS 配置 | 已完成 | 2026-06-27 |

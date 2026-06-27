@@ -1,6 +1,6 @@
 # progress.txt — 会话持久层（外部记忆）
 
-> 最后更新：2026-05-29  
+> 最后更新：2026-06-27  
 > 这是 AI 助手的"外部记忆文件"。跨越会话边界，记录项目的真实进度。  
 > 每次会话结束时必须更新此文件的【进行中】和【接下来】部分。  
 > 每次修复 Bug 或完成功能后必须移动条目到【已完成】。
@@ -26,7 +26,7 @@
 - [x] 纯角色管理模型：UserID → GroupID 映射，不冗余存储飞书元数据
 - [x] 管理员可创建/编辑用户、分配岗位组
 - [x] 管理员可创建岗位组
-- [x] 用户登录、密码重置（SHA256 哈希 — ⚠️ 待升级为 bcrypt）
+- [x] 用户登录、密码重置（bcrypt 哈希，兼容旧 SHA256 登录时自动迁移）
 - [x] 账号启用/停用、删除用户
 - [x] 自我删除/自我停用保护
 - [x] 审计日志（用户操作全量记录）
@@ -57,6 +57,9 @@
 - [x] 环境变量驱动配置（.env）
 - [x] 双前端形态（Vue SPA + SSR HTML 回退）
 - [x] Qdrant Collection 自动创建
+- [x] CORS 改为 `CORS_ORIGINS` 白名单配置，拒绝非白名单 Origin
+- [x] FastAPI 路由已从 `main.py` 拆分到 `backend/app/routers/` 按领域维护
+- [x] Alembic 初始迁移已接入，可从空 SQLite 数据库执行 `alembic upgrade head`
 
 ### 已删除/废弃
 - [x] 自建组织架构同步逻辑（已移除）
@@ -69,8 +72,6 @@
 > 这些是重构完成后还没细测的边缘情况，或在代码审计中发现的隐患。
 
 ### 安全
-- [ ] **[高] 密码使用 SHA256 而非 bcrypt**：`passlib[bcrypt]` 已安装但 `security.py` 实际调用 `hashlib.sha256`。SHA256 无盐、计算过快，彩虹表攻击风险。用户密码安全等级不足。
-- [ ] **[中] CORS 全开**：`allow_origins=["*"]`。生产环境应限制为实际域名。
 - [ ] **[中] 无 Token 刷新机制**：24 小时过期后需重新登录，用户体验差。
 
 ### 前端
@@ -79,8 +80,6 @@
 - [ ] **[低] 聊天页输入框长文本无自动扩展**：textarea 未设 `autosize`，长问题需要手动滚动。
 
 ### 后端
-- [ ] **[中] main.py 巨石文件**：1576 行单文件包含所有 API 路由、业务逻辑、HTML 模板和 JavaScript。难以维护和测试。
-- [ ] **[中] 无数据库迁移**：表结构变更依赖 `Base.metadata.create_all`，无 Alembic 版本控制。
 - [ ] **[低] Embedding 默认 local-hash**：基于 MD5 的稀疏向量，检索精度有限。生产应切换到 OpenAI-compatible embedding。
 - [ ] **[低] Qdrant 回退为静默**：Qdrant 不可用时自动回退 SQLite 向量检索，但无告警通知。
 
@@ -100,9 +99,8 @@
 
 | 步骤 | 描述 | 优先级 | 预估工时 |
 |------|------|--------|----------|
-| 1.1 | 修复密码哈希：将 `security.py` 的 SHA256 替换为 `passlib[bcrypt]` | 🔴 P0 | 0.5h |
-| 1.2 | 迁移现有用户的密码哈希（写迁移脚本，登录时自动升级） | 🔴 P0 | 1h |
-| 4.1 | 拆分 `main.py`：提取路由到 `routers/` 子包 | 🟡 P1 | 4h |
-| 4.2 | 为每个 router 添加 Pydantic response_model | 🟢 P2 | 2h |
-| 5.1 | 引入 Alembic 数据库迁移并生成初始迁移 | 🟢 P2 | 1h |
-| 6.1 | 生产环境收紧 CORS 配置 | 🟡 P1 | 0.5h |
+| 7.1 | 增加 Token 刷新或滑动过期机制，降低 24h 过期后的重新登录频率 | 🟡 P1 | 2h |
+| 7.2 | 为核心 router 补充 Pydantic `response_model`，稳定 API 契约 | 🟢 P2 | 3h |
+| 7.3 | 为 Qdrant 不可用回退增加管理员可见告警/健康状态提示 | 🟢 P2 | 2h |
+| 7.4 | 生产环境切换 OpenAI-compatible embedding 并补充检索质量评估 | 🟢 P2 | 3h |
+| 7.5 | 评估 Pinia Store 落地范围，减少大型页面组件内部状态耦合 | 🟢 P2 | 3h |

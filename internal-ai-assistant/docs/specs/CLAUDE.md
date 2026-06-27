@@ -203,10 +203,10 @@ db.commit()
 
 | 要求 | 状态 |
 |------|------|
-| 密码哈希使用 bcrypt（而非 SHA256） | ⚠️ **未实现** — `passlib[bcrypt]` 已安装但未使用 |
+| 密码哈希使用 bcrypt（而非 SHA256） | ✅ 已实现，旧 SHA256 登录时自动迁移 |
 | JWT Token 24 小时过期 | ✅ 已实现 |
 | API Key 不在 API 响应中泄露 | ✅ 已实现（`api_key_set: bool`） |
-| CORS 限制 | ⚠️ 当前 `allow_origins=["*"]`，生产需收紧 |
+| CORS 限制 | ✅ 已实现，使用 `CORS_ORIGINS` 白名单配置 |
 | 输入清理 | ⚠️ HTML escape 用于 SSR 页面，API 响应未统一转义 |
 | 文件上传类型白名单 | ✅ 已实现（`CHAT_FILE_EXTENSIONS` + `KNOWLEDGE_FILE_EXTENSIONS`） |
 | 文件大小限制 | ✅ 已实现（默认 30MB） |
@@ -219,15 +219,11 @@ db.commit()
 
 | 编号 | 问题 | 位置 | 优先级 |
 |------|------|------|--------|
-| TD-01 | SHA256 替代 bcrypt 做密码哈希 | `backend/app/security.py` | 🔴 高 |
-| TD-02 | main.py 单文件 1576 行巨石架构 | `backend/app/main.py` | 🟡 中 |
-| TD-03 | CORS 全开 `allow_origins=["*"]` | `backend/app/main.py:48` | 🟡 中 |
-| TD-04 | Token 无 refresh 机制 | `backend/app/security.py` | 🟡 中 |
-| TD-05 | 无数据库迁移工具（Alembic） | — | 🟢 低 |
-| TD-06 | 无前端路由守卫 | `frontend/src/router.ts` | 🟡 中 |
-| TD-07 | 无全局 401 拦截与自动跳转登录 | `frontend/src/api.ts` | 🟡 中 |
-| TD-08 | Pinia 已挂载但无 Store 使用 | `frontend/src/main.ts` | 🟢 低 |
-| TD-09 | 飞书原生组件尚未集成 | — | 🔴 高（计划中） |
+| TD-01 | Token 无 refresh 机制 | `backend/app/security.py` | 🟡 中 |
+| TD-02 | 响应体仍主要使用 `dict` 字面量，缺少统一 `response_model` | `backend/app/routers/` | 🟢 低 |
+| TD-03 | Pinia 已挂载但无 Store 使用 | `frontend/src/main.ts` | 🟢 低 |
+| TD-04 | Embedding 默认 local-hash，生产检索质量有限 | `backend/app/config.py` | 🟢 低 |
+| TD-05 | Qdrant 不可用时回退 SQLite 向量检索，但缺少管理员可见告警 | `backend/app/vector_store.py` | 🟢 低 |
 | TD-10 | SSR 管理页面（ADMIN_HTML）与 Vue SPA 功能重复 | `backend/app/main.py` | 🟢 低 |
 | TD-11 | embedding 默认使用 local-hash（仅适小型部署） | `backend/app/ai_client.py` | 🟢 低 |
 

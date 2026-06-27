@@ -1,6 +1,6 @@
 # TECH_STACK.md — 技术栈规范
 
-> 最后更新：2026-05-29  
+> 最后更新：2026-06-27  
 > 合规承诺：本文件锁定当前项目实际使用的所有框架、运行时和核心依赖包的确切版本。  
 > 任何 AI 或开发者不得在未更新本文档的情况下变更技术栈。新增依赖必须同步追加到此文件。
 
@@ -27,6 +27,7 @@
 | `fastapi` | 0.115.6 | Web 框架，API 路由 + 依赖注入 |
 | `uvicorn[standard]` | 0.32.1 | ASGI 服务器 |
 | `sqlalchemy` | 2.0.36 | ORM，数据库抽象层 |
+| `alembic` | 1.18.5 | 数据库迁移管理，维护 `backend/alembic/` 版本脚本 |
 | `pypdf` | 5.1.0 | PDF 文档文本提取 |
 | `openai` | 1.58.1 | DeepSeek API 客户端（OpenAI-compatible） |
 | `python-dotenv` | 1.0.1 | .env 环境变量加载 |
@@ -67,7 +68,7 @@
 | 组件 | 版本/配置 | 用途 |
 |------|-----------|------|
 | Qdrant | `qdrant/qdrant:latest` | 向量数据库，存储文档片段向量索引 |
-| SQLite | 内嵌（`app.db`） | 主业务数据库，文件位于 `backend/data/app.db` |
+| SQLite | 内嵌（`app.db`） | 主业务数据库，文件位于 `backend/data/app.db`，初始 schema 由 Alembic 迁移维护 |
 | DeepSeek | `deepseek-v4-flash`（`.env` 配置） | LLM 对话模型 + Vision OCR（图片识别） |
 | 本地 Embedding | `local-hash`（默认） | 基于 MD5+Sparse 的轻量向量生成，无需外部 API |
 
