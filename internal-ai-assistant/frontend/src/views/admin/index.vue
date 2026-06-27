@@ -506,6 +506,7 @@
                 <p>排序：{{ tableQueryDiagnostics.sort_by || '默认' }} · 展开：{{ tableQueryDiagnostics.limit || '默认' }}</p>
                 <p>时间：{{ tableQueryDiagnostics.time_value || '无' }}</p>
                 <p>映射：{{ formatTableSchema(tableQueryDiagnostics.table_schema) || '无' }}</p>
+                <p>建议：{{ formatTableSchemaSuggestions(tableQueryDiagnostics.table_schema_suggestions) || '无' }}</p>
                 <p>分组：{{ tableQueryDiagnostics.group_by || '无' }} · 去重：{{ tableQueryDiagnostics.distinct_by || '无' }}</p>
               </article>
             </div>
@@ -726,6 +727,9 @@ const tableQueryDiagnostics = computed(() => {
   const timeTokens = Array.isArray(plan.time_tokens) ? plan.time_tokens : (Array.isArray(meta.time_tokens) ? meta.time_tokens : [])
   const explanation = meta.table_query_explanation || {}
   const tableSchema = meta.table_schema || {}
+  const tableSchemaSuggestions = meta.table_schema_suggestions || {}
+  const schemaSuggestionEntries = Object.values(tableSchemaSuggestions)
+    .flatMap((items: any) => Array.isArray(items) ? items : [])
   return {
     value_filters: valueFilters,
     filter_logic: filterLogic,
@@ -734,6 +738,8 @@ const tableQueryDiagnostics = computed(() => {
     distinct_by: distinctBy,
     select_columns: selectColumns,
     table_schema: tableSchema,
+    table_schema_suggestions: tableSchemaSuggestions,
+    schema_suggestion_count: schemaSuggestionEntries.length,
     explanation,
     query_op: queryOp,
     aggregate_op: aggregateOp,
@@ -745,10 +751,10 @@ const tableQueryDiagnostics = computed(() => {
     time_value: timeValue,
     time_tokens: timeTokens,
     matched_rows: meta.value_filter_matched_rows,
-    hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy) || Boolean(aggregateOp) || metrics.length > 0 || selectColumns.length > 0 || Boolean(sortBy) || Boolean(limit) || Boolean(timeValue) || Boolean(queryOp),
+    hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy) || Boolean(aggregateOp) || metrics.length > 0 || selectColumns.length > 0 || Boolean(sortBy) || Boolean(limit) || Boolean(timeValue) || Boolean(queryOp) || schemaSuggestionEntries.length > 0,
     summary: explanation.summary || (valueFilters.length > 0 || groupBy || distinctBy || aggregateOp || metrics.length > 0 || selectColumns.length > 0 || sortBy || limit || timeValue || queryOp
       ? `${valueFilters.length} filters · ${meta.value_filter_matched_rows ?? '-'} rows`
-      : '未识别结构化条件'),
+      : (schemaSuggestionEntries.length > 0 ? `${schemaSuggestionEntries.length} schema suggestions` : '未识别结构化条件')),
   }
 })
 const flattenedRetrievalMeta = computed(() => {
@@ -771,6 +777,7 @@ const flattenedRetrievalMeta = computed(() => {
   delete meta.time_value
   delete meta.time_tokens
   delete meta.table_schema
+  delete meta.table_schema_suggestions
   delete meta.table_query_plan
   delete meta.table_query_explanation
   delete meta.query_op
@@ -1272,6 +1279,20 @@ function formatTableSchema(value: any) {
   const entries = Object.values(value)
     .flatMap((items: any) => Array.isArray(items) ? items : [])
     .map((item: any) => `${item?.semantic_name || item?.label || 'field'}=${item?.raw_name || '-'}`)
+    .filter(Boolean)
+  return [...new Set(entries)].slice(0, 8).join('；')
+}
+
+function formatTableSchemaSuggestions(value: any) {
+  if (!value || typeof value !== 'object') return ''
+  const entries = Object.values(value)
+    .flatMap((items: any) => Array.isArray(items) ? items : [])
+    .map((item: any) => {
+      const label = item?.label || item?.semantic_name || 'field'
+      const rawName = item?.raw_name || '-'
+      const confidence = formatRetrievalScore(item?.confidence)
+      return `${label}←${rawName} (${confidence})`
+    })
     .filter(Boolean)
   return [...new Set(entries)].slice(0, 8).join('；')
 }

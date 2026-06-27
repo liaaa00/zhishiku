@@ -126,6 +126,17 @@ def main() -> None:
         schema_pairs = {(item.get("semantic_name"), item.get("raw_name")) for item in schema_entries}
         if not {("city", "所属地"), ("company", "机构主体"), ("status", "是否启用")}.issubset(schema_pairs):
             raise AssertionError(f"nonstandard table schema should map semantic columns, got {schema_entries}")
+        schema_suggestions = meta.get("table_schema_suggestions", {}).get("doc-table-nonstandard") or []
+        suggestion_pairs = {(item.get("semantic_name"), item.get("raw_name"), item.get("action"), item.get("status")) for item in schema_suggestions}
+        expected_suggestions = {
+            ("city", "所属地", "map_column_alias", "suggested"),
+            ("company", "机构主体", "map_column_alias", "suggested"),
+            ("status", "是否启用", "map_column_alias", "suggested"),
+        }
+        if not expected_suggestions.issubset(suggestion_pairs):
+            raise AssertionError(f"nonstandard table schema should expose confirmable suggestions, got {schema_suggestions}")
+        if not all(item.get("suggestion_key") and item.get("confidence") is not None for item in schema_suggestions):
+            raise AssertionError(f"schema suggestions should include stable keys and confidence, got {schema_suggestions}")
         if meta.get("query_op") != "list":
             raise AssertionError(f"city filter list query should be query_op=list, got {meta}")
 

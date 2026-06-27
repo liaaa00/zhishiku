@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .models import User
 from .table_plan import CITY_TERMS, COLUMN_ALIASES, clean as plan_clean, compact as _compact, describe_table_query_plan, parse_table_query_plan
 from .table_query import row_to_context, select_table_documents, table_rows_for_documents
-from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_value
+from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_schema_suggestions, semantic_value
 
 MONTH_RE = re.compile(r"(20\d{2})\s*年\s*(\d{1,2})\s*月")
 MONTH_SEP_RE = re.compile(r"(20\d{2})\s*[-/]\s*(\d{1,2})")
@@ -296,13 +296,21 @@ def _row_score(question: str, context: dict, doc_rank: int) -> float:
 def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10) -> tuple[list[dict], dict]:
     docs = select_table_documents(db, question, user, limit=2)
     if not docs:
-        return [], {"mode": "table", "matched_rows": 0, "matched_documents": 0, "enabled": True}
+        return [], {
+            "mode": "table",
+            "matched_rows": 0,
+            "matched_documents": 0,
+            "enabled": True,
+            "table_schema": {},
+            "table_schema_suggestions": {},
+        }
 
     max_contexts = max(20, min(120, top_k * 12))
     per_doc_limit = max(80, (max_contexts // max(len(docs), 1)) * 3)
     scored_contexts: list[tuple[float, int, int, dict]] = []
     header_contexts_by_doc: dict[str, list[dict]] = {}
     table_schema_by_doc: dict[str, list[dict]] = {}
+    table_schema_suggestions_by_doc: dict[str, list[dict]] = {}
     plan = parse_table_query_plan(question)
     month_tokens = plan.time_tokens or _month_tokens(question)
     year_tokens = _year_tokens(question)
@@ -332,7 +340,13 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         semantic_map = infer_column_semantics(
             [item.get("table_row") for item in raw_data_rows if isinstance(item.get("table_row"), dict)]
         )
-        table_schema_by_doc[str(doc.id)] = semantic_columns_debug(semantic_map)
+        doc_id = str(doc.id)
+        table_schema_by_doc[doc_id] = semantic_columns_debug(semantic_map)
+        table_schema_suggestions_by_doc[doc_id] = semantic_schema_suggestions(
+            semantic_map,
+            document_id=doc_id,
+            document_title=getattr(doc, "title", "") or "",
+        )
         row_contexts = []
         for item in raw_contexts:
             enriched = dict(item)
@@ -403,6 +417,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "enabled": True,
             "document_ids": [doc.id for doc in docs],
             "table_schema": table_schema_by_doc,
+            "table_schema_suggestions": table_schema_suggestions_by_doc,
             "table_query_plan": plan_meta,
             "table_query_explanation": plan_explanation,
             "branch_completion_filter": branch_completion_query,
@@ -444,6 +459,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "enabled": True,
         "document_ids": [doc.id for doc in docs],
         "table_schema": table_schema_by_doc,
+        "table_schema_suggestions": table_schema_suggestions_by_doc,
         "table_query_plan": plan_meta,
         "table_query_explanation": plan_explanation,
         "branch_completion_filter": branch_completion_query,

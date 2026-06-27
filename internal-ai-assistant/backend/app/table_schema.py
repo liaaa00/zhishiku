@@ -189,3 +189,35 @@ def semantic_columns_debug(semantic_map: dict[str, ColumnSemanticMatch] | None) 
             }
         )
     return sorted(result, key=lambda item: str(item.get("semantic_name") or ""))
+
+
+def semantic_schema_suggestions(
+    semantic_map: dict[str, ColumnSemanticMatch] | None,
+    *,
+    document_id: str = "",
+    document_title: str = "",
+    sheet_name: str = "",
+) -> list[dict[str, Any]]:
+    """Build user-confirmable schema mapping suggestions for a table document."""
+    suggestions: list[dict[str, Any]] = []
+    for semantic_name, match in (semantic_map or {}).items():
+        raw_name = match.raw_name
+        key_parts = [document_id, sheet_name, semantic_name, raw_name]
+        suggestion_key = ":".join(part for part in key_parts if part)
+        suggestions.append(
+            {
+                "suggestion_key": suggestion_key,
+                "document_id": document_id,
+                "document_title": document_title,
+                "sheet_name": sheet_name,
+                "semantic_name": semantic_name,
+                "label": SEMANTIC_LABELS.get(semantic_name, semantic_name),
+                "raw_name": raw_name,
+                "confidence": match.score,
+                "action": "map_column_alias",
+                "status": "suggested",
+                "reasons": match.reasons,
+                "samples": match.samples[:5],
+            }
+        )
+    return sorted(suggestions, key=lambda item: str(item.get("semantic_name") or ""))
