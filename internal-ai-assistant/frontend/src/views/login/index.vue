@@ -17,8 +17,10 @@ import { reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '../../api'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '../../stores/auth'
 
 const router = useRouter()
+const auth = useAuthStore()
 const form = reactive({ username: '', password: '' })
 
 function readableLoginError(err: any) {
@@ -32,12 +34,11 @@ function readableLoginError(err: any) {
 async function login() {
   try {
     const res = await http.post('/auth/login', form)
-    localStorage.setItem('token', res.data.token)
+    auth.setAuthPayload(res.data || {})
     try {
-      const me = await http.get('/me')
-      localStorage.setItem('user', JSON.stringify(me.data || {}))
+      await auth.loadCurrentUser()
     } catch {
-      localStorage.removeItem('user')
+      auth.setUser(res.data?.user || null)
     }
     ElMessage.success('登录成功')
     router.push('/chat')

@@ -46,7 +46,7 @@
 |------|----------|------|
 | `vue` | 3.5.35 | 前端框架（Composition API + `<script setup>`） |
 | `vue-router` | 4.6.4 | SPA 路由 |
-| `pinia` | 2.3.1 | 状态管理（已挂载但业务逻辑尚未使用 Store） |
+| `pinia` | 2.3.1 | 状态管理；`auth` store 统一维护 token/user/isAdmin/logout |
 | `element-plus` | 2.14.0 | UI 组件库（按需导入，无全量注册） |
 | `axios` | 1.16.1 | HTTP 客户端（拦截器注入 JWT Bearer Token） |
 | `@lark-base-open/js-sdk` | 1.0.2 | 飞书/多维表格 Base JS SDK，用于原生人员/部门选择组件框架 |

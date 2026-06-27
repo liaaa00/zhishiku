@@ -63,6 +63,7 @@
 - [x] 核心身份/权限接口已补充 Pydantic `response_model`（auth/users/groups），OpenAPI 响应契约可回归验证
 - [x] Alembic 初始迁移已接入，可从空 SQLite 数据库执行 `alembic upgrade head`
 - [x] 生产环境 embedding 护栏已接入：`APP_ENV=production` 拒绝 local-hash，要求 OpenAI-compatible embedding，并补充检索评测切换流程。
+- [x] Pinia 已从空挂载变为实际承载认证状态：`auth` store 统一 token/user/isAdmin/logout，router/login/chat 复用同一登录态。
 
 ### 已删除/废弃
 - [x] 自建组织架构同步逻辑（已移除）
@@ -86,7 +87,7 @@
 - [x] **[低] Embedding 默认 local-hash**：生产环境已拒绝 local-hash，需配置 OpenAI-compatible embedding；本地仍可用 local 便捷试跑。
 
 ### 未完成的重构
-- [ ] **[低] Pinia Store 空置**：Pinia 已挂载但代码中无 Store 使用，所有状态都在组件内部管理。
+- [x] **[低] Pinia Store 空置**：已落地 `frontend/src/stores/auth.ts` 管理登录态；大型页面内部业务状态暂不拆分，避免无收益大改。
 - [ ] **[低] 无单元测试**：仅有 QA 回归测试脚本，无 `pytest` 或 `vitest` 单元测试。
 - [ ] **[低] SSR HTML 与 Vue SPA 功能重复**：两个版本的聊天页和管理页功能不完全一致。
 
@@ -101,4 +102,4 @@
 
 | 步骤 | 描述 | 优先级 | 预估工时 |
 |------|------|--------|----------|
-| 7.5 | 评估 Pinia Store 落地范围，减少大型页面组件内部状态耦合 | 🟢 P2 | 3h |
+| - | 暂无，当前规划内阶段已闭环 | - | - |

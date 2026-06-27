@@ -2,17 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import LoginView from './views/login/index.vue'
 import ChatView from './views/chat/index.vue'
 import AdminView from './views/admin/index.vue'
-
-function currentUserIsAdmin() {
-  try {
-    const rawUser = localStorage.getItem('user')
-    if (!rawUser) return false
-    const user = JSON.parse(rawUser)
-    return Boolean(user?.is_admin)
-  } catch {
-    return false
-  }
-}
+import { useAuthStore } from './stores/auth'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -25,13 +15,13 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  const token = localStorage.getItem('token')
+  const auth = useAuthStore()
   const requiresAuth = Boolean(to.meta.requiresAuth)
   const requiresAdmin = Boolean(to.meta.requiresAdmin)
 
-  if (to.path === '/login' && token) return '/chat'
-  if (requiresAuth && !token) return '/login'
-  if (requiresAdmin && !currentUserIsAdmin()) return '/chat'
+  if (to.path === '/login' && auth.isAuthenticated) return '/chat'
+  if (requiresAuth && !auth.isAuthenticated) return '/login'
+  if (requiresAdmin && !auth.isAdmin) return '/chat'
 
   return true
 })

@@ -259,6 +259,8 @@ frontend/src/
 ├── router.ts               # 路由定义
 ├── api.ts                  # Axios 实例 + JWT 拦截器
 ├── vite-env.d.ts           # Vite 类型声明
+├── stores/
+│   └── auth.ts             # Pinia 认证状态：token/user/isAdmin/logout
 ├── utils/
 │   └── source-utils.ts     # 引用来源处理工具函数
 └── views/

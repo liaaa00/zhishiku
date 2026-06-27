@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { useAuthStore } from './stores/auth'
 
 const http = axios.create({ baseURL: '/api' })
 const REFRESH_WINDOW_SECONDS = 10 * 60
@@ -18,20 +19,27 @@ function tokenExpiresInSeconds(token: string) {
   }
 }
 
-function storeAuthPayload(data: any) {
-  if (data?.token) localStorage.setItem('token', data.token)
-  if (data?.user) localStorage.setItem('user', JSON.stringify(data.user || {}))
+function readToken() {
+  return localStorage.getItem('token') || ''
+}
+
+function syncAuthPayload(data: any) {
+  useAuthStore().setAuthPayload(data || {})
+}
+
+function clearAuthPayload() {
+  useAuthStore().clearAuth()
 }
 
 async function refreshTokenIfNeeded(force = false) {
-  const token = localStorage.getItem('token')
+  const token = readToken()
   if (!token) return null
   if (!force && tokenExpiresInSeconds(token) > REFRESH_WINDOW_SECONDS) return token
   if (!refreshPromise) {
     refreshPromise = axios
       .post('/api/auth/refresh', null, { headers: { Authorization: `Bearer ${token}` } })
       .then((res) => {
-        storeAuthPayload(res.data)
+        syncAuthPayload(res.data)
         return res.data?.token || null
       })
       .catch(() => null)
@@ -46,7 +54,7 @@ http.interceptors.request.use(async (config) => {
   const url = String(config.url || '')
   const skipRefresh = url.includes('/auth/login') || url.includes('/auth/refresh')
   const refreshed = skipRefresh ? null : await refreshTokenIfNeeded()
-  const token = refreshed || localStorage.getItem('token')
+  const token = refreshed || readToken()
   if (token && !skipRefresh) config.headers.Authorization = `Bearer ${token}`
   return config
 })
@@ -54,7 +62,7 @@ http.interceptors.request.use(async (config) => {
 http.interceptors.response.use(
   (response) => {
     const refreshed = response.headers?.['x-refresh-token']
-    if (refreshed) localStorage.setItem('token', refreshed)
+    if (refreshed) useAuthStore().setToken(refreshed)
     return response
   },
   async (error) => {
@@ -69,8 +77,7 @@ http.interceptors.response.use(
     }
 
     if (error.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
+      clearAuthPayload()
 
       if (window.location.pathname !== '/login') {
         window.location.href = '/login'

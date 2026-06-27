@@ -220,7 +220,7 @@ db.commit()
 | 编号 | 问题 | 位置 | 优先级 |
 |------|------|------|--------|
 | TD-01 | 复杂业务接口尚未全部补齐 `response_model` | `backend/app/routers/` | 🟢 低 |
-| TD-02 | Pinia 已挂载但无 Store 使用 | `frontend/src/main.ts` | 🟢 低 |
+| TD-02 | Pinia 已落地 auth store；登录态已从 router/login/chat 的散落 localStorage 逻辑收敛 | `frontend/src/stores/auth.ts` | ✅ 已处理 |
 | TD-03 | Embedding 默认 local-hash 的生产风险已加护栏：生产拒绝 local-hash，需配置 OpenAI-compatible embedding 并重建索引 | `backend/app/config.py` / `backend/tests/retrieval_eval_README.md` | ✅ 已处理 |
 | TD-10 | SSR 管理页面（ADMIN_HTML）与 Vue SPA 功能重复 | `backend/app/main.py` | 🟢 低 |
 

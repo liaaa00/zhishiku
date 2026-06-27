@@ -447,6 +447,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '../../api'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '../../stores/auth'
 
 type Role = 'assistant' | 'user'
 type FeedbackRating = 'helpful' | 'unhelpful' | 'wrong' | 'unsafe' | 'other' | 'user_feedback'
@@ -543,6 +544,7 @@ const SPREADSHEET_EXTENSIONS = new Set(['csv', 'xlsx', 'xls', 'tsv'])
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif'])
 
 const router = useRouter()
+const auth = useAuthStore()
 const chatBodyRef = ref<HTMLElement | null>(null)
 const imageInputRef = ref<HTMLInputElement | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
@@ -555,7 +557,7 @@ const uploadingAttachment = ref(false)
 const attachmentMenuOpen = ref(false)
 const pendingAttachments = ref<PendingAttachment[]>([])
 const error = ref('')
-const isAdmin = ref(false)
+const isAdmin = computed(() => auth.isAdmin)
 const sessions = ref<SessionSummary[]>([])
 const messages = ref<ChatMessageItem[]>([welcomeMessage()])
 const sourcePanelVisible = ref(false)
@@ -844,7 +846,7 @@ async function applyStreamEvent(event: { event: string; data: any }, assistantMe
 }
 
 async function sendWithStream(text: string, assistantMessage: ChatMessageItem, markDelta: () => void) {
-  const token = localStorage.getItem('token')
+  const token = auth.token
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
   const controller = new AbortController()
@@ -1207,28 +1209,17 @@ function onEnter(event: KeyboardEvent) {
 
 async function loadCurrentUser() {
   try {
-    const { data } = await http.get('/me')
-    isAdmin.value = Boolean(data?.is_admin)
-    localStorage.setItem('user', JSON.stringify(data || {}))
+    await auth.loadCurrentUser()
   } catch (err: any) {
     if (err?.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
-      isAdmin.value = false
-      router.push('/login')
-    }
-    if (err?.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
-      isAdmin.value = false
+      auth.clearAuth()
       router.push('/login')
     }
   }
 }
 
 async function loadSessions() {
-  const token = localStorage.getItem('token')
-  if (!token) {
+  if (!auth.isAuthenticated) {
     sessions.value = []
     return
   }
@@ -1308,8 +1299,7 @@ function newConversation() {
 }
 
 function logout() {
-  localStorage.removeItem('token')
-  localStorage.removeItem('user')
+  auth.logout()
   router.push('/login')
 }
 
