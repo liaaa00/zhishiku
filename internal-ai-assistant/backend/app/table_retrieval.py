@@ -9,6 +9,7 @@ from .models import User
 from .table_plan import CITY_TERMS, COLUMN_ALIASES, clean as plan_clean, compact as _compact, describe_table_query_plan, parse_table_query_plan
 from .table_query import row_to_context, select_table_documents, table_rows_for_documents
 from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_schema_suggestions, semantic_value
+from .table_schema_aliases import apply_confirmed_schema_aliases, load_table_schema_aliases, merge_schema_suggestion_status
 
 MONTH_RE = re.compile(r"(20\d{2})\s*年\s*(\d{1,2})\s*月")
 MONTH_SEP_RE = re.compile(r"(20\d{2})\s*[-/]\s*(\d{1,2})")
@@ -332,20 +333,27 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     query_op = plan.query_op
     plan_meta = plan.to_dict()
     plan_explanation = describe_table_query_plan(plan)
+    aliases_by_doc: dict[str, list] = {}
+    for alias in load_table_schema_aliases(db, [str(doc.id) for doc in docs]):
+        aliases_by_doc.setdefault(str(alias.document_id), []).append(alias)
 
     for doc_rank, doc in enumerate(docs):
         rows = table_rows_for_documents(db, [doc.id], include_headers=True, limit=1000)
         raw_contexts = [row_to_context(row_doc, row) for row, row_doc in rows]
         raw_data_rows = [item for item in raw_contexts if not item.get("is_header")]
-        semantic_map = infer_column_semantics(
-            [item.get("table_row") for item in raw_data_rows if isinstance(item.get("table_row"), dict)]
-        )
+        semantic_rows = [item.get("table_row") for item in raw_data_rows if isinstance(item.get("table_row"), dict)]
+        semantic_map = infer_column_semantics(semantic_rows)
         doc_id = str(doc.id)
+        doc_aliases = aliases_by_doc.get(doc_id, [])
+        semantic_map = apply_confirmed_schema_aliases(semantic_map, doc_aliases, semantic_rows)
         table_schema_by_doc[doc_id] = semantic_columns_debug(semantic_map)
-        table_schema_suggestions_by_doc[doc_id] = semantic_schema_suggestions(
-            semantic_map,
-            document_id=doc_id,
-            document_title=getattr(doc, "title", "") or "",
+        table_schema_suggestions_by_doc[doc_id] = merge_schema_suggestion_status(
+            semantic_schema_suggestions(
+                semantic_map,
+                document_id=doc_id,
+                document_title=getattr(doc, "title", "") or "",
+            ),
+            doc_aliases,
         )
         row_contexts = []
         for item in raw_contexts:

@@ -3248,6 +3248,52 @@ body.admin-scroll-page {
   word-break: break-word;
 }
 
+.admin-schema-suggestion-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.admin-schema-suggestion-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.admin-schema-suggestion-row span {
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.admin-schema-suggestion-row div {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.admin-schema-suggestion-row button {
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #202123;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.admin-schema-suggestion-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .admin-chatgpt-page .el-button--primary {
   --el-button-bg-color: #202123;
   --el-button-border-color: #202123;

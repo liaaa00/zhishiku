@@ -507,6 +507,15 @@
                 <p>时间：{{ tableQueryDiagnostics.time_value || '无' }}</p>
                 <p>映射：{{ formatTableSchema(tableQueryDiagnostics.table_schema) || '无' }}</p>
                 <p>建议：{{ formatTableSchemaSuggestions(tableQueryDiagnostics.table_schema_suggestions) || '无' }}</p>
+                <div v-if="tableSchemaSuggestionItems.length" class="admin-schema-suggestion-list">
+                  <div v-for="item in tableSchemaSuggestionItems" :key="item.suggestion_key || `${item.document_id}-${item.semantic_name}-${item.raw_name}`" class="admin-schema-suggestion-row">
+                    <span>{{ schemaSuggestionLabel(item) }}</span>
+                    <div>
+                      <button type="button" :disabled="schemaAliasActionBusy === schemaSuggestionBusyKey(item)" @click="saveTableSchemaSuggestion(item, 'confirm')">确认</button>
+                      <button type="button" :disabled="schemaAliasActionBusy === schemaSuggestionBusyKey(item)" @click="saveTableSchemaSuggestion(item, 'ignore')">忽略</button>
+                    </div>
+                  </div>
+                </div>
                 <p>分组：{{ tableQueryDiagnostics.group_by || '无' }} · 去重：{{ tableQueryDiagnostics.distinct_by || '无' }}</p>
               </article>
             </div>
@@ -703,6 +712,7 @@ const modelTestMessage = ref('')
 const modelTestStatus = ref<'idle' | 'ok' | 'failed'>('idle')
 const searchTestForm = reactive({ question: '', top_k: 8 })
 const searchTesting = ref(false)
+const schemaAliasActionBusy = ref('')
 const searchTestResult = ref<any | null>(null)
 const routerAnalysis = computed(() => searchTestResult.value?.query_analysis || searchTestResult.value?.retrieval_meta?.query_analysis || {})
 const routerRoute = computed(() => searchTestResult.value?.retrieval_route || searchTestResult.value?.retrieval_meta?.retrieval_route || {})
@@ -756,6 +766,12 @@ const tableQueryDiagnostics = computed(() => {
       ? `${valueFilters.length} filters · ${meta.value_filter_matched_rows ?? '-'} rows`
       : (schemaSuggestionEntries.length > 0 ? `${schemaSuggestionEntries.length} schema suggestions` : '未识别结构化条件')),
   }
+})
+const tableSchemaSuggestionItems = computed(() => {
+  const suggestions = tableQueryDiagnostics.value.table_schema_suggestions || {}
+  return Object.values(suggestions)
+    .flatMap((items: any) => Array.isArray(items) ? items : [])
+    .slice(0, 12)
 })
 const flattenedRetrievalMeta = computed(() => {
   const meta = { ...(searchTestResult.value?.retrieval_meta || {}) }
@@ -1287,14 +1303,44 @@ function formatTableSchemaSuggestions(value: any) {
   if (!value || typeof value !== 'object') return ''
   const entries = Object.values(value)
     .flatMap((items: any) => Array.isArray(items) ? items : [])
-    .map((item: any) => {
-      const label = item?.label || item?.semantic_name || 'field'
-      const rawName = item?.raw_name || '-'
-      const confidence = formatRetrievalScore(item?.confidence)
-      return `${label}←${rawName} (${confidence})`
-    })
+    .map((item: any) => schemaSuggestionLabel(item))
     .filter(Boolean)
   return [...new Set(entries)].slice(0, 8).join('；')
+}
+
+function schemaSuggestionLabel(item: any) {
+  const label = item?.label || item?.semantic_name || 'field'
+  const rawName = item?.raw_name || '-'
+  const confidence = formatRetrievalScore(item?.confidence)
+  const status = item?.status && item.status !== 'suggested' ? ` · ${item.status}` : ''
+  return `${label}←${rawName} (${confidence})${status}`
+}
+
+function schemaSuggestionBusyKey(item: any) {
+  return String(item?.suggestion_key || `${item?.document_id || ''}:${item?.semantic_name || ''}:${item?.raw_name || ''}`)
+}
+
+async function saveTableSchemaSuggestion(item: any, action: 'confirm' | 'ignore') {
+  const busyKey = schemaSuggestionBusyKey(item)
+  schemaAliasActionBusy.value = busyKey
+  try {
+    await http.post(`/admin/table-schema-aliases/${action}`, {
+      document_id: item?.document_id || '',
+      sheet_name: item?.sheet_name || '',
+      raw_name: item?.raw_name || '',
+      semantic_name: item?.semantic_name || '',
+      suggestion_key: item?.suggestion_key || '',
+      confidence: Number(item?.confidence || 0),
+      reasons: Array.isArray(item?.reasons) ? item.reasons : [],
+      samples: Array.isArray(item?.samples) ? item.samples : [],
+    })
+    ElMessage.success(action === 'confirm' ? 'schema 映射已确认' : 'schema 建议已忽略')
+    if (searchTestForm.question.trim()) await runSearchTest()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || 'schema 建议处理失败')
+  } finally {
+    schemaAliasActionBusy.value = ''
+  }
 }
 
 async function runSearchTest() {

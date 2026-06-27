@@ -67,6 +67,17 @@ class FeedbackReview(BaseModel):
     admin_note: str = ""
 
 
+class TableSchemaAliasAction(BaseModel):
+    document_id: str
+    sheet_name: str = ""
+    raw_name: str
+    semantic_name: str
+    suggestion_key: str = ""
+    confidence: float = 0.0
+    reasons: List[str] = []
+    samples: List[str] = []
+
+
 class ModelConfig(BaseModel):
     api_key: str = ""
     base_url: str = "https://api.deepseek.com"

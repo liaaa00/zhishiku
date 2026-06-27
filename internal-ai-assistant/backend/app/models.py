@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Table, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -108,6 +108,28 @@ class DocumentProcessingStatus(Base):
     message = Column(Text, nullable=False, default="")
     chunks = Column(Integer, nullable=False, default=0)
     searchable = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    document = relationship("Document")
+
+
+class TableSchemaAlias(Base):
+    __tablename__ = "table_schema_aliases"
+    __table_args__ = (
+        UniqueConstraint("document_id", "sheet_name", "raw_name", "semantic_name", name="ux_table_schema_aliases_mapping"),
+    )
+    id = Column(String, primary_key=True)
+    document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False)
+    sheet_name = Column(String(120), nullable=False, default="")
+    raw_name = Column(String(255), nullable=False, default="")
+    semantic_name = Column(String(80), nullable=False, index=True)
+    status = Column(String(30), nullable=False, default="confirmed", index=True)  # confirmed/ignored
+    confidence = Column(Float, nullable=False, default=0.0)
+    suggestion_key = Column(String(500), nullable=False, default="", index=True)
+    reasons_json = Column(Text, nullable=False, default="[]")
+    samples_json = Column(Text, nullable=False, default="[]")
+    created_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     document = relationship("Document")

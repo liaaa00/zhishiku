@@ -273,6 +273,30 @@ def initialize_runtime_schema():
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_document_table_rows_document_id ON document_table_rows(document_id)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_document_table_rows_sheet_name ON document_table_rows(sheet_name)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_document_table_rows_row_key ON document_table_rows(row_key)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS table_schema_aliases (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                sheet_name TEXT NOT NULL DEFAULT '',
+                raw_name TEXT NOT NULL DEFAULT '',
+                semantic_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'confirmed',
+                confidence REAL NOT NULL DEFAULT 0,
+                suggestion_key TEXT NOT NULL DEFAULT '',
+                reasons_json TEXT NOT NULL DEFAULT '[]',
+                samples_json TEXT NOT NULL DEFAULT '[]',
+                created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_table_schema_aliases_document_id ON table_schema_aliases(document_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_table_schema_aliases_semantic_name ON table_schema_aliases(semantic_name)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_table_schema_aliases_suggestion_key ON table_schema_aliases(suggestion_key)")
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_table_schema_aliases_mapping ON table_schema_aliases(document_id, sheet_name, raw_name, semantic_name)")
 
 
 def bootstrap_default_admin():

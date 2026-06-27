@@ -12,6 +12,7 @@ from .routers.admin_documents import router as admin_documents_router
 from .routers.admin_feedback import router as admin_feedback_router
 from .routers.admin_groups import router as admin_groups_router
 from .routers.admin_model import router as admin_model_router
+from .routers.admin_table_schema import router as admin_table_schema_router
 from .routers.admin_tasks import router as admin_tasks_router
 from .routers.admin_users import router as admin_users_router
 from .routers.admin_vector import router as admin_vector_router
@@ -35,6 +36,7 @@ app.include_router(chat_api_router)
 app.include_router(documents_router)
 app.include_router(admin_model_router)
 app.include_router(admin_vector_router)
+app.include_router(admin_table_schema_router)
 app.include_router(admin_tasks_router)
 app.include_router(admin_feedback_router)
 app.include_router(admin_groups_router)
