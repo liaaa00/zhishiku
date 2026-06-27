@@ -2191,6 +2191,24 @@ body.admin-scroll-page {
   line-height: 1.45;
 }
 
+.admin-stat-card small {
+  display: block;
+  margin-top: 8px;
+  color: #8e8ea0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.admin-stat-card-warning {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.admin-stat-card-warning strong,
+.admin-stat-card-warning small {
+  color: #b91c1c;
+}
+
 .admin-quickbar {
   display: flex;
   align-items: center;

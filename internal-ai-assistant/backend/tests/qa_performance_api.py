@@ -175,6 +175,14 @@ def main() -> None:
     require_status(audits, 200, "admin audit logs limited")
     assert len(audits.json()) == 2, audits.text
 
+    vector_status = client.get("/api/admin/vector/status", headers=headers(token))
+    require_status(vector_status, 200, "admin vector status")
+    vector_payload = vector_status.json()
+    assert vector_payload["backend"] == "sqlite", vector_payload
+    assert vector_payload["qdrant_enabled"] is False, vector_payload
+    assert vector_payload["degraded"] is False, vector_payload
+    assert vector_payload["message"], vector_payload
+
     print("QA performance API checks passed.")
 
 

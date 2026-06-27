@@ -26,6 +26,17 @@ class AuthResponse(BaseModel):
     user: UserPayload
 
 
+class VectorStatusResponse(BaseModel):
+    backend: str
+    qdrant_enabled: bool
+    qdrant_ready: bool
+    degraded: bool
+    status: str
+    collection: Optional[str] = None
+    points_count: Optional[int] = None
+    message: str
+
+
 class UserCreate(BaseModel):
     username: str
     password: str

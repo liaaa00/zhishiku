@@ -37,6 +37,11 @@
         <span>高级索引状态</span>
         <strong>{{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</strong>
       </article>
+      <article class="admin-stat-card wide" :class="{ 'admin-stat-card-warning': vectorStatus?.degraded }">
+        <span>向量库状态</span>
+        <strong>{{ vectorStatusLabel }}</strong>
+        <small>{{ vectorStatus?.message || '正在读取向量库状态' }}</small>
+      </article>
     </section>
 
     <section class="admin-quickbar" aria-label="后台快捷操作">
@@ -443,6 +448,12 @@
               <div class="admin-model-test-result" :class="modelConfig.embedding?.ready ? 'ok' : 'failed'">
                 {{ modelConfig.embedding?.warning || 'Embedding 状态未知' }}
               </div>
+              <span>向量库</span>
+              <strong>{{ vectorStatusLabel }}</strong>
+              <p>{{ vectorStatus?.collection || '本地 SQLite' }}</p>
+              <div class="admin-model-test-result" :class="vectorStatus?.degraded ? 'failed' : (vectorStatus?.qdrant_ready ? 'ok' : 'idle')">
+                {{ vectorStatus?.message || '向量库状态未知' }}
+              </div>
               <span>Reranker</span>
               <strong>{{ modelConfig.reranker?.enabled ? (modelConfig.reranker?.model || modelConfig.model || 'deepseek-chat') : '未启用' }}</strong>
               <p>{{ modelConfig.reranker?.enabled ? `候选 ${modelConfig.reranker?.max_candidates || 24} · ${modelConfig.reranker?.ready ? 'ready' : '等待 API Key'}` : '当前使用规则精排' }}</p>
@@ -651,6 +662,7 @@ const groups = ref<any[]>([])
 const users = ref<any[]>([])
 const docs = ref<any[]>([])
 const pageIndexStatus = ref<any | null>(null)
+const vectorStatus = ref<any | null>(null)
 const modelConfig = ref<any>({
   base_url: 'https://api.deepseek.com',
   model: 'deepseek-chat',
@@ -813,6 +825,12 @@ const pageIndexEngineText = computed(() => {
   if (!pageIndexStatus.value?.enabled) return '已关闭'
   if (pageIndexStatus.value?.official_available && !pageIndexStatus.value?.forced_lightweight) return '官方 PageIndex'
   return '轻量结构树兜底'
+})
+const vectorStatusLabel = computed(() => {
+  if (!vectorStatus.value) return '读取中'
+  if (vectorStatus.value.degraded) return 'Qdrant 降级'
+  if (vectorStatus.value.qdrant_ready) return 'Qdrant 正常'
+  return 'SQLite 本地向量'
 })
 const pageIndexFlatNodes = computed(() => flattenPageIndexNodes(pageIndexPayload.value?.structure || []))
 const feishuRuntimeLabel = computed(() => {
@@ -1087,6 +1105,7 @@ async function load() {
     await loadModelConfig()
     await loadTasks(false)
     await loadPageIndexStatus()
+    await loadVectorStatus()
     lastRefreshAt.value = new Date()
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || '加载后台数据失败')
@@ -1110,6 +1129,7 @@ async function loadDocumentStatus() {
   })
   await loadTasks(false)
   await loadPageIndexStatus()
+  await loadVectorStatus()
   lastRefreshAt.value = new Date()
 }
 
@@ -1178,6 +1198,15 @@ async function loadPageIndexStatus() {
     pageIndexStatus.value = { enabled: false, status_detail: 'PageIndex 状态读取失败' }
   }
 }
+
+async function loadVectorStatus() {
+  try {
+    vectorStatus.value = (await http.get('/admin/vector/status')).data || null
+  } catch (err: any) {
+    vectorStatus.value = { backend: 'unknown', qdrant_enabled: false, qdrant_ready: false, degraded: true, status: 'unknown', message: requestErrorDetail(err, '向量库状态读取失败') }
+  }
+}
+
 async function loadModelConfig() {
   try {
     const data = (await http.get('/admin/model')).data || {}

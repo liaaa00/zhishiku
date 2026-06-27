@@ -2,17 +2,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..admin_schemas import VectorStatusResponse
 from ..database import get_db
 from ..models import Document, DocumentChunk, User
-from ..vector_store import QdrantUnavailable, qdrant_enabled, upsert_document_chunks
+from ..vector_store import QdrantUnavailable, qdrant_enabled, qdrant_health, upsert_document_chunks
 from .deps import audit, require_admin
 
 router = APIRouter()
 
 
-@router.get("/api/admin/vector/status")
+@router.get("/api/admin/vector/status", response_model=VectorStatusResponse)
 def vector_status(_: User = Depends(require_admin)):
-    return {"backend": "qdrant" if qdrant_enabled() else "sqlite", "qdrant_enabled": qdrant_enabled()}
+    return qdrant_health()
 
 
 @router.post("/api/admin/vector/reindex")

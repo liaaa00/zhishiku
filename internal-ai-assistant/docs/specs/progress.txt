@@ -47,6 +47,7 @@
 - [x] 反馈详情面板（提问/回答快照 + 来源 + 审核表单）
 - [x] 模型配置（API Key, Base URL, Model）
 - [x] 向量库状态查看 + 全量重建索引
+- [x] Qdrant 健康检查可显示 ready/degraded/local，管理员后台可见 SQLite 回退告警
 - [x] 后台任务监控与重试
 - [x] 审计日志查看
 
@@ -82,7 +83,6 @@
 
 ### 后端
 - [ ] **[低] Embedding 默认 local-hash**：基于 MD5 的稀疏向量，检索精度有限。生产应切换到 OpenAI-compatible embedding。
-- [ ] **[低] Qdrant 回退为静默**：Qdrant 不可用时自动回退 SQLite 向量检索，但无告警通知。
 
 ### 未完成的重构
 - [ ] **[低] Pinia Store 空置**：Pinia 已挂载但代码中无 Store 使用，所有状态都在组件内部管理。
@@ -100,6 +100,5 @@
 
 | 步骤 | 描述 | 优先级 | 预估工时 |
 |------|------|--------|----------|
-| 7.3 | 为 Qdrant 不可用回退增加管理员可见告警/健康状态提示 | 🟢 P2 | 2h |
 | 7.4 | 生产环境切换 OpenAI-compatible embedding 并补充检索质量评估 | 🟢 P2 | 3h |
 | 7.5 | 评估 Pinia Store 落地范围，减少大型页面组件内部状态耦合 | 🟢 P2 | 3h |

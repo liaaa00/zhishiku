@@ -32,6 +32,42 @@ def _request(method: str, path: str, body: Optional[dict] = None, timeout: float
         raise QdrantUnavailable(str(exc)) from exc
 
 
+def qdrant_health() -> dict:
+    if not qdrant_enabled():
+        return {
+            "backend": "sqlite",
+            "qdrant_enabled": False,
+            "qdrant_ready": False,
+            "degraded": False,
+            "status": "local",
+            "message": "当前 VECTOR_BACKEND=local，使用 SQLite 本地向量检索。",
+        }
+    try:
+        data = _request("GET", f"/collections/{QDRANT_COLLECTION}", timeout=2.0)
+        result = data.get("result") or {}
+        points_count = result.get("points_count") or result.get("vectors_count") or 0
+        return {
+            "backend": "qdrant",
+            "qdrant_enabled": True,
+            "qdrant_ready": True,
+            "degraded": False,
+            "status": "ready",
+            "collection": QDRANT_COLLECTION,
+            "points_count": points_count,
+            "message": f"Qdrant 连接正常，集合 {QDRANT_COLLECTION} 可用。",
+        }
+    except QdrantUnavailable as exc:
+        return {
+            "backend": "sqlite_fallback",
+            "qdrant_enabled": True,
+            "qdrant_ready": False,
+            "degraded": True,
+            "status": "degraded",
+            "collection": QDRANT_COLLECTION,
+            "message": f"Qdrant 暂不可用，系统已回退到 SQLite 本地向量检索：{exc}",
+        }
+
+
 def ensure_collection(vector_size: int = EMBEDDING_DIM):
     if not qdrant_enabled():
         return

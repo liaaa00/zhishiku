@@ -376,4 +376,4 @@ must: [
 | 问题 | 严重程度 | 说明 |
 |------|----------|------|
 | 复杂响应模型未完全统一 | 🟢 低 | auth/users/groups 已补充 Pydantic `response_model`；聊天、文档等复杂接口可继续渐进补齐。 |
-| Qdrant 回退缺少显式告警 | 🟢 低 | Qdrant 不可用时可回退 SQLite 向量检索，但管理员侧缺少明确健康告警。 |
+| Embedding 生产质量待提升 | 🟢 低 | 默认 local-hash 便于本地部署，生产建议切换 OpenAI-compatible embedding 并重建向量库。 |
