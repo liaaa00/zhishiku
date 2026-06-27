@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 from app.database import Base, engine, SessionLocal  # noqa: E402
 from app.models import Document, DocumentTableRow, User  # noqa: E402
 from app.table_plan import parse_table_query_plan  # noqa: E402
-from app.table_query import build_table_answer  # noqa: E402
+from app.table_query import build_table_answer, build_table_structured_result  # noqa: E402
 from app.table_retrieval import table_mode_contexts  # noqa: E402
 
 
@@ -266,6 +266,11 @@ def main() -> None:
             raise AssertionError(f"multi metric answer should explain multi metric grouping; meta={multi_metric_meta}; answer={multi_metric_answer}")
         if "城市=上海 | 数量=5 | 金额汇总=3800 | 公积金比例平均值=5.5" not in multi_metric_answer or "城市=北京 | 数量=2 | 金额汇总=800 | 公积金比例平均值=5" not in multi_metric_answer:
             raise AssertionError(f"multi metric answer should include expected grouped metrics; meta={multi_metric_meta}; answer={multi_metric_answer}")
+        structured = build_table_structured_result(multi_metric_question, multi_metric_contexts)
+        if structured.get("columns") != ["城市", "数量", "金额汇总", "公积金比例平均值"]:
+            raise AssertionError(f"structured result should expose multi metric columns, got {structured}")
+        if ["上海", 5, 3800.0, 5.5] not in structured.get("rows", []) or ["北京", 2, 800.0, 5.0] not in structured.get("rows", []):
+            raise AssertionError(f"structured result should expose grouped metric rows, got {structured}")
 
         avg_question = "按城市统计公积金比例平均值"
         avg_plan = parse_table_query_plan(avg_question).to_dict()

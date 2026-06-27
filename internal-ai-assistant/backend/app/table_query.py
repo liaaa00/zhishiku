@@ -447,6 +447,12 @@ class TableAnswerComposer:
             return "没有在表格里找到足够相关的记录。"
         return _render_table_answer(self.question, data_rows)
 
+    def structured_result(self) -> dict:
+        data_rows = self._unique_data_rows()
+        if not data_rows:
+            return {"columns": [], "rows": [], "row_count": 0, "type": "empty"}
+        return _build_table_structured_result(self.question, data_rows)
+
     def _unique_data_rows(self) -> list[dict]:
         raw_data_rows = [item for item in self.contexts if not item.get("is_header")]
         seen_rows: set[str] = set()
@@ -462,6 +468,10 @@ class TableAnswerComposer:
 
 def build_table_answer(question: str, contexts: list[dict]) -> str:
     return TableAnswerComposer(question, contexts).render()
+
+
+def build_table_structured_result(question: str, contexts: list[dict]) -> dict:
+    return TableAnswerComposer(question, contexts).structured_result()
 
 
 def _build_table_answer_data(data_rows: list[dict], *, distinct_by: str, group_by: str, aggregate_op: str, measure_column: str, metrics: list[dict[str, str]]) -> TableAnswerData:
@@ -520,6 +530,75 @@ def _build_table_answer_data(data_rows: list[dict], *, distinct_by: str, group_b
                 if len(answer_data.hit_columns) >= 12:
                     break
     return answer_data
+
+
+def _build_table_structured_result(question: str, data_rows: list[dict]) -> dict:
+    plan = parse_table_query_plan(question, include_quoted_company=False)
+    answer_data = _build_table_answer_data(
+        data_rows,
+        distinct_by=plan.distinct_by,
+        group_by=plan.group_by,
+        aggregate_op=plan.aggregate_op,
+        measure_column=plan.measure_column,
+        metrics=plan.metrics,
+    )
+    result_limit = max(1, min(100, int(plan.limit or 20)))
+    sort_by = plan.sort_by or "desc"
+    result_sort_key = (lambda item: (item[1], item[0])) if sort_by == "asc" else (lambda item: (-item[1], item[0]))
+    group_label = COLUMN_LABELS.get(plan.group_by, plan.group_by or "分组")
+
+    base = {
+        "type": plan.query_op,
+        "time_grain": plan.time_grain,
+        "time_value": plan.time_value,
+        "group_by": plan.group_by,
+        "metrics": plan.metrics,
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+    }
+
+    if plan.metrics and len(plan.metrics) > 1 and plan.group_by:
+        columns = [group_label] + [metric.get("label") or COLUMN_LABELS.get(metric.get("column", ""), metric.get("op", "")) for metric in plan.metrics]
+        rows: list[list[Any]] = []
+        for value, count in sorted(answer_data.group_counts.items(), key=result_sort_key)[:result_limit]:
+            row_values: list[Any] = [value]
+            for metric in plan.metrics:
+                if metric.get("op") == "count":
+                    row_values.append(count)
+                    continue
+                metric_key = _metric_key(metric)
+                metric_values = answer_data.group_metric_values.get(value, {}).get(metric_key, [])
+                row_values.append(_metric_result(metric, metric_values, count))
+            rows.append(row_values)
+        return {**base, "columns": columns, "rows": rows, "row_count": len(rows)}
+
+    group_aggregate_results = {
+        value: result
+        for value, values in answer_data.group_aggregate_values.items()
+        if (result := _aggregate_result(plan.aggregate_op, values)) is not None
+    }
+    if group_aggregate_results and plan.group_by:
+        measure_label = COLUMN_LABELS.get(plan.measure_column, plan.measure_column or "指标")
+        aggregate_label = AGGREGATE_OPERATION_LABELS.get(plan.aggregate_op, plan.aggregate_op)
+        rows = [[value, result, len(answer_data.group_aggregate_values.get(value, []))] for value, result in sorted(group_aggregate_results.items(), key=result_sort_key)[:result_limit]]
+        return {**base, "columns": [group_label, f"{measure_label}{aggregate_label}", "可计算记录数"], "rows": rows, "row_count": len(rows)}
+
+    if answer_data.group_counts and plan.group_by:
+        rows = [[value, count] for value, count in sorted(answer_data.group_counts.items(), key=result_sort_key)[:result_limit]]
+        return {**base, "columns": [group_label, "数量"], "rows": rows, "row_count": len(rows)}
+
+    selected_columns = plan.select_columns or []
+    if selected_columns:
+        columns = [COLUMN_LABELS.get(column, column) for column in selected_columns]
+        rows = []
+        for item in data_rows[:result_limit]:
+            row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
+            semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
+            rows.append([_first_alias_value(row, column, semantic_map) for column in selected_columns])
+        return {**base, "type": "list", "columns": columns, "rows": rows, "row_count": len(rows)}
+
+    return base
 
 
 def _render_table_answer(question: str, data_rows: list[dict]) -> str:

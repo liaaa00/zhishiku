@@ -31,7 +31,7 @@ from ..retrieval import adaptive_retrieve_contexts
 from ..routers.admin_feedback import FEEDBACK_CATEGORIES
 from ..settings_service import get_model_config
 from ..structured_digest import build_structured_digest, should_use_structured_digest
-from ..table_query import build_table_answer
+from ..table_query import build_table_answer, build_table_structured_result
 from ..task_service import enqueue_document_task
 from ..upload_policy import CHAT_FILE_EXTENSIONS, IMAGE_EXTENSIONS
 from ..upload_security import validate_upload_file
@@ -252,6 +252,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
         if table_answer_mode:
             answer = build_table_answer(question, answer_contexts)
+            retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
         else:
             answer = _call_knowledge_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest)
             if confidence < LOW_CONFIDENCE_THRESHOLD and not summary_mode and not recent_context_used:
@@ -450,6 +451,7 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                     yield _sse_event("delta", prefix)
                 if table_answer_mode:
                     answer_text = build_table_answer(question, answer_contexts)
+                    retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
                     retrieval_meta["answer_composer"] = "table_local"
                     for piece in [answer_text[i : i + 80] for i in range(0, len(answer_text), 80)]:
                         answer_parts.append(piece)
@@ -523,6 +525,8 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
         raise HTTPException(status_code=400, detail="请输入测试问题")
     contexts, retrieval_backend, retrieval_note, candidate_count, retrieval_meta = retrieve_contexts(db, question, user, req.top_k)
     sources = serialize_sources(contexts)
+    if retrieval_meta.get("retrieval_route", {}).get("name") == "table":
+        retrieval_meta["table_structured_result"] = build_table_structured_result(question, model_contexts_for_answer(contexts, False))
     source_diagnostics = []
     for index, context in enumerate(contexts, start=1):
         content = " ".join(str(context.get("content") or "").split())
