@@ -361,6 +361,17 @@ def _aggregate_result(operation: str, values: list[float]) -> float | None:
     return None
 
 
+def _metric_key(metric: dict[str, str]) -> str:
+    return f"{metric.get('op', '')}:{metric.get('column', '')}:{metric.get('label', '')}"
+
+
+def _metric_result(metric: dict[str, str], values: list[float], count: int) -> float | int | None:
+    op = metric.get("op") or ""
+    if op == "count":
+        return count
+    return _aggregate_result(op, values)
+
+
 PREFERRED_TABLE_PREVIEW_COLUMNS = (
     "省份",
     "城市",
@@ -392,6 +403,8 @@ class TableAnswerData:
     group_counts: dict[str, int] = field(default_factory=dict)
     aggregate_values: list[float] = field(default_factory=list)
     group_aggregate_values: dict[str, list[float]] = field(default_factory=dict)
+    metric_values: dict[str, list[float]] = field(default_factory=dict)
+    group_metric_values: dict[str, dict[str, list[float]]] = field(default_factory=dict)
     docs: dict[tuple[str, str], list[dict]] = field(default_factory=dict)
     hit_columns: list[str] = field(default_factory=list)
 
@@ -451,11 +464,13 @@ def build_table_answer(question: str, contexts: list[dict]) -> str:
     return TableAnswerComposer(question, contexts).render()
 
 
-def _build_table_answer_data(data_rows: list[dict], *, distinct_by: str, group_by: str, aggregate_op: str, measure_column: str) -> TableAnswerData:
+def _build_table_answer_data(data_rows: list[dict], *, distinct_by: str, group_by: str, aggregate_op: str, measure_column: str, metrics: list[dict[str, str]]) -> TableAnswerData:
     answer_data = TableAnswerData(
         data_rows=data_rows,
         group_counts=defaultdict(int),
         group_aggregate_values=defaultdict(list),
+        metric_values=defaultdict(list),
+        group_metric_values=defaultdict(lambda: defaultdict(list)),
         docs=defaultdict(list),
     )
     for item in data_rows:
@@ -476,6 +491,20 @@ def _build_table_answer_data(data_rows: list[dict], *, distinct_by: str, group_b
                 answer_data.aggregate_values.append(numeric)
                 if group_by:
                     answer_data.group_aggregate_values[group_value or "未标明"].append(numeric)
+        for metric in metrics:
+            if metric.get("op") == "count":
+                continue
+            metric_column = metric.get("column") or ""
+            if not metric_column:
+                continue
+            metric_raw = _first_alias_value(row, metric_column, semantic_map)
+            metric_numeric = _numeric_value(metric_raw)
+            if metric_numeric is None:
+                continue
+            metric_key = _metric_key(metric)
+            answer_data.metric_values[metric_key].append(metric_numeric)
+            if group_by:
+                answer_data.group_metric_values[group_value or "未标明"][metric_key].append(metric_numeric)
 
     for context in data_rows:
         key = (context.get("document_title") or context.get("filename") or "未知文档", context.get("sheet_name") or "")
@@ -505,6 +534,7 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     filter_groups = plan.filter_groups
     aggregate_op = plan.aggregate_op
     measure_column = plan.measure_column
+    metrics = plan.metrics
     select_columns = plan.select_columns
     sort_by = plan.sort_by or "desc"
     result_limit = max(1, min(100, int(plan.limit or 20)))
@@ -515,13 +545,16 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
         group_by=group_by,
         aggregate_op=aggregate_op,
         measure_column=measure_column,
+        metrics=metrics,
     )
 
     lines = ["## 表格统计结果"]
     measure_label = COLUMN_LABELS.get(measure_column, measure_column or "指标")
     aggregate_label = AGGREGATE_OPERATION_LABELS.get(aggregate_op, aggregate_op)
     aggregate_result = _aggregate_result(aggregate_op, answer_data.aggregate_values) if aggregate_op else None
-    if aggregate_op:
+    if metrics and len(metrics) > 1:
+        lines.append(f"结论：已按 {COLUMN_LABELS.get(group_by, group_by or '分组')} 生成 {len(metrics)} 个统计指标；本次共命中 {len(data_rows)} 条记录。")
+    elif aggregate_op:
         result_text = _format_number(aggregate_result) if aggregate_result is not None else "无可计算结果"
         lines.append(f"结论：{measure_label}{aggregate_label}为 {result_text}，基于 {len(answer_data.aggregate_values)} 条可计算记录；本次共命中 {len(data_rows)} 条记录。")
     elif distinct_by:
@@ -545,7 +578,10 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     if value_filters:
         filter_text = format_filter_groups(filter_groups, filter_logic) or "；".join(format_filter_condition(item) for item in value_filters)
         lines.append(f"- 过滤条件：{filter_text}。")
-    if aggregate_op:
+    if metrics and len(metrics) > 1:
+        metric_text = "、".join(metric.get("label") or COLUMN_LABELS.get(metric.get("column", ""), metric.get("op", "")) for metric in metrics)
+        lines.append(f"- 统计指标：{metric_text}。")
+    elif aggregate_op:
         lines.append(f"- 聚合方式：{COLUMN_LABELS.get(measure_column, measure_column or '指标')} {aggregate_label}。")
     if select_columns:
         select_text = "、".join(COLUMN_LABELS.get(column, column) for column in select_columns)
@@ -567,7 +603,28 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
         if (result := _aggregate_result(aggregate_op, values)) is not None
     }
     result_sort_key = (lambda item: (item[1], item[0])) if sort_by == "asc" else (lambda item: (-item[1], item[0]))
-    if group_aggregate_results:
+    if metrics and len(metrics) > 1 and group_by:
+        group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
+        lines.append(f"### 按{group_label}多指标统计")
+        ranked_groups = sorted(answer_data.group_counts.items(), key=result_sort_key)
+        for value, count in ranked_groups[:result_limit]:
+            metric_parts = [f"{group_label}={value}", f"数量={count}"]
+            for metric in metrics:
+                if metric.get("op") == "count":
+                    continue
+                metric_key = _metric_key(metric)
+                metric_values = answer_data.group_metric_values.get(value, {}).get(metric_key, [])
+                result = _metric_result(metric, metric_values, count)
+                if result is None:
+                    continue
+                metric_label = metric.get("label") or COLUMN_LABELS.get(metric.get("column", ""), metric.get("op", ""))
+                formatted = _format_number(float(result)) if isinstance(result, float) else str(result)
+                metric_parts.append(f"{metric_label}={formatted}")
+            lines.append("- " + " | ".join(metric_parts))
+        if len(answer_data.group_counts) > result_limit:
+            lines.append(f"- 另有 {len(answer_data.group_counts) - result_limit} 个分组未展开。")
+        lines.append("")
+    elif group_aggregate_results:
         group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
         lines.append(f"### 按{group_label}{aggregate_label}{measure_label}")
         ranked_results = sorted(group_aggregate_results.items(), key=result_sort_key)

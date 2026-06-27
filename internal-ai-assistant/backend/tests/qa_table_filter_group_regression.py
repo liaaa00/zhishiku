@@ -242,6 +242,20 @@ def main() -> None:
         if "上海：3800" not in sum_answer or "北京：800" not in sum_answer or "成都：200" not in sum_answer:
             raise AssertionError(f"sum answer should include expected city totals; meta={sum_meta}; answer={sum_answer}")
 
+        multi_metric_question = "按城市统计公司数、缴费金额总和、平均公积金比例"
+        multi_metric_plan = parse_table_query_plan(multi_metric_question).to_dict()
+        multi_metric_labels = [item.get("label") for item in multi_metric_plan.get("metrics", [])]
+        if multi_metric_plan.get("query_op") != "multi_metric_group" or multi_metric_plan.get("group_by") != "city" or not {"数量", "金额汇总", "公积金比例平均值"}.issubset(set(multi_metric_labels)):
+            raise AssertionError(f"multi metric plan should detect grouped count/sum/avg metrics, got {multi_metric_plan}")
+        multi_metric_contexts, multi_metric_meta = table_mode_contexts(db, multi_metric_question, user, top_k=10)
+        if len(multi_metric_meta.get("metrics", [])) < 3 or "指标：数量、金额汇总、公积金比例平均值" not in (multi_metric_meta.get("table_query_explanation") or {}).get("summary", ""):
+            raise AssertionError(f"multi metric meta should expose metric specs and explanation, got {multi_metric_meta}")
+        multi_metric_answer = build_table_answer(multi_metric_question, multi_metric_contexts)
+        if "查询操作：分组多指标统计" not in multi_metric_answer or "按城市多指标统计" not in multi_metric_answer:
+            raise AssertionError(f"multi metric answer should explain multi metric grouping; meta={multi_metric_meta}; answer={multi_metric_answer}")
+        if "城市=上海 | 数量=5 | 金额汇总=3800 | 公积金比例平均值=5.5" not in multi_metric_answer or "城市=北京 | 数量=2 | 金额汇总=800 | 公积金比例平均值=5" not in multi_metric_answer:
+            raise AssertionError(f"multi metric answer should include expected grouped metrics; meta={multi_metric_meta}; answer={multi_metric_answer}")
+
         avg_question = "按城市统计公积金比例平均值"
         avg_plan = parse_table_query_plan(avg_question).to_dict()
         if avg_plan.get("query_op") != "avg_group" or avg_plan.get("aggregate_op") != "avg" or avg_plan.get("measure_column") != "fund_ratio":

@@ -315,6 +315,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     distinct_by = plan.distinct_by
     aggregate_op = plan.aggregate_op
     measure_column = plan.measure_column
+    metrics = plan.metrics
     select_columns = plan.select_columns
     sort_by = plan.sort_by
     result_limit = plan.limit
@@ -341,7 +342,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         # If the question names a month, score the whole table first so later
         # worksheets such as 202603 are not dropped by an early per-doc limit.
         candidate_rows = data_rows if month_tokens else data_rows[:per_doc_limit]
-        min_row_score = 0.2 if value_filters or aggregate_op else 0.75
+        min_row_score = 0.2 if value_filters or aggregate_op or metrics else 0.75
         for order, context in enumerate(candidate_rows):
             score = _row_score(question, context, doc_rank)
             if score >= min_row_score:
@@ -412,6 +413,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "distinct_by": distinct_by,
             "aggregate_op": aggregate_op,
             "measure_column": measure_column,
+            "metrics": metrics,
             "select_columns": select_columns,
             "sort_by": sort_by,
             "limit": result_limit,
@@ -449,6 +451,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "distinct_by": distinct_by,
         "aggregate_op": aggregate_op,
         "measure_column": measure_column,
+        "metrics": metrics,
         "select_columns": select_columns,
         "sort_by": sort_by,
         "limit": result_limit,

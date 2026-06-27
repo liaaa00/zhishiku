@@ -67,6 +67,7 @@ FILTER_OPERATOR_LABELS = {
 QUERY_OPERATION_LABELS = {
     "branch_completion_count": "分公司完成度统计",
     "group_count": "分组计数",
+    "multi_metric_group": "分组多指标统计",
     "sum": "求和汇总",
     "sum_group": "分组求和",
     "avg": "平均值汇总",
@@ -154,6 +155,7 @@ class TableQueryPlan:
     distinct_by: str = ""
     aggregate_op: str = ""
     measure_column: str = ""
+    metrics: list[dict[str, str]] = field(default_factory=list)
     sort_by: str = ""
     limit: int = 20
     branch_completion_filter: bool = False
@@ -170,6 +172,7 @@ class TableQueryPlan:
             "distinct_by": self.distinct_by,
             "aggregate_op": self.aggregate_op,
             "measure_column": self.measure_column,
+            "metrics": self.metrics,
             "select_columns": self.select_columns,
             "sort_by": self.sort_by,
             "limit": self.limit,
@@ -402,8 +405,35 @@ def measure_column(question: str) -> str:
     return best[1] if best else ""
 
 
-def query_operation(question: str, group_by: str = "", distinct_by: str = "", aggregate_op: str = "") -> str:
+def metric_specs(question: str, aggregate_op: str = "", measure: str = "") -> list[dict[str, str]]:
+    text = compact(question).lower()
+    metrics: list[dict[str, str]] = []
+
+    def add_metric(op: str, column: str = "", label: str = "") -> None:
+        item = {"op": op, "column": column, "label": label or COLUMN_LABELS.get(column, column or "数量")}
+        if item not in metrics:
+            metrics.append(item)
+
+    count_terms = ("公司数", "公司数量", "网点数", "网点数量", "机构数", "机构数量", "数量", "多少个", "多少家")
+    if any(term in text for term in count_terms):
+        add_metric("count", "", "数量")
+    if any(term in text for term in ("缴费金额总和", "金额总和", "金额合计", "缴费金额合计", "汇总金额", "金额汇总")):
+        add_metric("sum", "amount", "金额汇总")
+    if any(term in text for term in ("平均公积金比例", "公积金比例平均", "公积金比例平均值", "平均比例", "比例平均")):
+        add_metric("avg", "fund_ratio", "公积金比例平均值")
+    if any(term in text for term in ("缴费金额最大", "金额最大", "最高金额", "最大金额")):
+        add_metric("max", "amount", "金额最大值")
+    if any(term in text for term in ("缴费金额最小", "金额最小", "最低金额", "最小金额")):
+        add_metric("min", "amount", "金额最小值")
+    if not metrics and aggregate_op:
+        add_metric(aggregate_op, measure, COLUMN_LABELS.get(measure, measure or aggregate_op))
+    return metrics
+
+
+def query_operation(question: str, group_by: str = "", distinct_by: str = "", aggregate_op: str = "", metrics: list[dict[str, str]] | None = None) -> str:
     text = compact(question)
+    if group_by and metrics and len(metrics) > 1:
+        return "multi_metric_group"
     if aggregate_op:
         return f"{aggregate_op}_group" if group_by else aggregate_op
     if group_by:
@@ -470,6 +500,7 @@ def describe_table_query_plan(plan: TableQueryPlan) -> dict[str, Any]:
     group_label = COLUMN_LABELS.get(plan.group_by, plan.group_by) if plan.group_by else ""
     distinct_label = COLUMN_LABELS.get(plan.distinct_by, plan.distinct_by) if plan.distinct_by else ""
     measure_label = COLUMN_LABELS.get(plan.measure_column, plan.measure_column) if plan.measure_column else ""
+    metric_labels = [item.get("label") or COLUMN_LABELS.get(item.get("column", ""), item.get("op", "")) for item in plan.metrics]
     select_labels = [COLUMN_LABELS.get(column, column) for column in plan.select_columns]
     filter_text = format_filter_groups(plan.filter_groups, plan.filter_logic) or "；".join(
         format_filter_condition(item) for item in plan.filters
@@ -484,7 +515,9 @@ def describe_table_query_plan(plan: TableQueryPlan) -> dict[str, Any]:
         parts.append(f"分组字段：{group_label}")
     if distinct_label:
         parts.append(f"去重字段：{distinct_label}")
-    if measure_label:
+    if metric_labels:
+        parts.append(f"指标：{'、'.join(metric_labels)}")
+    elif measure_label:
         parts.append(f"指标字段：{measure_label}")
     if select_labels:
         parts.append(f"展示字段：{'、'.join(select_labels)}")
@@ -500,6 +533,8 @@ def describe_table_query_plan(plan: TableQueryPlan) -> dict[str, Any]:
         "distinct_by": distinct_label,
         "aggregate": aggregate_label,
         "measure": measure_label,
+        "metrics": metric_labels,
+        "metric_specs": plan.metrics,
         "select_columns": select_labels,
         "sort": sort_label if plan.group_by or plan.aggregate_op else "",
         "limit": plan.limit if plan.group_by or plan.aggregate_op else "",
@@ -517,9 +552,10 @@ def parse_table_query_plan(question: str, *, branch_completion: bool | None = No
     distinct_by = distinct_column(question)
     aggregate_op = aggregate_operation(question)
     measure = measure_column(question) if aggregate_op else ""
+    metrics = metric_specs(question, aggregate_op, measure)
     selected = select_columns(question, filters)
     return TableQueryPlan(
-        query_op=query_operation(question, group_by, distinct_by, aggregate_op),
+        query_op=query_operation(question, group_by, distinct_by, aggregate_op, metrics),
         filters=filters,
         filter_logic=filter_logic,
         filter_groups=filter_groups,
@@ -528,6 +564,7 @@ def parse_table_query_plan(question: str, *, branch_completion: bool | None = No
         distinct_by=distinct_by,
         aggregate_op=aggregate_op,
         measure_column=measure,
+        metrics=metrics,
         sort_by=sort_direction(question),
         limit=result_limit(question),
     )
