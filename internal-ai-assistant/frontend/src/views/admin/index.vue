@@ -504,6 +504,7 @@
                 <p>聚合：{{ tableQueryDiagnostics.aggregate_op || '无' }} · 指标：{{ tableQueryDiagnostics.measure_column || '无' }}</p>
                 <p>多指标：{{ formatTableMetrics(tableQueryDiagnostics.metrics) || '无' }}</p>
                 <p>排序：{{ tableQueryDiagnostics.sort_by || '默认' }} · 展开：{{ tableQueryDiagnostics.limit || '默认' }}</p>
+                <p>时间：{{ tableQueryDiagnostics.time_value || '无' }}</p>
                 <p>映射：{{ formatTableSchema(tableQueryDiagnostics.table_schema) || '无' }}</p>
                 <p>分组：{{ tableQueryDiagnostics.group_by || '无' }} · 去重：{{ tableQueryDiagnostics.distinct_by || '无' }}</p>
               </article>
@@ -720,6 +721,9 @@ const tableQueryDiagnostics = computed(() => {
   const selectColumns = Array.isArray(plan.select_columns) ? plan.select_columns : (Array.isArray(meta.select_columns) ? meta.select_columns : [])
   const sortBy = plan.sort_by || meta.sort_by || ''
   const limit = plan.limit || meta.limit || ''
+  const timeGrain = plan.time_grain || meta.time_grain || ''
+  const timeValue = plan.time_value || meta.time_value || ''
+  const timeTokens = Array.isArray(plan.time_tokens) ? plan.time_tokens : (Array.isArray(meta.time_tokens) ? meta.time_tokens : [])
   const explanation = meta.table_query_explanation || {}
   const tableSchema = meta.table_schema || {}
   return {
@@ -737,9 +741,12 @@ const tableQueryDiagnostics = computed(() => {
     metrics,
     sort_by: sortBy,
     limit,
+    time_grain: timeGrain,
+    time_value: timeValue,
+    time_tokens: timeTokens,
     matched_rows: meta.value_filter_matched_rows,
-    hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy) || Boolean(aggregateOp) || metrics.length > 0 || selectColumns.length > 0 || Boolean(sortBy) || Boolean(limit) || Boolean(queryOp),
-    summary: explanation.summary || (valueFilters.length > 0 || groupBy || distinctBy || aggregateOp || metrics.length > 0 || selectColumns.length > 0 || sortBy || limit || queryOp
+    hasTableSignals: valueFilters.length > 0 || Boolean(groupBy) || Boolean(distinctBy) || Boolean(aggregateOp) || metrics.length > 0 || selectColumns.length > 0 || Boolean(sortBy) || Boolean(limit) || Boolean(timeValue) || Boolean(queryOp),
+    summary: explanation.summary || (valueFilters.length > 0 || groupBy || distinctBy || aggregateOp || metrics.length > 0 || selectColumns.length > 0 || sortBy || limit || timeValue || queryOp
       ? `${valueFilters.length} filters · ${meta.value_filter_matched_rows ?? '-'} rows`
       : '未识别结构化条件'),
   }
@@ -760,6 +767,9 @@ const flattenedRetrievalMeta = computed(() => {
   delete meta.select_columns
   delete meta.sort_by
   delete meta.limit
+  delete meta.time_grain
+  delete meta.time_value
+  delete meta.time_tokens
   delete meta.table_schema
   delete meta.table_query_plan
   delete meta.table_query_explanation

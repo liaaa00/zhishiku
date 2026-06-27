@@ -535,6 +535,8 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     aggregate_op = plan.aggregate_op
     measure_column = plan.measure_column
     metrics = plan.metrics
+    time_grain = plan.time_grain
+    time_value = plan.time_value
     select_columns = plan.select_columns
     sort_by = plan.sort_by or "desc"
     result_limit = max(1, min(100, int(plan.limit or 20)))
@@ -575,6 +577,8 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
         lines.append("- 仅统计同时满足：银行账户完成、社保公积金账户完成、公积金比例有值、公司名称有值的表格数据行。")
     else:
         lines.append("- 仅统计本次表格检索命中的数据行，已排除表头行；同一表格行只计 1 次。")
+    if time_grain and time_value:
+        lines.append(f"- 时间范围：{time_value}。")
     if value_filters:
         filter_text = format_filter_groups(filter_groups, filter_logic) or "；".join(format_filter_condition(item) for item in value_filters)
         lines.append(f"- 过滤条件：{filter_text}。")

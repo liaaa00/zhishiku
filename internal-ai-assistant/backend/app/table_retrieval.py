@@ -303,9 +303,9 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     scored_contexts: list[tuple[float, int, int, dict]] = []
     header_contexts_by_doc: dict[str, list[dict]] = {}
     table_schema_by_doc: dict[str, list[dict]] = {}
-    month_tokens = _month_tokens(question)
-    year_tokens = _year_tokens(question)
     plan = parse_table_query_plan(question)
+    month_tokens = plan.time_tokens or _month_tokens(question)
+    year_tokens = _year_tokens(question)
     branch_completion_query = plan.branch_completion_filter
     city_tokens = [] if branch_completion_query else _city_tokens(question)
     value_filters = plan.filters
@@ -319,6 +319,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     select_columns = plan.select_columns
     sort_by = plan.sort_by
     result_limit = plan.limit
+    time_grain = plan.time_grain
+    time_value = plan.time_value
     query_op = plan.query_op
     plan_meta = plan.to_dict()
     plan_explanation = describe_table_query_plan(plan)
@@ -417,6 +419,9 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "select_columns": select_columns,
             "sort_by": sort_by,
             "limit": result_limit,
+            "time_grain": time_grain,
+            "time_value": time_value,
+            "time_tokens": month_tokens,
             "query_op": query_op,
         }
     if len(selected) < max_contexts:
@@ -455,5 +460,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "select_columns": select_columns,
         "sort_by": sort_by,
         "limit": result_limit,
+        "time_grain": time_grain,
+        "time_value": time_value,
+        "time_tokens": month_tokens,
         "query_op": query_op,
     }

@@ -158,6 +158,9 @@ class TableQueryPlan:
     metrics: list[dict[str, str]] = field(default_factory=list)
     sort_by: str = ""
     limit: int = 20
+    time_grain: str = ""
+    time_value: str = ""
+    time_tokens: list[str] = field(default_factory=list)
     branch_completion_filter: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -176,6 +179,9 @@ class TableQueryPlan:
             "select_columns": self.select_columns,
             "sort_by": self.sort_by,
             "limit": self.limit,
+            "time_grain": self.time_grain,
+            "time_value": self.time_value,
+            "time_tokens": self.time_tokens,
             "query_op": self.query_op,
             "branch_completion_filter": self.branch_completion_filter,
         }
@@ -471,6 +477,31 @@ def result_limit(question: str, default: int = 20) -> int:
     return default
 
 
+def time_dimension(question: str) -> tuple[str, str, list[str]]:
+    text = clean(question)
+    matches = re.findall(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", text)
+    matches.extend(re.findall(r"(20\d{2})\s*[-/]\s*(\d{1,2})", text))
+    compact_text = compact(text)
+    for token in re.findall(r"\b(20\d{2})(\d{2})\b", compact_text):
+        matches.append(token)
+    if not matches:
+        return "", "", []
+    year, month = matches[0]
+    month_no = int(month)
+    value = f"{year}-{month_no:02d}"
+    tokens = list(
+        dict.fromkeys(
+            [
+                f"{year}{month_no:02d}",
+                value,
+                f"{year}年{month_no}月",
+                f"{year}年{month_no:02d}月",
+            ]
+        )
+    )
+    return "month", value, tokens
+
+
 def format_filter_condition(item: dict[str, Any]) -> str:
     column = str(item.get("column") or "")
     operator = str(item.get("operator") or "contains")
@@ -501,6 +532,7 @@ def describe_table_query_plan(plan: TableQueryPlan) -> dict[str, Any]:
     distinct_label = COLUMN_LABELS.get(plan.distinct_by, plan.distinct_by) if plan.distinct_by else ""
     measure_label = COLUMN_LABELS.get(plan.measure_column, plan.measure_column) if plan.measure_column else ""
     metric_labels = [item.get("label") or COLUMN_LABELS.get(item.get("column", ""), item.get("op", "")) for item in plan.metrics]
+    time_label = plan.time_value if plan.time_grain == "month" else ""
     select_labels = [COLUMN_LABELS.get(column, column) for column in plan.select_columns]
     filter_text = format_filter_groups(plan.filter_groups, plan.filter_logic) or "；".join(
         format_filter_condition(item) for item in plan.filters
@@ -509,6 +541,8 @@ def describe_table_query_plan(plan: TableQueryPlan) -> dict[str, Any]:
     operation_label = QUERY_OPERATION_LABELS.get(plan.query_op, plan.query_op or "表格检索")
     aggregate_label = AGGREGATE_OPERATION_LABELS.get(plan.aggregate_op, plan.aggregate_op)
     parts = [f"识别为：{operation_label}"]
+    if time_label:
+        parts.append(f"时间范围：{time_label}")
     if filter_text:
         parts.append(f"过滤条件：{filter_text}")
     if group_label:
@@ -529,6 +563,9 @@ def describe_table_query_plan(plan: TableQueryPlan) -> dict[str, Any]:
         "operation_code": plan.query_op,
         "filters": filter_text,
         "filter_logic": plan.filter_logic,
+        "time_grain": plan.time_grain,
+        "time_value": plan.time_value,
+        "time_tokens": plan.time_tokens,
         "group_by": group_label,
         "distinct_by": distinct_label,
         "aggregate": aggregate_label,
@@ -553,6 +590,7 @@ def parse_table_query_plan(question: str, *, branch_completion: bool | None = No
     aggregate_op = aggregate_operation(question)
     measure = measure_column(question) if aggregate_op else ""
     metrics = metric_specs(question, aggregate_op, measure)
+    time_grain, time_value, time_tokens = time_dimension(question)
     selected = select_columns(question, filters)
     return TableQueryPlan(
         query_op=query_operation(question, group_by, distinct_by, aggregate_op, metrics),
@@ -567,4 +605,7 @@ def parse_table_query_plan(question: str, *, branch_completion: bool | None = No
         metrics=metrics,
         sort_by=sort_direction(question),
         limit=result_limit(question),
+        time_grain=time_grain,
+        time_value=time_value,
+        time_tokens=time_tokens,
     )

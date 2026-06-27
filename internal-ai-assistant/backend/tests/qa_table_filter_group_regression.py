@@ -242,6 +242,17 @@ def main() -> None:
         if "上海：3800" not in sum_answer or "北京：800" not in sum_answer or "成都：200" not in sum_answer:
             raise AssertionError(f"sum answer should include expected city totals; meta={sum_meta}; answer={sum_answer}")
 
+        month_sum_question = "2026年6月按城市统计缴费金额总和"
+        month_sum_plan = parse_table_query_plan(month_sum_question).to_dict()
+        if month_sum_plan.get("time_grain") != "month" or month_sum_plan.get("time_value") != "2026-06" or "202606" not in month_sum_plan.get("time_tokens", []):
+            raise AssertionError(f"month sum plan should parse 2026-06 time dimension, got {month_sum_plan}")
+        month_sum_contexts, month_sum_meta = table_mode_contexts(db, month_sum_question, user, top_k=10)
+        if month_sum_meta.get("time_value") != "2026-06" or "时间范围：2026-06" not in (month_sum_meta.get("table_query_explanation") or {}).get("summary", ""):
+            raise AssertionError(f"month sum meta should expose time dimension, got {month_sum_meta}")
+        month_sum_answer = build_table_answer(month_sum_question, month_sum_contexts)
+        if "时间范围：2026-06" not in month_sum_answer or "上海：3800" not in month_sum_answer:
+            raise AssertionError(f"month sum answer should explain time range and totals; meta={month_sum_meta}; answer={month_sum_answer}")
+
         multi_metric_question = "按城市统计公司数、缴费金额总和、平均公积金比例"
         multi_metric_plan = parse_table_query_plan(multi_metric_question).to_dict()
         multi_metric_labels = [item.get("label") for item in multi_metric_plan.get("metrics", [])]
