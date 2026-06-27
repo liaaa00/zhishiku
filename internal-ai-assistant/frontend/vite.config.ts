@@ -14,5 +14,14 @@ export default defineConfig({
       },
     },
   },
-  build: { outDir: 'dist' },
+  build: {
+    outDir: 'dist',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('@lark-base-open/js-sdk')) return 'vendor-feishu'
+        },
+      },
+    },
+  },
 })

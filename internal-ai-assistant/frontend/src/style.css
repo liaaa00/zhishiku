@@ -2333,6 +2333,33 @@ body.admin-scroll-page {
   max-width: 100%;
 }
 
+.admin-feishu-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-feishu-field-wide {
+  max-width: 100%;
+}
+
+.admin-feishu-field button {
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #202123;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.admin-feishu-runtime {
+  color: #8e8ea0;
+  font-size: 12px;
+}
+
 .admin-full-select {
   width: 100%;
 }

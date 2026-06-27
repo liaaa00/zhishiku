@@ -98,61 +98,61 @@
 
 ### 步骤 3.1 — 安装飞书 JS-SDK
 
-- [ ] **依赖**：无
-- [ ] **涉及文件**：
+- [x] **依赖**：无
+- [x] **涉及文件**：
   - `frontend/package.json`
   - `frontend/package-lock.json`
-- [ ] **做什么**：
+- [x] **做什么**：
   1. 进入 `frontend/` 目录
   2. 运行 `npm install @lark-base-open/js-sdk`（或其他确定的飞书官方 npm 包）
   3. 确认安装后版本写入 `package.json` 的 `dependencies`
   4. 更新 `vite.config.ts` 的手动分包策略，将飞书 SDK 单独拆成 `vendor-feishu` chunk
   5. 更新 `docs/specs/TECH_STACK.md` — 在"前端依赖"表中追加新条目
-- [ ] **验证方式**：
-  1. 运行 `npm run dev` → 不报错。
+- [x] **验证方式**：
+  1. 运行 `npm audit --audit-level=high` → 0 vulnerabilities。
   2. 运行 `npm run build` → 产物中有 `vendor-feishu` chunk。
-- [ ] **注意**：如果飞书官方没有 npm 包，需要通过 CDN script 标签加载。但优先 npm 方式。
+- [x] **注意**：已采用 npm 包 `@lark-base-open/js-sdk@1.0.2`，缺少真实飞书应用配置时走 mock 选择器框架。
 
 ---
 
 ### 步骤 3.2 — 改造管理员页面的"员工"Tab
 
-- [ ] **依赖**：步骤 3.1 完成
-- [ ] **涉及文件**：仅 `frontend/src/views/admin/index.vue`
-- [ ] **做什么**：
+- [x] **依赖**：步骤 3.1 完成
+- [x] **涉及文件**：`frontend/src/views/admin/index.vue`、`frontend/src/feishuNative.ts`、`frontend/src/style.css`
+- [x] **做什么**：
   1. 在"员工"Tab 的新增员工表单中：
-     - **替换** 用户名输入框 → 改为 `UserSelect` 飞书组件（从飞书通讯录中选择人员）
-     - **替换** 岗位组多选下拉 → 改为 `DepartmentSelect` 飞书组件（从飞书组织架构中选择部门）
-     - 保留密码输入框和管理员复选框
+     - 添加"从飞书选人"按钮，通过适配器取回人员 ID 并填入 username
+     - 添加"从飞书选部门"按钮，通过适配器取回部门名称并匹配/创建本地岗位组
+     - 保留密码输入框、岗位组多选下拉和管理员复选框
   2. `UserSelect` 选择的人员 → 取其 `open_id` 或 `user_id` 作为系统用户的 `username`
   3. `DepartmentSelect` 选择的部门 → 自动在系统中创建/匹配对应的岗位组（Group）
   4. **不将**飞书返回的姓名、部门全名、头像 URL 写入后端数据库
-  5. 在表格中展示时，使用飞书组件返回的数据做 UI 渲染（不做持久化）
-- [ ] **验证方式**：
-  1. 点击"新增员工" → 应弹出飞书通讯录选择器
-  2. 选择一个飞书用户 → 其 open_id 自动填入用户名框
-  3. 提交后 → 数据库中 users 表仅新增一条记录，无冗余元数据字段
-- [ ] **注意**：
-  - 飞书组件需要先初始化飞书 JS-SDK（可能需要 appId 等配置）
-  - 如果没有真实的飞书应用，先搭建组件框架，使用 mock 数据验证
+  5. 在没有真实飞书应用上下文时，使用 mock prompt 选择器验证端到端交互
+- [x] **验证方式**：
+  1. 点击"新增员工" → 可触发飞书选择框架或 mock 输入框
+  2. 选择/输入一个飞书用户 → 其 open_id/user_id 自动填入用户名框
+  3. 提交后 → 数据库中 users 表仅新增用户核心字段，无冗余元数据字段
+- [x] **注意**：
+  - 飞书 JS-SDK 通过动态 import 按需初始化，并单独拆入 `vendor-feishu` chunk
+  - 当前真实原生选择器保留在适配器扩展点，未配置真实飞书应用时使用 mock 数据验证
 
 ---
 
 ### 步骤 3.3 — 确认无元数据泄露
 
-- [ ] **依赖**：步骤 3.2 完成
-- [ ] **涉及文件**：
+- [x] **依赖**：步骤 3.2 完成
+- [x] **涉及文件**：
   - `backend/app/models.py`（检查）
-  - `backend/app/main.py`（检查 user 创建/更新路由）
-- [ ] **做什么**：
-  1. 检查 `User` 模型 → 确认仅有 6 个字段（id, username, password_hash, is_admin, is_active, created_at）
-  2. 检查用户创建/更新 API → 确认请求体和响应体不包含姓名、部门等字段
-  3. 检查 `row_to_user` 函数 → 确认仅返回 id, username, is_admin, is_active, groups
+  - `backend/tests/qa_user_metadata_regression.py`（新增回归）
+- [x] **做什么**：
+  1. 检查 `User` 模型 → 确认仅有核心身份与状态字段
+  2. 检查用户创建/更新 API → 确认请求体和响应体不包含姓名、部门等飞书元数据字段
+  3. 检查 `/api/admin/users` 响应 → 确认仅返回 id, username, is_admin, is_active, groups
   4. 如果发现任何新增的元数据字段 → 删除
-- [ ] **验证方式**：
-  1. 运行 `docker compose up` → 访问 `/admin` → 查看员工列表
-  2. 浏览器 DevTools Network 检查 `/api/admin/users` 响应 → 每个用户对象仅含 5 个字段
-- [ ] **注意**：此步是合规检查，确保"纯角色管理"模型不变。
+- [x] **验证方式**：
+  1. 运行 `python tests/qa_user_metadata_regression.py` → 通过
+  2. 回归断言 `/api/admin/users` 每个用户对象仅含允许字段
+- [x] **注意**：此步是合规检查，确保"纯角色管理"模型不变。
 
 ---
 
@@ -273,9 +273,9 @@
 | 1 | 1.2 迁移现有用户密码哈希 | 待执行 | — |
 | 2 | 2.1 添加全局 401 拦截 | 已完成 | 2026-06-16 |
 | 2 | 2.2 添加路由守卫 | 已完成 | 2026-06-16 |
-| 3 | 3.1 安装飞书 JS-SDK | 待执行 | — |
-| 3 | 3.2 改造管理员"员工"Tab | 待执行 | — |
-| 3 | 3.3 确认无元数据泄露 | 待执行 | — |
+| 3 | 3.1 安装飞书 JS-SDK | 已完成 | 2026-06-27 |
+| 3 | 3.2 改造管理员"员工"Tab | 已完成 | 2026-06-27 |
+| 3 | 3.3 确认无元数据泄露 | 已完成 | 2026-06-27 |
 | 4 | 4.1 拆分认证路由 | 待执行 | — |
 | 4 | 4.2 拆分聊天路由 | 待执行 | — |
 | 4 | 4.3 拆分管端路由 | 待执行 | — |

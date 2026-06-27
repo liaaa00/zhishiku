@@ -118,13 +118,20 @@
             <div class="admin-list-summary admin-user-summary">当前显示 {{ filteredUsers.length }} / {{ users.length }} 名员工</div>
           </div>
           <div class="admin-form-row admin-form-row-wrap">
-            <el-input v-model="user.username" placeholder="用户名" class="admin-input-sm" />
+            <div class="admin-feishu-field">
+              <el-input v-model="user.username" placeholder="飞书 open_id / user_id" class="admin-input-sm" />
+              <button type="button" @click="pickFeishuUser">从飞书选人</button>
+            </div>
             <el-input v-model="user.password" placeholder="密码" class="admin-input-sm" />
-            <el-select v-model="user.group_ids" multiple placeholder="所属岗位组" class="admin-select-md">
-              <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
-            </el-select>
+            <div class="admin-feishu-field admin-feishu-field-wide">
+              <el-select v-model="user.group_ids" multiple placeholder="所属岗位组" class="admin-select-md">
+                <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+              </el-select>
+              <button type="button" @click="pickFeishuDepartments">从飞书选部门</button>
+            </div>
             <el-checkbox v-model="user.is_admin">管理员</el-checkbox>
             <el-button type="primary" @click="createUser">新增员工</el-button>
+            <span class="admin-feishu-runtime">{{ feishuRuntimeLabel }}</span>
           </div>
           <div v-if="users.length && !filteredUsers.length" class="admin-dialog-empty admin-user-empty">没有匹配的员工。可以清空搜索词或切换角色筛选。</div>
           <el-table :data="filteredUsers" class="admin-table admin-user-table">
@@ -638,6 +645,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../../api'
+import { feishuNativeRuntime, selectFeishuDepartments, selectFeishuUser } from '../../feishuNative'
 
 const groups = ref<any[]>([])
 const users = ref<any[]>([])
@@ -654,6 +662,7 @@ const tasks = ref<any[]>([])
 const docGroupMap = reactive<Record<string, string[]>>({})
 const groupName = ref('')
 const user = reactive({ username: '', password: '', is_admin: false, group_ids: [] as string[] })
+const feishuRuntimeMode = ref<'checking' | 'sdk' | 'mock'>('checking')
 type DocStatusFilter = 'all' | 'ready' | 'processing' | 'waiting' | 'failed'
 type UserRoleFilter = 'all' | 'admin' | 'member' | 'unassigned'
 type TaskStatusFilter = 'all' | 'pending' | 'running' | 'done' | 'failed'
@@ -806,6 +815,11 @@ const pageIndexEngineText = computed(() => {
   return '轻量结构树兜底'
 })
 const pageIndexFlatNodes = computed(() => flattenPageIndexNodes(pageIndexPayload.value?.structure || []))
+const feishuRuntimeLabel = computed(() => {
+  if (feishuRuntimeMode.value === 'sdk') return '飞书 SDK 已加载'
+  if (feishuRuntimeMode.value === 'mock') return '本地 Mock 选择器'
+  return '飞书 SDK 检测中'
+})
 const lastRefreshLabel = computed(() => {
   if (!lastRefreshAt.value) return '未刷新'
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(lastRefreshAt.value)
@@ -1392,6 +1406,35 @@ async function createGroup() {
   groupName.value = ''
   await load()
 }
+async function pickFeishuUser() {
+  const selected = await selectFeishuUser()
+  if (!selected?.id) return
+  user.username = selected.id
+  ElMessage.success('已填入飞书用户 ID')
+}
+async function ensureGroupByName(name: string) {
+  const normalized = name.trim()
+  if (!normalized) return ''
+  const existing = groups.value.find((item: any) => String(item.name || '').trim() === normalized)
+  if (existing?.id) return String(existing.id)
+  const { data } = await http.post('/admin/groups', { name: normalized })
+  const group = data || {}
+  if (group.id && !groups.value.some((item: any) => String(item.id) === String(group.id))) {
+    groups.value = [{ id: group.id, name: group.name || normalized }, ...groups.value]
+  }
+  return String(group.id || '')
+}
+async function pickFeishuDepartments() {
+  const departments = await selectFeishuDepartments()
+  if (!departments.length) return
+  const ids: string[] = []
+  for (const department of departments) {
+    const id = await ensureGroupByName(department.name)
+    if (id) ids.push(id)
+  }
+  user.group_ids = Array.from(new Set([...user.group_ids, ...ids]))
+  ElMessage.success('已匹配飞书部门到岗位组')
+}
 async function createUser() {
   await http.post('/admin/users', user)
   user.username = ''
@@ -1667,6 +1710,12 @@ function stageText(stage?: string) {
 onMounted(async () => {
   document.documentElement.classList.add('admin-scroll-page')
   document.body.classList.add('admin-scroll-page')
+  try {
+    const runtime = await feishuNativeRuntime()
+    feishuRuntimeMode.value = runtime.mode
+  } catch {
+    feishuRuntimeMode.value = 'mock'
+  }
   await load()
   startStatusPollingIfNeeded()
 })

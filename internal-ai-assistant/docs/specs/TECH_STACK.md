@@ -30,7 +30,7 @@
 | `pypdf` | 5.1.0 | PDF 文档文本提取 |
 | `openai` | 1.58.1 | DeepSeek API 客户端（OpenAI-compatible） |
 | `python-dotenv` | 1.0.1 | .env 环境变量加载 |
-| `passlib[bcrypt]` | 1.7.4 | ⚠️ 已安装但当前未使用（实际使用了 hashlib.sha256） |
+| `bcrypt` / `passlib[bcrypt]` | bcrypt 4.3.0 / passlib 1.7.4 | 密码哈希与旧 SHA256 哈希兼容迁移 |
 | `PyJWT` | 2.10.1 | JWT 令牌签发与验证 |
 | `python-multipart` | 0.0.19 | 文件上传解析（UploadFile） |
 
@@ -48,13 +48,14 @@
 | `pinia` | 2.3.1 | 状态管理（已挂载但业务逻辑尚未使用 Store） |
 | `element-plus` | 2.14.0 | UI 组件库（按需导入，无全量注册） |
 | `axios` | 1.16.1 | HTTP 客户端（拦截器注入 JWT Bearer Token） |
+| `@lark-base-open/js-sdk` | 1.0.2 | 飞书/多维表格 Base JS SDK，用于原生人员/部门选择组件框架 |
 | `@element-plus/icons-vue` | 2.3.2 | Element Plus 图标（间接依赖） |
 
 **开发依赖：**
 
 | 包名 | 锁定版本 | 用途 |
 |------|----------|------|
-| `vite` | 6.4.2 | 构建工具 |
+| `vite` | 6.4.3 | 构建工具 |
 | `@vitejs/plugin-vue` | 5.2.4 | Vite Vue 插件 |
 | `typescript` | 5.9.3 | TypeScript 编译器 |
 | `@types/node` | 20.17.10 | Node.js 类型声明 |
