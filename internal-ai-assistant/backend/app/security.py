@@ -1,10 +1,14 @@
 import hashlib
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import bcrypt
 import jwt
 
 from .config import JWT_ALGORITHM, JWT_SECRET
+
+TOKEN_EXPIRE_MINUTES = 24 * 60
+TOKEN_REFRESH_WINDOW_MINUTES = 60
 
 
 def hash_password(password: str) -> str:
@@ -50,7 +54,7 @@ def migrate_password_if_needed(user, plain_password: str, db) -> bool:
     return True
 
 
-def create_token(payload: dict, expires_minutes: int = 24 * 60) -> str:
+def create_token(payload: dict, expires_minutes: int = TOKEN_EXPIRE_MINUTES) -> str:
     data = payload.copy()
     data["exp"] = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
     return jwt.encode(data, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -58,3 +62,20 @@ def create_token(payload: dict, expires_minutes: int = 24 * 60) -> str:
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+
+
+def token_expires_at(payload: dict[str, Any]) -> datetime | None:
+    exp = payload.get("exp")
+    if exp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(exp), timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def should_refresh_token(payload: dict[str, Any], window_minutes: int = TOKEN_REFRESH_WINDOW_MINUTES) -> bool:
+    expires_at = token_expires_at(payload)
+    if expires_at is None:
+        return True
+    return expires_at - datetime.now(timezone.utc) <= timedelta(minutes=window_minutes)

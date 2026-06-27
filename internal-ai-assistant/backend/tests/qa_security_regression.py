@@ -39,6 +39,10 @@ def require_header(response, name: str, expected: str | None, label: str) -> Non
         raise AssertionError(f"{label}: expected {name}={expected!r}, got {actual!r}")
 
 
+def headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 def main() -> None:
     app_main = importlib.import_module("app.main")
     database = importlib.import_module("app.database")
@@ -101,6 +105,27 @@ def main() -> None:
         json={"username": "security_bcrypt_user", "password": "bcrypt_password_123"},
     )
     require_status(bcrypt_login, 200, "bcrypt login")
+    bcrypt_token = bcrypt_login.json()["token"]
+    if not bcrypt_login.json().get("expires_at"):
+        raise AssertionError("login response should include token expires_at")
+
+    refreshed = client.post("/api/auth/refresh", headers=headers(bcrypt_token))
+    require_status(refreshed, 200, "refresh valid token")
+    refreshed_payload = refreshed.json()
+    if not refreshed_payload.get("token") or not refreshed_payload.get("expires_at"):
+        raise AssertionError(f"refresh response should include token and expires_at, got {refreshed_payload}")
+    if refreshed_payload.get("user", {}).get("username") != "security_bcrypt_user":
+        raise AssertionError(f"refresh should return current user payload, got {refreshed_payload}")
+
+    short_token = security.create_token({"sub": "security-bcrypt-user"}, expires_minutes=1)
+    me_refresh = client.get("/api/me", headers=headers(short_token))
+    require_status(me_refresh, 200, "me with near-expiry token")
+    if not me_refresh.headers.get("x-refresh-token"):
+        raise AssertionError("/api/me should expose X-Refresh-Token for near-expiry tokens")
+
+    expired_token = security.create_token({"sub": "security-bcrypt-user"}, expires_minutes=-1)
+    expired_refresh = client.post("/api/auth/refresh", headers=headers(expired_token))
+    require_status(expired_refresh, 401, "refresh expired token")
 
     allowed_preflight = client.options(
         "/api/health",

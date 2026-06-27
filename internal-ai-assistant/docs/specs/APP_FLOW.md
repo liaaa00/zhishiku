@@ -185,7 +185,8 @@
 /admin ──(浏览器手动回退)──→ 前一个历史记录
 未登录手动访问 /chat 或 /admin ──(路由守卫)──→ /login
 普通用户手动访问 /admin ──(路由守卫)──→ /chat
-Token 过期/无效导致 API 401 ──(Axios 全局拦截)──→ 清理 token/user 并跳转 /login
+Token 临近过期 ──(Axios 请求拦截)──→ 调用 `/api/auth/refresh` 自动续签
+API 401 ──(Axios 响应拦截)──→ 尝试刷新并重试一次；仍失败则清理 token/user 并跳转 /login
 ```
 
 **注意**：

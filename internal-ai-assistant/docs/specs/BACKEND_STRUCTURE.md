@@ -359,6 +359,7 @@ must: [
 ### 4.1 JWT Token
 
 - **签发**：登录成功后签发，有效期 24 小时。
+- **刷新**：`POST /api/auth/refresh` 可用有效 token 续签；前端在 token 临近过期或 401 重试时自动刷新。
 - **算法**：HS256，密钥来自 `JWT_SECRET` 环境变量。
 - **Payload**：`{ sub: user.id, exp: timestamp }`
 - **传递**：前端 Axios 拦截器自动注入 `Authorization: Bearer <token>`。
@@ -374,6 +375,5 @@ must: [
 
 | 问题 | 严重程度 | 说明 |
 |------|----------|------|
-| Token 无刷新机制 | 🟡 中 | 24 小时到期后需重新登录，无 refresh token。 |
 | 响应模型未统一 | 🟢 低 | 多数路由仍直接返回 `dict` / `list`，后续可补充 Pydantic `response_model` 稳定 API 契约。 |
 | Qdrant 回退缺少显式告警 | 🟢 低 | Qdrant 不可用时可回退 SQLite 向量检索，但管理员侧缺少明确健康告警。 |
