@@ -59,6 +59,7 @@
 - [x] Qdrant Collection 自动创建
 - [x] CORS 改为 `CORS_ORIGINS` 白名单配置，拒绝非白名单 Origin
 - [x] FastAPI 路由已从 `main.py` 拆分到 `backend/app/routers/` 按领域维护
+- [x] 核心身份/权限接口已补充 Pydantic `response_model`（auth/users/groups），OpenAPI 响应契约可回归验证
 - [x] Alembic 初始迁移已接入，可从空 SQLite 数据库执行 `alembic upgrade head`
 
 ### 已删除/废弃
@@ -99,7 +100,6 @@
 
 | 步骤 | 描述 | 优先级 | 预估工时 |
 |------|------|--------|----------|
-| 7.2 | 为核心 router 补充 Pydantic `response_model`，稳定 API 契约 | 🟢 P2 | 3h |
 | 7.3 | 为 Qdrant 不可用回退增加管理员可见告警/健康状态提示 | 🟢 P2 | 2h |
 | 7.4 | 生产环境切换 OpenAI-compatible embedding 并补充检索质量评估 | 🟢 P2 | 3h |
 | 7.5 | 评估 Pinia Store 落地范围，减少大型页面组件内部状态耦合 | 🟢 P2 | 3h |

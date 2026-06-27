@@ -42,6 +42,15 @@ def assert_user_payload_minimal(payload: dict) -> None:
         raise AssertionError(f"user payload should expose groups as list only, got {payload}")
 
 
+def assert_openapi_response_schema(openapi: dict, method: str, path: str) -> None:
+    operation = openapi.get("paths", {}).get(path, {}).get(method.lower())
+    if not operation:
+        raise AssertionError(f"OpenAPI operation missing for {method} {path}")
+    schema = operation.get("responses", {}).get("200", {}).get("content", {}).get("application/json", {}).get("schema")
+    if not schema:
+        raise AssertionError(f"OpenAPI response schema missing for {method} {path}: {operation}")
+
+
 def main() -> None:
     app_main = importlib.import_module("app.main")
     database = importlib.import_module("app.database")
@@ -79,6 +88,26 @@ def main() -> None:
     require_status(users, 200, "list users")
     for item in users.json():
         assert_user_payload_minimal(item)
+
+    groups = client.get("/api/admin/groups", headers=headers(token))
+    require_status(groups, 200, "list groups")
+    for group_payload in groups.json():
+        if set(group_payload) != {"id", "name"}:
+            raise AssertionError(f"group payload should only contain id/name, got {group_payload}")
+
+    openapi = client.get("/openapi.json").json()
+    for method, path in [
+        ("POST", "/api/auth/login"),
+        ("POST", "/api/auth/refresh"),
+        ("GET", "/api/me"),
+        ("GET", "/api/admin/users"),
+        ("POST", "/api/admin/users"),
+        ("PUT", "/api/admin/users/{user_id}"),
+        ("GET", "/api/admin/groups"),
+        ("POST", "/api/admin/groups"),
+        ("PUT", "/api/admin/groups/{group_id}"),
+    ]:
+        assert_openapi_response_schema(openapi, method, path)
 
     print("User metadata minimization regression passed.")
 

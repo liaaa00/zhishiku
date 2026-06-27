@@ -3,6 +3,29 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 
+class OkResponse(BaseModel):
+    ok: bool = True
+
+
+class GroupPayload(BaseModel):
+    id: str
+    name: str
+
+
+class UserPayload(BaseModel):
+    id: str
+    username: str
+    is_admin: bool
+    is_active: bool
+    groups: List[GroupPayload] = []
+
+
+class AuthResponse(BaseModel):
+    token: str
+    expires_at: Optional[str] = None
+    user: UserPayload
+
+
 class UserCreate(BaseModel):
     username: str
     password: str

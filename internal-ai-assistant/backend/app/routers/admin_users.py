@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..admin_schemas import UserCreate, UserGroupsUpdate, UserPasswordReset, UserStatusUpdate, UserUpdate
+from ..admin_schemas import OkResponse, UserCreate, UserGroupsUpdate, UserPasswordReset, UserStatusUpdate, UserUpdate, UserPayload
 from ..admin_utils import ensure_not_last_active_admin, ensure_password_strength, load_groups_by_ids
 from ..database import get_db
 from ..models import User
@@ -12,13 +12,13 @@ from .deps import audit, new_id, require_admin, row_to_user
 router = APIRouter()
 
 
-@router.get("/api/admin/users")
+@router.get("/api/admin/users", response_model=list[UserPayload])
 def list_users(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     users = db.execute(select(User).order_by(User.created_at.desc())).scalars().all()
     return [row_to_user(u) for u in users]
 
 
-@router.post("/api/admin/users")
+@router.post("/api/admin/users", response_model=UserPayload)
 def create_user(req: UserCreate, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     username = req.username.strip()
     if not username or not req.password:
@@ -35,7 +35,7 @@ def create_user(req: UserCreate, db: Session = Depends(get_db), actor: User = De
     return row_to_user(user)
 
 
-@router.put("/api/admin/users/{user_id}")
+@router.put("/api/admin/users/{user_id}", response_model=UserPayload)
 def update_user(user_id: str, req: UserUpdate, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     user = db.get(User, user_id)
     if not user:
@@ -58,7 +58,7 @@ def update_user(user_id: str, req: UserUpdate, db: Session = Depends(get_db), ac
     return row_to_user(user)
 
 
-@router.put("/api/admin/users/{user_id}/groups")
+@router.put("/api/admin/users/{user_id}/groups", response_model=UserPayload)
 def update_user_groups(user_id: str, req: UserGroupsUpdate, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     user = db.get(User, user_id)
     if not user:
@@ -75,7 +75,7 @@ def update_user_groups(user_id: str, req: UserGroupsUpdate, db: Session = Depend
     return row_to_user(user)
 
 
-@router.post("/api/admin/users/{user_id}/reset-password")
+@router.post("/api/admin/users/{user_id}/reset-password", response_model=OkResponse)
 def reset_user_password(user_id: str, req: UserPasswordReset, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     ensure_password_strength(req.password, "新密码")
     user = db.get(User, user_id)
@@ -87,7 +87,7 @@ def reset_user_password(user_id: str, req: UserPasswordReset, db: Session = Depe
     return {"ok": True}
 
 
-@router.put("/api/admin/users/{user_id}/status")
+@router.put("/api/admin/users/{user_id}/status", response_model=UserPayload)
 def update_user_status(user_id: str, req: UserStatusUpdate, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     user = db.get(User, user_id)
     if not user:
@@ -102,7 +102,7 @@ def update_user_status(user_id: str, req: UserStatusUpdate, db: Session = Depend
     return row_to_user(user)
 
 
-@router.delete("/api/admin/users/{user_id}")
+@router.delete("/api/admin/users/{user_id}", response_model=OkResponse)
 def delete_user(user_id: str, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     user = db.get(User, user_id)
     if not user:

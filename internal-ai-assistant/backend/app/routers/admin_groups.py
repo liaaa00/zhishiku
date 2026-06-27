@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..admin_schemas import GroupCreate, GroupUpdate
+from ..admin_schemas import GroupCreate, GroupPayload, GroupUpdate, OkResponse
 from ..database import get_db
 from ..models import Group, User
 from .deps import audit, new_id, require_admin
@@ -10,13 +10,13 @@ from .deps import audit, new_id, require_admin
 router = APIRouter()
 
 
-@router.get("/api/admin/groups")
+@router.get("/api/admin/groups", response_model=list[GroupPayload])
 def list_groups(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     groups = db.execute(select(Group).order_by(Group.created_at.desc())).scalars().all()
     return [{"id": g.id, "name": g.name} for g in groups]
 
 
-@router.post("/api/admin/groups")
+@router.post("/api/admin/groups", response_model=GroupPayload)
 def create_group(req: GroupCreate, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     name = req.name.strip()
     if not name:
@@ -31,7 +31,7 @@ def create_group(req: GroupCreate, db: Session = Depends(get_db), actor: User = 
     return {"id": group.id, "name": group.name}
 
 
-@router.put("/api/admin/groups/{group_id}")
+@router.put("/api/admin/groups/{group_id}", response_model=GroupPayload)
 def update_group(group_id: str, req: GroupUpdate, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     group = db.get(Group, group_id)
     if not group:
@@ -47,7 +47,7 @@ def update_group(group_id: str, req: GroupUpdate, db: Session = Depends(get_db),
     return {"id": group.id, "name": group.name}
 
 
-@router.delete("/api/admin/groups/{group_id}")
+@router.delete("/api/admin/groups/{group_id}", response_model=OkResponse)
 def delete_group(group_id: str, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
     group = db.get(Group, group_id)
     if not group:

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..admin_schemas import AuthResponse, UserPayload
 from ..database import get_db
 from ..models import User
 from ..security import create_token, decode_token, hash_password, is_legacy_hash, should_refresh_token, token_expires_at, verify_password
@@ -30,7 +31,7 @@ def auth_payload(user: User) -> dict:
     }
 
 
-@router.post("/api/auth/login")
+@router.post("/api/auth/login", response_model=AuthResponse)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = db.execute(select(User).where(User.username == req.username)).scalar_one_or_none()
     if not user or not verify_password(req.password, user.password_hash):
@@ -45,7 +46,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     return auth_payload(user)
 
 
-@router.post("/api/auth/refresh")
+@router.post("/api/auth/refresh", response_model=AuthResponse)
 def refresh_token(
     db: Session = Depends(get_db),
     cred: Optional[HTTPAuthorizationCredentials] = Depends(security),
@@ -66,7 +67,7 @@ def refresh_token(
     return auth_payload(user)
 
 
-@router.get("/api/me")
+@router.get("/api/me", response_model=UserPayload)
 def me(
     response: Response,
     user: User = Depends(require_user),

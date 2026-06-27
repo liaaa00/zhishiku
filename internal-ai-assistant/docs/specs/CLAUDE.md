@@ -194,7 +194,7 @@ db.commit()
 - 管理端 API 前缀：`/api/admin/`
 - 用户端 API 前缀：`/api/`（非 admin）
 - 请求体使用 Pydantic `BaseModel`
-- 响应体使用 `dict` 字面量（当前模式），未来可迁移至 Pydantic `response_model`
+- 核心身份/权限接口使用 Pydantic `response_model`；复杂业务接口可按领域渐进补齐响应模型
 - 错误返回：`raise HTTPException(status_code=4xx/5xx, detail="中文描述")`
 
 ---
@@ -219,7 +219,7 @@ db.commit()
 
 | 编号 | 问题 | 位置 | 优先级 |
 |------|------|------|--------|
-| TD-01 | 响应体仍主要使用 `dict` 字面量，缺少统一 `response_model` | `backend/app/routers/` | 🟢 低 |
+| TD-01 | 复杂业务接口尚未全部补齐 `response_model` | `backend/app/routers/` | 🟢 低 |
 | TD-02 | Pinia 已挂载但无 Store 使用 | `frontend/src/main.ts` | 🟢 低 |
 | TD-03 | Embedding 默认 local-hash，生产检索质量有限 | `backend/app/config.py` | 🟢 低 |
 | TD-04 | Qdrant 不可用时回退 SQLite 向量检索，但缺少管理员可见告警 | `backend/app/vector_store.py` | 🟢 低 |

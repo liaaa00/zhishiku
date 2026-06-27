@@ -375,5 +375,5 @@ must: [
 
 | 问题 | 严重程度 | 说明 |
 |------|----------|------|
-| 响应模型未统一 | 🟢 低 | 多数路由仍直接返回 `dict` / `list`，后续可补充 Pydantic `response_model` 稳定 API 契约。 |
+| 复杂响应模型未完全统一 | 🟢 低 | auth/users/groups 已补充 Pydantic `response_model`；聊天、文档等复杂接口可继续渐进补齐。 |
 | Qdrant 回退缺少显式告警 | 🟢 低 | Qdrant 不可用时可回退 SQLite 向量检索，但管理员侧缺少明确健康告警。 |
