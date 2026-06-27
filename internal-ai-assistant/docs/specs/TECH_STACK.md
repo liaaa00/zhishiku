@@ -70,7 +70,7 @@
 | Qdrant | `qdrant/qdrant:latest` | 向量数据库，存储文档片段向量索引 |
 | SQLite | 内嵌（`app.db`） | 主业务数据库，文件位于 `backend/data/app.db`，初始 schema 由 Alembic 迁移维护 |
 | DeepSeek | `deepseek-v4-flash`（`.env` 配置） | LLM 对话模型 + Vision OCR（图片识别） |
-| 本地 Embedding | `local-hash`（默认） | 基于 MD5+Sparse 的轻量向量生成，无需外部 API |
+| Embedding | 本地 `local-hash`（开发默认）；生产 `openai-compatible` | 本地无需外部 API；`APP_ENV=production` 会拒绝 local-hash，要求配置远程 embedding |
 
 ---
 

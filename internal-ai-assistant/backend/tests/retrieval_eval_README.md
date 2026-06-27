@@ -1,53 +1,67 @@
 # 检索评测集使用说明
 
-这个目录里现在有两类评测：
+这个目录包含两类检索评测：
 
 - `retrieval_eval_cases.json`：fixture 评测。脚本会创建临时 SQLite 和模拟文档，用于稳定回归。
 - `retrieval_eval_real_cases.json`：真实库评测模板。直接读取当前 `backend/data/app.db`，用于检查真实知识库效果。
 - `qa_retrieval_eval_runner.py`：评测 runner。
 
-## 一、什么样的问题适合放进真实测评？
+## 一、生产 embedding 切换流程
 
-真实测评的问题不是“标准考试题”，而是用户真的可能会问、并且你能判断证据对不对的问题。
+生产环境不要使用默认 `local-hash`。`APP_ENV=production` 下启动会校验并拒绝 local embedding，必须配置 OpenAI-compatible embedding：
 
+```env
+APP_ENV=production
+EMBEDDING_PROVIDER=openai-compatible
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_API_KEY=replace-with-production-embedding-key
+```
+
+切换步骤：
+
+1. 在生产环境写入上述 embedding 配置，并确保 `JWT_SECRET`、`DEFAULT_ADMIN_PASSWORD` 已替换为安全值。
+2. 启动服务前确认环境变量生效；若仍为 `local` / `local-hash`，服务会在启动安全检查中拒绝运行。
+3. 用管理员账号调用后台“测试 embedding”按钮，或请求 `/api/admin/model/embedding-test`，确认返回可用维度。
+4. 重新上传或重建已有文档的向量索引，避免旧的 `local-hash` 向量与新 embedding 混用。
+5. 运行真实知识库评测，记录切换前后命中率和失败案例。
+
+## 二、什么样的问题适合放进真实评测？
+
+真实评测的问题不是“标准考试题”，而是用户真的可能会问、并且你能判断证据对不对的问题。
 优先收集这 6 类：
 
 1. 高频标准问法
    - 例：`员工怎么签署电子劳动合同？`
    - 目的：核心业务必须答准。
-
 2. 口语化问法
    - 例：`我收到签劳动合同的通知了，从哪里进去处理？`
-   - 目的：用户不会总是说“电子签”“流程”这种标准词。
-
+   - 目的：用户不一定会说“电子签”“流程”等标准词。
 3. 角色冲突问题
    - 例：`合同组在工单系统里怎么处理电子劳动合同盖章和归档？`
    - 目的：防止员工指南和内部工单材料互相干扰。
-
 4. 表格精确查询
-   - 例：`2026年3月北仑派单截止时间是什么时候？`
+   - 例：`2026 年 5 月北仑派单截止时间是什么时候？`
    - 目的：检查 Excel/CSV 行级证据是否找对。
-
 5. 缺条件问题
    - 例：`社保截止时间是什么时候？`
    - 目的：如果城市、月份、业务类型不完整，系统不应乱答。
-
-6. 无资料/防幻觉问题
-   - 例：`深圳2027年医保缴费规则是什么？`
+6. 无资料 / 防幻觉问题
+   - 例：`深圳 2027 年医保缴费规则是什么？`
    - 目的：库里没有资料时，不应强行命中无关文档。
 
-## 二、真实测评先测什么？
+## 三、真实评测先测什么？
 
 第一阶段不要要求最终答案文字完全一致，先测“证据是否正确”：
 
-- 应该命中哪些文档标题/文件名
-- 不应该命中哪些文档标题/文件名
-- 检索上下文里应该出现哪些证据词
-- 是否应该走表格后端 `table`
+- 应该命中哪些文档标题 / 文件名？
+- 不应该命中哪些文档标题 / 文件名？
+- 检索上下文里应该出现哪些证据词？
+- 是否应该走表格后端 `table`？
 
-等证据稳定后，再做最终回答质量评测。
+证据稳定后，再做最终回答质量评测。
 
-## 三、运行 fixture 评测
+## 四、运行 fixture 评测
 
 在 `internal-ai-assistant/backend` 目录执行：
 
@@ -67,7 +81,7 @@ python tests/qa_retrieval_eval_runner.py --json
 python tests/qa_retrieval_eval_runner.py --keep-db
 ```
 
-## 四、运行真实知识库评测
+## 五、运行真实知识库评测
 
 ```bash
 python tests/qa_retrieval_eval_runner.py --real-db
@@ -85,16 +99,22 @@ python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_
 python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_real_cases.json --explain
 ```
 
+生产 embedding 切换后建议固定执行：
+
+```bash
+python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_real_cases.json --explain --json
+```
+
 解释报告会显示：
 
-- 每个问题命中的 Top 文档
-- 检索后端：`table` / `hybrid` / `sqlite+keyword` 等
-- query_profile
-- score / rerank_score / llm_rerank_score
-- positive_signals / negative_signals
-- 命中片段摘要
+- 每个问题命中的 Top 文档。
+- 检索后端：`table` / `hybrid` / `sqlite+keyword` 等。
+- `query_profile`。
+- `score` / `rerank_score` / `llm_rerank_score`。
+- `positive_signals` / `negative_signals`。
+- 命中片段摘要。
 
-## 五、真实评测 case 写法
+## 六、真实评测 case 写法
 
 示例：
 
@@ -113,7 +133,7 @@ python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_
 }
 ```
 
-## 六、常用 expected 字段
+## 七、常用 expected 字段
 
 - `backend`：期望检索后端，例如 `table`。
 - `top_doc`：第一名必须是某个文档 ID。
@@ -145,7 +165,7 @@ python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_
 
 表示某个结果标题要同时包含“电子”和“合同”；另一个结果标题要包含“微助手”。
 
-## 七、维护建议
+## 八、维护建议
 
 1. 每发现一次真实检索错误，就把它变成一个 case。
 2. case 里一定写清楚：为什么这个问题重要、应该命中什么、不应该命中什么。

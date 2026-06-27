@@ -376,4 +376,4 @@ must: [
 | 问题 | 严重程度 | 说明 |
 |------|----------|------|
 | 复杂响应模型未完全统一 | 🟢 低 | auth/users/groups 已补充 Pydantic `response_model`；聊天、文档等复杂接口可继续渐进补齐。 |
-| Embedding 生产质量待提升 | 🟢 低 | 默认 local-hash 便于本地部署，生产建议切换 OpenAI-compatible embedding 并重建向量库。 |
+| Embedding 生产配置护栏 | ✅ 已处理 | 默认 local-hash 仅用于本地试跑；`APP_ENV=production` 会拒绝 local-hash，要求配置 OpenAI-compatible embedding，并在切换后重建向量库。 |

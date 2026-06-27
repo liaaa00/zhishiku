@@ -43,7 +43,55 @@ def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def assert_production_embedding_guard() -> None:
+    """Production must reject local-hash embedding and accept remote embedding config."""
+    config_module = importlib.import_module("app.config")
+    tracked = {
+        "APP_ENV": os.environ.get("APP_ENV"),
+        "JWT_SECRET": os.environ.get("JWT_SECRET"),
+        "DEFAULT_ADMIN_PASSWORD": os.environ.get("DEFAULT_ADMIN_PASSWORD"),
+        "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
+        "EMBEDDING_PROVIDER": os.environ.get("EMBEDDING_PROVIDER"),
+        "EMBEDDING_MODEL": os.environ.get("EMBEDDING_MODEL"),
+        "EMBEDDING_API_KEY": os.environ.get("EMBEDDING_API_KEY"),
+        "EMBEDDING_BASE_URL": os.environ.get("EMBEDDING_BASE_URL"),
+    }
+    try:
+        os.environ["APP_ENV"] = "production"
+        os.environ["JWT_SECRET"] = "qa-production-secret-with-enough-length"
+        os.environ["DEFAULT_ADMIN_PASSWORD"] = "qa-production-admin-password"
+        os.environ["EMBEDDING_PROVIDER"] = "local"
+        os.environ["EMBEDDING_MODEL"] = "local-hash"
+        os.environ.pop("OPENAI_API_KEY", None)
+        os.environ.pop("EMBEDDING_API_KEY", None)
+        config_module = importlib.reload(config_module)
+        try:
+            config_module.validate_security()
+        except RuntimeError as exc:
+            message = str(exc)
+            if "OpenAI-compatible embedding" not in message or "EMBEDDING_API_KEY" not in message:
+                raise AssertionError(f"production local embedding guard returned unexpected message: {message}") from exc
+        else:
+            raise AssertionError("production local-hash embedding should fail validation")
+
+        os.environ["EMBEDDING_PROVIDER"] = "openai-compatible"
+        os.environ["EMBEDDING_MODEL"] = "text-embedding-3-small"
+        os.environ["EMBEDDING_API_KEY"] = "qa-embedding-key"
+        os.environ["EMBEDDING_BASE_URL"] = "https://embedding.example.test/v1"
+        config_module = importlib.reload(config_module)
+        config_module.validate_security()
+    finally:
+        for key, value in tracked.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        importlib.reload(config_module)
+
+
 def main() -> None:
+    assert_production_embedding_guard()
+
     app_main = importlib.import_module("app.main")
     database = importlib.import_module("app.database")
     models = importlib.import_module("app.models")
