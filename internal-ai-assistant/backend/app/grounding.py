@@ -146,6 +146,8 @@ def build_citation(context: dict, index: int = 0) -> dict:
         "rerank_score": normalized_score(context.get("rerank_score")),
         "llm_rerank_score": normalized_score(context.get("llm_rerank_score")),
         "llm_rerank_reason": context.get("llm_rerank_reason") or "",
+        "source_quality": context.get("source_quality") or {},
+        "quality_penalty": context.get("quality_penalty") or 0,
         "retrieval_channel": context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "semantic"),
         "match_reason": context.get("match_reason") or citation_match_reason(context, context.get("match_terms") or []),
         "matched_snippet": context.get("matched_snippet") or snippet_text(content),

@@ -18,12 +18,14 @@ router = APIRouter()
 
 FEEDBACK_STATUSES = {"new", "reviewed", "resolved", "ignored"}
 FEEDBACK_CATEGORIES = {"incorrect", "missing_source", "not_helpful", "other"}
+FEEDBACK_ROOT_CAUSES = {"", "answer_quality", "retrieval_miss", "insufficient_source", "document_quality", "permission_scope", "unclear_question", "other"}
 
 
 class FeedbackBulkAction(BaseModel):
     ids: list[str]
     status: str = "reviewed"
     admin_note: str = ""
+    root_cause: str = ""
 
 
 def feedback_to_dict(f: Feedback, summary: bool = False) -> dict:
@@ -52,6 +54,7 @@ def feedback_to_dict(f: Feedback, summary: bool = False) -> dict:
         "handled_at": getattr(f, "handled_at", None).isoformat() if getattr(f, "handled_at", None) else None,
         "handled_by_user_id": getattr(f, "handled_by_user_id", None),
         "handled_by_username": getattr(f, "handled_by_username", "") or "",
+        "root_cause": getattr(f, "root_cause", "") or "",
         "review_note": snippet_text(review_note, 180) if summary else review_note,
         "admin_note": snippet_text(admin_note, 180) if summary else admin_note,
         "summary": summary,
@@ -63,6 +66,7 @@ def list_feedback(
     status: Optional[str] = None,
     category: Optional[str] = None,
     rating: Optional[str] = None,
+    root_cause: Optional[str] = None,
     search: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -74,11 +78,14 @@ def list_feedback(
     status_filter = (status or "").strip().lower()
     category_filter = (category or "").strip().lower()
     rating_filter = (rating or "").strip().lower()
+    root_cause_filter = (root_cause or "").strip().lower()
     search_filter = (search or "").strip()
     if status_filter and status_filter not in FEEDBACK_STATUSES:
         raise HTTPException(status_code=400, detail="反馈状态只能是 new/reviewed/resolved/ignored")
     if category_filter and category_filter not in FEEDBACK_CATEGORIES:
         raise HTTPException(status_code=400, detail="反馈分类只能是 incorrect/missing_source/not_helpful/other")
+    if root_cause_filter and root_cause_filter not in FEEDBACK_ROOT_CAUSES:
+        raise HTTPException(status_code=400, detail="反馈归因不合法")
     stmt = select(Feedback)
     if status_filter:
         stmt = stmt.where(Feedback.status == status_filter)
@@ -86,6 +93,8 @@ def list_feedback(
         stmt = stmt.where(Feedback.category == category_filter)
     if rating_filter:
         stmt = stmt.where(Feedback.rating == rating_filter)
+    if root_cause_filter:
+        stmt = stmt.where(Feedback.root_cause == root_cause_filter)
     if search_filter:
         like = f"%{search_filter}%"
         stmt = stmt.where(
@@ -94,6 +103,7 @@ def list_feedback(
                 Feedback.user_id.like(like),
                 Feedback.rating.like(like),
                 Feedback.category.like(like),
+                Feedback.root_cause.like(like),
                 Feedback.content.like(like),
                 Feedback.question_snapshot.like(like),
                 Feedback.answer_snapshot.like(like),
@@ -127,16 +137,20 @@ def review_feedback(feedback_id: str, req: FeedbackReview, db: Session = Depends
     if status not in FEEDBACK_STATUSES:
         raise HTTPException(status_code=400, detail="反馈状态只能是 new/reviewed/resolved/ignored")
     admin_note = (req.admin_note or req.review_note or "").strip()[:1000]
+    root_cause = (req.root_cause or "").strip().lower()
+    if root_cause not in FEEDBACK_ROOT_CAUSES:
+        raise HTTPException(status_code=400, detail="反馈归因不合法")
     item.status = status
+    item.root_cause = root_cause
     item.review_note = admin_note
     item.admin_note = admin_note
     item.reviewed_at = datetime.utcnow()
     item.handled_by_user_id = actor.id
     item.handled_by_username = actor.username
     item.handled_at = datetime.utcnow()
-    audit(db, actor, "feedback.review", "feedback", item.id, {"status": item.status, "admin_note": admin_note})
+    audit(db, actor, "feedback.review", "feedback", item.id, {"status": item.status, "admin_note": admin_note, "root_cause": root_cause})
     db.commit()
-    return {"ok": True, "id": item.id, "status": item.status, "admin_note": admin_note, "handled_by_username": actor.username}
+    return {"ok": True, "id": item.id, "status": item.status, "admin_note": admin_note, "root_cause": root_cause, "handled_by_username": actor.username}
 
 
 @router.delete("/api/admin/feedback/{feedback_id}")
@@ -159,6 +173,9 @@ def bulk_feedback_action(req: FeedbackBulkAction, db: Session = Depends(get_db),
     if status not in FEEDBACK_STATUSES:
         raise HTTPException(status_code=400, detail="反馈状态只能是 new/reviewed/resolved/ignored")
     admin_note = (req.admin_note or "").strip()[:1000]
+    root_cause = (req.root_cause or "").strip().lower()
+    if root_cause not in FEEDBACK_ROOT_CAUSES:
+        raise HTTPException(status_code=400, detail="反馈归因不合法")
     rows = db.execute(select(Feedback).where(Feedback.id.in_(ids))).scalars().all()
     if not rows:
         raise HTTPException(status_code=404, detail="反馈不存在")
@@ -166,6 +183,7 @@ def bulk_feedback_action(req: FeedbackBulkAction, db: Session = Depends(get_db),
     now = datetime.utcnow()
     for item in rows:
         item.status = status
+        item.root_cause = root_cause
         item.review_note = admin_note
         item.admin_note = admin_note
         item.reviewed_at = now
@@ -173,9 +191,9 @@ def bulk_feedback_action(req: FeedbackBulkAction, db: Session = Depends(get_db),
         item.handled_by_username = actor.username
         item.handled_at = now
         updated.append(item.id)
-    audit(db, actor, "feedback.bulk_update", "feedback", ",".join(updated), {"status": status, "count": len(updated), "admin_note": admin_note})
+    audit(db, actor, "feedback.bulk_update", "feedback", ",".join(updated), {"status": status, "count": len(updated), "admin_note": admin_note, "root_cause": root_cause})
     db.commit()
-    return {"ok": True, "count": len(updated), "ids": updated, "status": status, "admin_note": admin_note}
+    return {"ok": True, "count": len(updated), "ids": updated, "status": status, "admin_note": admin_note, "root_cause": root_cause}
 
 
 @router.get("/api/admin/audit-logs")

@@ -34,6 +34,7 @@
 | `bcrypt` / `passlib[bcrypt]` | bcrypt 4.3.0 / passlib 1.7.4 | 密码哈希与旧 SHA256 哈希兼容迁移 |
 | `PyJWT` | 2.10.1 | JWT 令牌签发与验证 |
 | `python-multipart` | 0.0.19 | 文件上传解析（UploadFile） |
+| `pytest` | 8.4.2 | 后端单元测试框架，默认运行 `backend/tests/unit/` |
 
 ---
 

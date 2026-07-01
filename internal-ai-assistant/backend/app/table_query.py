@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Document, DocumentTableRow, User, document_group_link
-from .table_plan import AGGREGATE_OPERATION_LABELS, COLUMN_ALIASES, COLUMN_LABELS, QUERY_OPERATION_LABELS, clean as plan_clean, describe_table_query_plan, format_filter_condition, format_filter_groups, parse_table_query_plan
+from .table_plan import AGGREGATE_OPERATION_LABELS, COLUMN_ALIASES, COLUMN_LABELS, QUERY_OPERATION_LABELS, clean as plan_clean, describe_table_query_plan, format_filter_condition, format_filter_groups, parse_table_query_plan, result_limit
 from .table_schema import infer_column_semantics, semantic_value
 
 TABLE_QUERY_VERBS = (
@@ -24,6 +24,17 @@ TABLE_QUERY_VERBS = (
     "规则",
     "多少个",
     "有多少",
+    "什么时候",
+    "哪天",
+    "几号",
+    "谁",
+    "哪位",
+    "是否",
+    "有没有",
+    "有无",
+    "开具完成",
+    "开好",
+    "完成了吗",
 )
 
 TABLE_STRUCTURE_TERMS = (
@@ -51,11 +62,21 @@ TABLE_BUSINESS_TERMS = (
     "公积金",
     "缴费",
     "缴款",
+    "账户",
+    "银行账户",
+    "社保账户",
+    "公积金账户",
+    "社保公积金账户",
+    "当前进度",
+    "比例",
+    "派单",
     "截止时间",
     "预计缴款时间",
     "操作规则",
     "缴费规则",
     "时间节点",
+    "时间表",
+    "后道对接人",
     "分公司",
     "公司名称",
     "开设公司",
@@ -80,10 +101,13 @@ NON_TABLE_PROCESS_TERMS = (
 )
 
 TABLE_TIME_TERMS = (
+    "派单",
     "截止时间",
     "预计缴款时间",
     "操作规则",
     "时间节点",
+    "时间表",
+    "后道对接人",
 )
 
 
@@ -607,10 +631,6 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     branch_completion = plan.branch_completion_filter
     group_by = plan.group_by
     distinct_by = plan.distinct_by
-    query_op = plan.query_op
-    value_filters = plan.filters
-    filter_logic = plan.filter_logic
-    filter_groups = plan.filter_groups
     aggregate_op = plan.aggregate_op
     measure_column = plan.measure_column
     metrics = plan.metrics
@@ -618,7 +638,7 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     time_value = plan.time_value
     select_columns = plan.select_columns
     sort_by = plan.sort_by or "desc"
-    result_limit = max(1, min(100, int(plan.limit or 20)))
+    explicit_limit = result_limit(question, default=0)
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
     answer_data = _build_table_answer_data(
         data_rows,
@@ -629,55 +649,57 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
         metrics=metrics,
     )
 
-    lines = ["## 表格统计结果"]
+    def limited(items: list[Any]) -> list[Any]:
+        return items[:explicit_limit] if explicit_limit else items
+
+    def append_notice_if_limited(total: int) -> None:
+        if explicit_limit and total > explicit_limit:
+            lines.append(f"说明：已按你的要求只显示前 {explicit_limit} 项，其余可通过下方溯源查看。")
+
+    def row_parts(item: dict) -> list[str]:
+        row = item.get("table_row") or {}
+        semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
+        parts: list[str] = []
+        if select_columns:
+            for column in select_columns:
+                value = _first_alias_value(row, column, semantic_map)
+                if value:
+                    parts.append(f"{COLUMN_LABELS.get(column, column)}={value}")
+        for key in PREFERRED_TABLE_PREVIEW_COLUMNS:
+            value = _clean(row.get(key, ""))
+            if value:
+                parts.append(f"{key}={value}")
+        if not parts:
+            parts = [f"{k}={_clean(v)}" for k, v in list(row.items())[:8] if _clean(v)]
+        return list(dict.fromkeys(parts))[:12]
+
+    lines = []
     measure_label = COLUMN_LABELS.get(measure_column, measure_column or "指标")
     aggregate_label = AGGREGATE_OPERATION_LABELS.get(aggregate_op, aggregate_op)
     aggregate_result = _aggregate_result(aggregate_op, answer_data.aggregate_values) if aggregate_op else None
+
     if metrics and len(metrics) > 1:
-        lines.append(f"结论：已按 {COLUMN_LABELS.get(group_by, group_by or '分组')} 生成 {len(metrics)} 个统计指标；本次共命中 {len(data_rows)} 条记录。")
+        lines.append(f"结论：已按 {COLUMN_LABELS.get(group_by, group_by or '分组')} 生成 {len(metrics)} 个统计指标，共命中 {len(data_rows)} 条记录。")
     elif aggregate_op:
         result_text = _format_number(aggregate_result) if aggregate_result is not None else "无可计算结果"
-        lines.append(f"结论：{measure_label}{aggregate_label}为 {result_text}，基于 {len(answer_data.aggregate_values)} 条可计算记录；本次共命中 {len(data_rows)} 条记录。")
+        lines.append(f"结论：{measure_label}{aggregate_label}为 {result_text}，基于 {len(answer_data.aggregate_values)} 条可计算记录。")
     elif distinct_by:
         unit = "个城市" if distinct_by == "city" else "家公司"
-        lines.append(f"结论：共有 {len(answer_data.distinct_values)} {unit}，涉及 {len(data_rows)} 条命中记录。")
-        if answer_data.distinct_values:
-            lines.append(f"去重结果：{'、'.join(answer_data.distinct_values[:30])}" + ("。" if len(answer_data.distinct_values) <= 30 else f" 等，另有 {len(answer_data.distinct_values) - 30} 项未展开。"))
+        lines.append(f"结论：共有 {len(answer_data.distinct_values)} {unit}。")
     else:
         lines.append(f"结论：共有 {len(data_rows)} {count_unit}命中记录。")
-    lines.append("")
-    lines.append("### 统计口径")
-    plan_explanation = describe_table_query_plan(plan)
-    op_label = QUERY_OPERATION_LABELS.get(query_op, query_op)
-    if plan_explanation.get("summary"):
-        lines.append(f"- 计划解释：{plan_explanation['summary']}。")
-    lines.append(f"- 查询操作：{op_label}。")
+
+    short_notes: list[str] = []
     if branch_completion:
-        lines.append("- 仅统计同时满足：银行账户完成、社保公积金账户完成、公积金比例有值、公司名称有值的表格数据行。")
-    else:
-        lines.append("- 仅统计本次表格检索命中的数据行，已排除表头行；同一表格行只计 1 次。")
+        short_notes.append("条件：银行账户、社保公积金账户、公积金比例、公司名称均已完成/有值。")
+    if plan.filters:
+        filter_text = format_filter_groups(plan.filter_groups, plan.filter_logic) or "；".join(format_filter_condition(item) for item in plan.filters)
+        if filter_text:
+            short_notes.append(f"条件：{filter_text}。")
     if time_grain and time_value:
-        lines.append(f"- 时间范围：{time_value}。")
-    if value_filters:
-        filter_text = format_filter_groups(filter_groups, filter_logic) or "；".join(format_filter_condition(item) for item in value_filters)
-        lines.append(f"- 过滤条件：{filter_text}。")
-    if metrics and len(metrics) > 1:
-        metric_text = "、".join(metric.get("label") or COLUMN_LABELS.get(metric.get("column", ""), metric.get("op", "")) for metric in metrics)
-        lines.append(f"- 统计指标：{metric_text}。")
-    elif aggregate_op:
-        lines.append(f"- 聚合方式：{COLUMN_LABELS.get(measure_column, measure_column or '指标')} {aggregate_label}。")
-    if select_columns:
-        select_text = "、".join(COLUMN_LABELS.get(column, column) for column in select_columns)
-        lines.append(f"- 展示字段：{select_text}。")
-    if distinct_by:
-        label = "城市" if distinct_by == "city" else "公司"
-        lines.append(f"- 对命中的 `{label}` 列按非空值去重统计。")
-    if group_by or aggregate_op:
-        order_label = "升序" if sort_by == "asc" else "降序"
-        lines.append(f"- 结果排序：按结果值{order_label}，最多展开 {result_limit} 项。")
-    lines.append(f"- 来源范围：{len(answer_data.docs)} 个文件/Sheet 分组。")
-    if answer_data.hit_columns:
-        lines.append(f"- 命中列：{'、'.join(answer_data.hit_columns[:12])}")
+        short_notes.append(f"时间范围：{time_value}。")
+    if short_notes:
+        lines.append(short_notes[0])
     lines.append("")
 
     group_aggregate_results = {
@@ -686,11 +708,12 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
         if (result := _aggregate_result(aggregate_op, values)) is not None
     }
     result_sort_key = (lambda item: (item[1], item[0])) if sort_by == "asc" else (lambda item: (-item[1], item[0]))
+
     if metrics and len(metrics) > 1 and group_by:
         group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
-        lines.append(f"### 按{group_label}多指标统计")
         ranked_groups = sorted(answer_data.group_counts.items(), key=result_sort_key)
-        for value, count in ranked_groups[:result_limit]:
+        lines.append("### 统计结果")
+        for value, count in limited(ranked_groups):
             metric_parts = [f"{group_label}={value}", f"数量={count}"]
             for metric in metrics:
                 if metric.get("op") == "count":
@@ -704,55 +727,40 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
                 formatted = _format_number(float(result)) if isinstance(result, float) else str(result)
                 metric_parts.append(f"{metric_label}={formatted}")
             lines.append("- " + " | ".join(metric_parts))
-        if len(answer_data.group_counts) > result_limit:
-            lines.append(f"- 另有 {len(answer_data.group_counts) - result_limit} 个分组未展开。")
+        append_notice_if_limited(len(ranked_groups))
         lines.append("")
     elif group_aggregate_results:
         group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
-        lines.append(f"### 按{group_label}{aggregate_label}{measure_label}")
         ranked_results = sorted(group_aggregate_results.items(), key=result_sort_key)
-        for value, result in ranked_results[:result_limit]:
+        lines.append("### 统计结果")
+        for value, result in limited(ranked_results):
             count = len(answer_data.group_aggregate_values.get(value, []))
-            lines.append(f"- {value}：{_format_number(result)}（{count} 条可计算记录）")
-        if len(group_aggregate_results) > result_limit:
-            lines.append(f"- 另有 {len(group_aggregate_results) - result_limit} 个分组未展开。")
+            lines.append(f"- {group_label}={value} | {measure_label}{aggregate_label}={_format_number(result)} | 可计算记录数={count}")
+        append_notice_if_limited(len(ranked_results))
         lines.append("")
-    elif answer_data.group_counts:
+    elif answer_data.group_counts and group_by:
         group_label = {"city": "城市", "province": "省份", "company": "公司"}.get(group_by, group_by)
-        lines.append(f"### 按{group_label}统计")
         ranked_counts = sorted(answer_data.group_counts.items(), key=result_sort_key)
-        for value, count in ranked_counts[:result_limit]:
-            lines.append(f"- {value}：{count} 条")
-        if len(answer_data.group_counts) > result_limit:
-            lines.append(f"- 另有 {len(answer_data.group_counts) - result_limit} 个分组未展开。")
+        lines.append("### 统计结果")
+        for value, count in limited(ranked_counts):
+            lines.append(f"- {group_label}={value} | 数量={count}")
+        append_notice_if_limited(len(ranked_counts))
+        lines.append("")
+    elif distinct_by and answer_data.distinct_values:
+        label = "城市" if distinct_by == "city" else "公司"
+        lines.append("### 明细列表")
+        for value in limited(answer_data.distinct_values):
+            lines.append(f"- {label}={value}")
+        append_notice_if_limited(len(answer_data.distinct_values))
         lines.append("")
 
-    lines.append("### 来源明细")
-    for (title, sheet), items in answer_data.docs.items():
-        lines.append(f"- {title}" + (f" / Sheet：{sheet}" if sheet else "") + f"：{len(items)} 行")
-    lines.append("")
+    detail_intent = any(term in compact_question for term in ("列出", "明细", "清单", "名单", "哪些", "哪几", "详情", "全部"))
+    show_detail = bool(branch_completion or plan.query_op in {"list", "retrieve"} or (select_columns and detail_intent))
+    if show_detail and data_rows:
+        lines.append("### 明细列表")
+        for item in data_rows:
+            parts = row_parts(item)
+            if parts:
+                lines.append("- " + " | ".join(parts))
 
-    lines.append("### 命中行预览")
-    for (title, sheet), items in answer_data.docs.items():
-        lines.append(f"#### {title}" + (f" / {sheet}" if sheet else ""))
-        for item in items[:20]:
-            row = item.get("table_row") or {}
-            semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
-            parts = []
-            if select_columns:
-                for column in select_columns:
-                    value = _first_alias_value(row, column, semantic_map)
-                    if value:
-                        parts.append(f"{COLUMN_LABELS.get(column, column)}={value}")
-            for key in PREFERRED_TABLE_PREVIEW_COLUMNS:
-                value = _clean(row.get(key, ""))
-                if value:
-                    parts.append(f"{key}={value}")
-            if not parts:
-                parts = [f"{k}={_clean(v)}" for k, v in list(row.items())[:8] if _clean(v)]
-            row_no = item.get("row_number") or ""
-            prefix = f"行{row_no}：" if row_no else "- "
-            lines.append(prefix + " | ".join(list(dict.fromkeys(parts))[:12]))
-        if len(items) > 20:
-            lines.append(f"- 另有 {len(items) - 20} 行未在预览中展开。")
-    return "\n".join(lines)
+    return "\n".join(line for line in lines if line is not None).strip()

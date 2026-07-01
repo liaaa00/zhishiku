@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory=$true)][string]$FrontendDir,
-  [Parameter(Mandatory=$true)][string]$LogFile
+  [Parameter(Mandatory=$true)][string]$LogFile,
+  [string]$BackendUrl = 'http://127.0.0.1:8000'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -8,6 +9,7 @@ $Host.UI.RawUI.WindowTitle = 'Internal AI Assistant Frontend 5174'
 
 Set-Location -LiteralPath $FrontendDir
 $env:BROWSER = 'none'
+$env:VITE_API_PROXY_TARGET = $BackendUrl
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogFile) | Out-Null
 Remove-Item -LiteralPath $LogFile -Force -ErrorAction SilentlyContinue
@@ -15,6 +17,7 @@ Remove-Item -LiteralPath $LogFile -Force -ErrorAction SilentlyContinue
 Write-Host '=== Internal AI Assistant Frontend ==='
 Write-Host "Folder: $FrontendDir"
 Write-Host "URL:    http://localhost:5174/chat"
+Write-Host "Backend proxy: $BackendUrl"
 Write-Host "Log:    $LogFile"
 Write-Host ''
 Write-Host 'Starting Vite dev server...'

@@ -40,7 +40,8 @@
       <article class="admin-stat-card wide" :class="{ 'admin-stat-card-warning': vectorStatus?.degraded }">
         <span>向量库状态</span>
         <strong>{{ vectorStatusLabel }}</strong>
-        <small>{{ vectorStatus?.message || '正在读取向量库状态' }}</small>
+        <small>{{ vectorBackendLabel }} · {{ vectorRetrievalLabel }}</small>
+        <small>{{ vectorStatusImpact }}</small>
       </article>
     </section>
 
@@ -51,6 +52,9 @@
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'users' }]" @click="jumpToTab('users')">员工</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'docs' }]" @click="jumpToTab('docs')">文档与权限</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'model' }]" @click="jumpToTab('model')">模型配置</button>
+        <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'feedback' }]" @click="jumpToTab('feedback')">反馈管理</button>
+        <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'evaluation' }]" @click="jumpToTab('evaluation')">评测面板</button>
+        <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'graph' }]" @click="jumpToTab('graph')">图谱管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'tasks' }]" @click="jumpToTab('tasks')">任务中心</button>
       </div>
       <div class="admin-quickbar-hint">轻量快捷入口，方便切换后台主要管理区域。· 最后刷新：{{ lastRefreshLabel }}</div>
@@ -87,6 +91,9 @@
                 <span>{{ groupDocumentCount(g.id) }} 份文档</span>
                 <span>ID {{ g.id }}</span>
               </div>
+              <div class="admin-row-actions admin-group-card-actions">
+                <el-button link type="danger" :loading="deletingGroupId === g.id" @click="deleteGroup(g)">删除岗位组</el-button>
+              </div>
             </li>
           </ul>
           <div v-else class="admin-dialog-empty admin-group-empty">暂无岗位组</div>
@@ -97,8 +104,8 @@
         <section class="admin-panel-card">
           <header class="admin-section-header">
             <div>
-              <h3>员工</h3>
-              <p>创建员工账号，并分配可访问的岗位组。</p>
+              <h3>本地员工管理</h3>
+              <p>创建本地员工账号并分配岗位组；员工来源、岗位组和权限均由本系统独立管理。</p>
             </div>
           </header>
           <div v-if="users.length" class="admin-list-toolbar">
@@ -119,24 +126,24 @@
               <button :class="{ active: userRoleFilter === 'unassigned' }" type="button" @click="userRoleFilter = 'unassigned'">
                 未分配 {{ userUnassignedCount }}
               </button>
+              <button :class="{ active: userRoleFilter === 'pending' }" type="button" @click="userRoleFilter = 'pending'">
+                待审批 {{ userPendingCount }}
+              </button>
+              <button :class="{ active: userRoleFilter === 'inactive' }" type="button" @click="userRoleFilter = 'inactive'">
+                停用/拒绝 {{ userInactiveCount }}
+              </button>
             </div>
             <div class="admin-list-summary admin-user-summary">当前显示 {{ filteredUsers.length }} / {{ users.length }} 名员工</div>
           </div>
           <div class="admin-form-row admin-form-row-wrap">
-            <div class="admin-feishu-field">
-              <el-input v-model="user.username" placeholder="飞书 open_id / user_id" class="admin-input-sm" />
-              <button type="button" @click="pickFeishuUser">从飞书选人</button>
-            </div>
+            <el-input v-model="user.username" placeholder="员工账号" class="admin-input-sm" />
             <el-input v-model="user.password" placeholder="密码" class="admin-input-sm" />
-            <div class="admin-feishu-field admin-feishu-field-wide">
-              <el-select v-model="user.group_ids" multiple placeholder="所属岗位组" class="admin-select-md">
-                <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
-              </el-select>
-              <button type="button" @click="pickFeishuDepartments">从飞书选部门</button>
-            </div>
+            <el-select v-model="user.group_ids" multiple placeholder="所属岗位组" class="admin-select-md">
+              <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+            </el-select>
             <el-checkbox v-model="user.is_admin">管理员</el-checkbox>
             <el-button type="primary" @click="createUser">新增员工</el-button>
-            <span class="admin-feishu-runtime">{{ feishuRuntimeLabel }}</span>
+            <span class="admin-model-helper">本地账号仅使用系统用户名登录；岗位组由本系统独立维护。</span>
           </div>
           <div v-if="users.length && !filteredUsers.length" class="admin-dialog-empty admin-user-empty">没有匹配的员工。可以清空搜索词或切换角色筛选。</div>
           <el-table :data="filteredUsers" class="admin-table admin-user-table">
@@ -153,8 +160,24 @@
                 <span :class="['admin-role-pill', userRoleKind(scope.row)]">{{ userRoleLabel(scope.row) }}</span>
               </template>
             </el-table-column>
+            <el-table-column label="状态" width="120">
+              <template #default="scope">
+                <span :class="['admin-status-pill', scope.row.is_active ? 'ready' : 'waiting']">{{ scope.row.is_active ? '已启用' : '未启用' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="审批" width="150">
+              <template #default="scope">
+                <span :class="['admin-status-pill', userApprovalKind(scope.row)]">{{ userApprovalLabel(scope.row) }}</span>
+              </template>
+            </el-table-column>
             <el-table-column label="岗位组" min-width="260">
               <template #default="scope">{{ userGroupsText(scope.row) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="180">
+              <template #default="scope">
+                <el-button v-if="isUserPending(scope.row)" link type="primary" @click="openApprovalDialog(scope.row)">审批</el-button>
+                <el-button v-else link type="primary" @click="toggleUserStatus(scope.row)">{{ scope.row.is_active ? '停用' : '启用' }}</el-button>
+              </template>
             </el-table-column>
           </el-table>
         </section>
@@ -227,17 +250,46 @@
                 失败 {{ docFailedCount }}
               </button>
             </div>
+            <div class="admin-filter-row" aria-label="文档体检筛选">
+              <button :class="{ active: docQualityFilter === 'all' }" type="button" @click="docQualityFilter = 'all'">
+                全部体检 {{ docs.length }}
+              </button>
+              <button :class="{ active: docQualityFilter === 'good' }" type="button" @click="docQualityFilter = 'good'">
+                状态良好 {{ docQualityCounts.good }}
+              </button>
+              <button :class="{ active: docQualityFilter === 'needs_review' }" type="button" @click="docQualityFilter = 'needs_review'">
+                需要复核 {{ docQualityCounts.needs_review }}
+              </button>
+              <button :class="{ active: docQualityFilter === 'poor' }" type="button" @click="docQualityFilter = 'poor'">
+                质量较差 {{ docQualityCounts.poor }}
+              </button>
+              <button :class="{ active: docQualityFilter === 'blocked' }" type="button" @click="docQualityFilter = 'blocked'">
+                严重异常 {{ docQualityCounts.blocked }}
+              </button>
+              <button :class="{ active: docQualityFilter === 'unknown' }" type="button" @click="docQualityFilter = 'unknown'">
+                未体检 {{ docQualityCounts.unknown }}
+              </button>
+              <el-button
+                size="small"
+                type="warning"
+                :loading="bulkReparsingQualityDocs"
+                :disabled="!qualityReparseCandidateCount"
+                @click="bulkReparseQualityDocs"
+              >
+                批量重新解析异常文件 {{ qualityReparseCandidateCount }}
+              </el-button>
+            </div>
             <div class="admin-doc-summary">当前显示 {{ filteredDocs.length }} / {{ docs.length }} 份文档</div>
           </div>
 
-          <div v-if="docs.length && !filteredDocs.length" class="admin-dialog-empty admin-doc-empty">没有匹配的文档。可以清空搜索词或切换状态筛选。</div>
+          <div v-if="docs.length && !filteredDocs.length" class="admin-dialog-empty admin-doc-empty">没有匹配的文档。可以清空搜索词、切换状态或体检筛选。</div>
 
           <div v-if="filteredDocs.length" class="admin-doc-list" aria-label="文档与权限列表">
             <article
               v-for="doc in filteredDocs"
               :key="doc.id"
               :id="`admin-doc-${doc.id}`"
-              :class="['admin-doc-card-row', { 'admin-doc-card-row--focus': latestUploadDoc && String(latestUploadDoc.id) === String(doc.id) }]"
+              :class="['admin-doc-card-row', docQualityRowClass(doc), { 'admin-doc-card-row--focus': latestUploadDoc && String(latestUploadDoc.id) === String(doc.id) }]"
             >
               <div class="admin-doc-card-main">
                 <div class="admin-doc-card-head">
@@ -245,7 +297,10 @@
                     <strong>{{ docTitle(doc) }}</strong>
                     <span>{{ docFilename(doc) }}</span>
                   </div>
-                  <span :class="['admin-status-pill', docStatusKind(doc)]">{{ docStatusLabel(doc) }}</span>
+                  <div class="admin-doc-status-stack">
+                    <span :class="['admin-status-pill', docStatusKind(doc)]">{{ docStatusLabel(doc) }}</span>
+                    <span :class="['admin-quality-pill', documentQualityKind(doc)]">{{ documentQualityLabel(doc) }}</span>
+                  </div>
                 </div>
                 <p>{{ docDescription(doc) }}</p>
                 <div class="admin-doc-card-meta">
@@ -273,6 +328,7 @@
                     {{ openingDocId === doc.id ? '打开中…' : '打开原文' }}
                   </el-button>
                   <el-button link type="primary" @click="openDocumentPageIndex(doc)">查看结构树</el-button>
+                  <el-button link type="primary" @click="openDocumentQuality(doc)">文件体检</el-button>
                   <el-button link @click="openChunkEditor(doc)">修改索引片段</el-button>
                   <el-button link :disabled="deletingDocId === doc.id || rebuildingPageIndexDocId === doc.id || reparsingDocId === doc.id" @click="reparseDocument(doc)">
                     {{ reparsingDocId === doc.id ? '解析中…' : '重新解析' }}
@@ -297,9 +353,13 @@
               <h3>任务中心</h3>
               <p>查看文档解析、重新解析、PageIndex 构建等后台任务状态，并对失败任务进行重试。</p>
             </div>
-            <el-button :disabled="loadingTasks" @click="loadTasks">
-              {{ loadingTasks ? '刷新中…' : '刷新任务' }}
-            </el-button>
+            <div class="admin-row-actions admin-task-header-actions">
+              <span v-if="taskPolling" class="admin-auto-refresh-hint">自动刷新中</span>
+              <span v-else-if="taskLastRefreshLabel" class="admin-task-refresh-time">上次刷新 {{ taskLastRefreshLabel }}</span>
+              <el-button :disabled="loadingTasks" @click="loadTasks(true)">
+                {{ loadingTasks ? '刷新中…' : '刷新任务' }}
+              </el-button>
+            </div>
           </header>
 
           <div v-if="tasks.length" class="admin-list-toolbar admin-task-toolbar">
@@ -319,6 +379,8 @@
               <button :class="{ active: taskTypeFilter === 'chat_attachment_parse' }" type="button" @click="taskTypeFilter = 'chat_attachment_parse'">聊天附件 {{ taskTypeCount('chat_attachment_parse') }}</button>
               <button :class="{ active: taskTypeFilter === 'page_index' }" type="button" @click="taskTypeFilter = 'page_index'">高级索引 {{ taskTypeCount('page_index') }}</button>
               <button :class="{ active: taskTypeFilter === 'page_index_rebuild' }" type="button" @click="taskTypeFilter = 'page_index_rebuild'">重建索引 {{ taskTypeCount('page_index_rebuild') }}</button>
+              <button :class="{ active: taskTypeFilter === 'graph_extract' }" type="button" @click="taskTypeFilter = 'graph_extract'">图谱抽取 {{ taskTypeCount('graph_extract') }}</button>
+              <button :class="{ active: taskTypeFilter === 'graph_rebuild' }" type="button" @click="taskTypeFilter = 'graph_rebuild'">重建图谱 {{ taskTypeCount('graph_rebuild') }}</button>
               <button :class="{ active: taskTypeFilter === 'ocr' }" type="button" @click="taskTypeFilter = 'ocr'">OCR {{ taskTypeCount('ocr') }}</button>
               <button :class="{ active: taskTypeFilter === 'other' }" type="button" @click="taskTypeFilter = 'other'">其他 {{ taskTypeCount('other') }}</button>
             </div>
@@ -351,6 +413,7 @@
                   <span v-if="task.started_at">开始 {{ formatDateTime(task.started_at) }}</span>
                   <span v-if="task.finished_at">结束 {{ formatDateTime(task.finished_at) }}</span>
                 </div>
+                <div v-if="task.document_message" class="admin-task-error"><strong>解析详情：</strong>{{ task.document_message }}</div>
                 <div v-if="task.last_error" class="admin-task-error"><strong>失败原因：</strong>{{ task.last_error }}</div>
               </div>
               <div class="admin-row-actions admin-task-actions">
@@ -450,10 +513,12 @@
               </div>
               <span>向量库</span>
               <strong>{{ vectorStatusLabel }}</strong>
-              <p>{{ vectorStatus?.collection || '本地 SQLite' }}</p>
+              <p>{{ vectorBackendLabel }} · {{ vectorStatus?.collection || '本地 SQLite' }}</p>
               <div class="admin-model-test-result" :class="vectorStatus?.degraded ? 'failed' : (vectorStatus?.qdrant_ready ? 'ok' : 'idle')">
-                {{ vectorStatus?.message || '向量库状态未知' }}
+                {{ vectorRetrievalLabel }}
               </div>
+              <p class="admin-model-helper" :class="vectorStatus?.degraded ? 'warning' : ''">{{ vectorStatusImpact }}</p>
+              <p v-if="vectorStatus?.message" class="admin-model-helper">{{ vectorStatus.message }}</p>
               <span>Reranker</span>
               <strong>{{ modelConfig.reranker?.enabled ? (modelConfig.reranker?.model || modelConfig.model || 'deepseek-chat') : '未启用' }}</strong>
               <p>{{ modelConfig.reranker?.enabled ? `候选 ${modelConfig.reranker?.max_candidates || 24} · ${modelConfig.reranker?.ready ? 'ready' : '等待 API Key'}` : '当前使用规则精排' }}</p>
@@ -492,6 +557,41 @@
               <span>Confidence: <strong>{{ formatRetrievalScore(searchTestResult.confidence) }}</strong></span>
             </div>
             <p v-if="searchTestResult.retrieval_note" class="admin-model-helper">{{ searchTestResult.retrieval_note }}</p>
+            <p v-if="searchSourceQualityWarning" class="admin-model-helper warning">
+              {{ searchSourceQualityWarning }} · 受影响 {{ searchSourceQualityNotice.affected_document_count || searchSourceQualityNotice.affected_source_count || 0 }} 个来源
+            </p>
+
+            <div class="admin-retrieval-debug-overview">
+              <article>
+                <span>进入回答的片段</span>
+                <strong>{{ retrievalDebugSummary.answer_context_count ?? searchTestResult.source_count ?? 0 }}</strong>
+                <p>覆盖文档 {{ retrievalDebugSummary.unique_document_count ?? '-' }} 份</p>
+              </article>
+              <article>
+                <span>检索通道</span>
+                <strong>{{ formatDiagnosticValue(retrievalDebugSummary.channel_counts || {}) }}</strong>
+                <p>候选 {{ retrievalDebugSummary.candidate_count ?? searchTestResult.candidate_count ?? 0 }}</p>
+              </article>
+              <article :class="(retrievalDebugSummary.warnings || []).length ? 'is-warning' : ''">
+                <span>人工判断提示</span>
+                <strong>{{ (retrievalDebugSummary.warnings || []).length ? '需要核验' : '暂无明显风险' }}</strong>
+                <p>{{ formatDiagnosticList(retrievalDebugSummary.warnings) || '前几条来源可直接用于判断检索是否命中正确资料。' }}</p>
+              </article>
+            </div>
+
+            <section v-if="promptContextPreview.text" class="admin-search-context-preview">
+              <header>
+                <div>
+                  <strong>实际喂给回答模型的检索上下文</strong>
+                  <span>展示 {{ promptContextPreview.previewed_source_count || 0 }}/{{ promptContextPreview.source_count || 0 }} 条，单条最多 {{ promptContextPreview.max_chars_per_source || 0 }} 字</span>
+                </div>
+                <div>
+                  <button type="button" @click="searchContextPreviewOpen = !searchContextPreviewOpen">{{ searchContextPreviewOpen ? '收起' : '展开查看' }}</button>
+                  <button type="button" @click="copySearchPromptContext">复制上下文</button>
+                </div>
+              </header>
+              <pre v-if="searchContextPreviewOpen">{{ promptContextPreview.text }}</pre>
+            </section>
 
             <div class="admin-router-diagnostics">
               <article class="admin-router-diagnostic-card">
@@ -546,7 +646,7 @@
             </div>
 
             <div class="admin-doc-list">
-              <article v-for="item in searchTestResult.source_diagnostics || []" :key="`${item.rank}-${item.document_id}-${item.chunk_id || item.chunk_index}`" class="admin-doc-card-row">
+              <article v-for="item in searchTestResult.source_diagnostics || []" :key="`${item.rank}-${item.document_id}-${item.chunk_id || item.chunk_index}`" :class="['admin-doc-card-row', sourceDiagnosticQualityClass(item)]">
                 <div class="admin-doc-card-main">
                   <div class="admin-doc-card-head">
                     <div>
@@ -557,12 +657,17 @@
                       {{ item.retrieval_channel || (item.pageindex_source ? 'pageindex' : 'semantic') }}
                     </span>
                   </div>
-                  <p>{{ item.preview || '暂无片段预览' }}</p>
+                  <p class="admin-search-source-preview">{{ sourceDiagnosticText(item) || '暂无片段预览' }}</p>
+                  <div v-if="sourceDiagnosticHasMore(item)" class="admin-inline-actions">
+                    <button type="button" @click="toggleSearchSourceExpanded(item)">{{ expandedSearchSources[sourceDiagnosticKey(item)] ? '收起片段' : '展开完整片段' }}</button>
+                    <button type="button" @click="copyText(item.full_content || item.preview || '')">复制片段</button>
+                  </div>
                   <div class="admin-doc-card-meta">
                     <span>score {{ formatRetrievalScore(item.score) }}</span>
                     <span>rerank {{ formatRetrievalScore(item.rerank_score) }}</span>
                     <span v-if="item.llm_rerank_score !== undefined && item.llm_rerank_score !== null">llm {{ formatRetrievalScore(item.llm_rerank_score) }}</span>
                     <span>{{ item.location || `chunk ${item.chunk_index ?? '-'}` }}</span>
+                    <span v-if="sourceDiagnosticQualityLabel(item)">{{ sourceDiagnosticQualityLabel(item) }}</span>
                   </div>
                 </div>
                 <aside class="admin-doc-card-side">
@@ -574,6 +679,14 @@
                     <span>LLM 精排</span>
                     <strong>{{ item.llm_rerank_reason }}</strong>
                   </div>
+                  <div class="admin-doc-permission-box">
+                    <span>片段信息</span>
+                    <strong>{{ item.content_length || 0 }} 字 · {{ item.location || `chunk ${item.chunk_index ?? '-'}` }}</strong>
+                  </div>
+                  <div v-if="item.source_quality?.reasons?.length" class="admin-doc-permission-box">
+                    <span>质量原因</span>
+                    <strong>{{ formatDiagnosticList(item.source_quality.reasons) }}</strong>
+                  </div>
                   <div v-if="item.match_terms?.length" class="admin-chip-list">
                     <li v-for="term in item.match_terms.slice(0, 8)" :key="term">{{ term }}</li>
                   </div>
@@ -584,7 +697,433 @@
           </div>
         </section>
       </el-tab-pane>
+
+      <el-tab-pane label="反馈管理" name="feedback">
+        <section class="admin-panel-card admin-feedback-panel">
+          <header class="admin-section-header">
+            <div>
+              <h3>反馈管理</h3>
+              <p>查看用户对回答的反馈，判断是答案组织问题、检索问题还是资料问题。</p>
+            </div>
+            <el-button :disabled="loadingFeedback" @click="loadFeedback">
+              {{ loadingFeedback ? '刷新中…' : '刷新反馈' }}
+            </el-button>
+          </header>
+
+          <div class="admin-list-toolbar">
+            <label class="admin-search-box">
+              <span>搜索反馈</span>
+              <el-input v-model="feedbackSearch" clearable placeholder="按用户、问题、回答、反馈内容搜索" class="admin-input-search" />
+            </label>
+            <div class="admin-filter-row" aria-label="反馈状态筛选">
+              <button :class="{ active: feedbackStatusFilter === 'all' }" type="button" @click="feedbackStatusFilter = 'all'">全部 {{ feedbackItems.length }}</button>
+              <button :class="{ active: feedbackStatusFilter === 'new' }" type="button" @click="feedbackStatusFilter = 'new'">待处理 {{ feedbackNewCount }}</button>
+              <button :class="{ active: feedbackStatusFilter === 'reviewed' }" type="button" @click="feedbackStatusFilter = 'reviewed'">已查看 {{ feedbackReviewedCount }}</button>
+              <button :class="{ active: feedbackStatusFilter === 'resolved' }" type="button" @click="feedbackStatusFilter = 'resolved'">已解决 {{ feedbackResolvedCount }}</button>
+              <button :class="{ active: feedbackStatusFilter === 'ignored' }" type="button" @click="feedbackStatusFilter = 'ignored'">已忽略 {{ feedbackIgnoredCount }}</button>
+            </div>
+            <div class="admin-feedback-root-filter">
+              <span>问题归因</span>
+              <el-select v-model="feedbackRootCauseFilter" placeholder="全部归因" class="admin-select-md">
+                <el-option label="全部归因" value="all" />
+                <el-option v-for="item in feedbackRootCauseOptions" :key="item.value || 'empty'" :label="item.label" :value="item.value" />
+              </el-select>
+            </div>
+            <div class="admin-list-summary">当前显示 {{ filteredFeedback.length }} / {{ feedbackItems.length }} 条反馈</div>
+          </div>
+
+          <div v-if="loadingFeedback" class="admin-dialog-empty">正在加载反馈…</div>
+          <div v-else-if="feedbackItems.length && !filteredFeedback.length" class="admin-dialog-empty">没有匹配的反馈。可以切换状态或清空搜索词。</div>
+          <div v-else-if="filteredFeedback.length" class="admin-feedback-list">
+            <article v-for="item in filteredFeedback" :key="item.id" :class="['admin-feedback-card', feedbackStatusKind(item)]">
+              <div class="admin-feedback-card-main">
+                <div class="admin-feedback-head">
+                  <strong>{{ feedbackRatingLabel(item.rating) }} · {{ feedbackCategoryLabel(item.category) }}</strong>
+                  <div class="admin-feedback-head-tags">
+                    <span :class="['admin-feedback-cause', feedbackRootCauseClass(item.root_cause)]">{{ feedbackRootCauseLabel(item.root_cause) }}</span>
+                    <span :class="['admin-feedback-status', feedbackStatusKind(item)]">{{ feedbackStatusLabel(item.status) }}</span>
+                  </div>
+                </div>
+                <p class="admin-feedback-content">{{ item.content || '无反馈内容' }}</p>
+                <div class="admin-feedback-question">
+                  <span>问题</span>
+                  <p>{{ item.question || '未记录问题快照' }}</p>
+                </div>
+                <div class="admin-doc-card-meta">
+                  <span>{{ item.username || item.user_id || '未知用户' }}</span>
+                  <span>{{ feedbackCreatedTime(item) }}</span>
+                  <span>来源 {{ feedbackSourceCount(item) }}</span>
+                </div>
+              </div>
+              <aside class="admin-feedback-card-side">
+                <button type="button" @click="openFeedbackDetail(item)">查看详情</button>
+                <button v-if="item.question" type="button" @click="searchTestForm.question = item.question; jumpToTab('model'); runSearchTest()">运行检索诊断</button>
+              </aside>
+            </article>
+          </div>
+          <div v-else class="admin-dialog-empty">暂无用户反馈。</div>
+        </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="评测面板" name="evaluation">
+        <section class="admin-panel-card admin-evaluation-panel">
+          <header class="admin-section-header">
+            <div>
+              <h3>评测运营面板</h3>
+              <p>用人工维护的真实问题、用户反馈和文档状态持续观察检索效果；不会盲目相信自动生成问题。</p>
+            </div>
+            <div class="admin-row-actions">
+              <el-button :disabled="loadingEvaluation" @click="loadEvaluationOverview">
+                {{ loadingEvaluation ? '刷新中…' : '刷新面板' }}
+              </el-button>
+              <el-button type="primary" :loading="evaluationSuiteRunning" @click="runEvaluationSuite">
+                {{ evaluationSuiteRunning ? '评测中…' : '运行真实评测' }}
+              </el-button>
+            </div>
+          </header>
+
+          <section class="admin-stat-grid" aria-label="评测运营概览">
+            <article class="admin-stat-card">
+              <span>真实用例</span>
+              <strong>{{ evaluationOverview?.case_count || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card">
+              <span>可检索文档</span>
+              <strong>{{ evaluationOverview?.documents?.searchable || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card">
+              <span>失败用例</span>
+              <strong>{{ evaluationSuiteFailures.length }}</strong>
+            </article>
+            <article class="admin-stat-card wide" :class="{ 'admin-stat-card-warning': (evaluationOverview?.risk_signals || []).length }">
+              <span>风险提示</span>
+              <strong>{{ evaluationRiskSummary }}</strong>
+              <small>{{ evaluationOverview?.automation_note || '评测数据加载后显示自动化说明。' }}</small>
+            </article>
+          </section>
+
+          <div class="admin-form-row admin-form-row-wrap">
+            <el-input v-model="evaluationForm.question" placeholder="输入一个真实问题，或点击下方用例填入" class="admin-input-lg" />
+            <el-input-number v-model="evaluationForm.top_k" :min="1" :max="20" />
+            <el-button type="primary" :loading="evaluationCaseRunning" @click="runEvaluationCase">运行单题评测</el-button>
+          </div>
+
+          <div v-if="evaluationSuiteResult" class="admin-upload-result-card">
+            <div class="admin-upload-result-head">
+              <div>
+                <span>最近一次真实评测</span>
+                <strong>{{ evaluationSuiteResult.passed || 0 }} / {{ evaluationSuiteResult.total || 0 }} 通过</strong>
+                <p>通过率 {{ formatPercent(evaluationSuiteResult.pass_rate) }}</p>
+              </div>
+              <span :class="['admin-status-pill', evaluationSuiteResult.ok ? 'ready' : 'failed']">{{ evaluationSuiteResult.ok ? '通过' : '有失败' }}</span>
+            </div>
+            <div v-if="evaluationSuiteFailures.length" class="admin-feedback-list">
+              <article v-for="item in evaluationSuiteFailures.slice(0, 5)" :key="item.id" class="admin-feedback-card new">
+                <div class="admin-feedback-card-main">
+                  <div class="admin-feedback-head">
+                    <strong>{{ item.id || item.question }}</strong>
+                    <span class="admin-feedback-status new">失败</span>
+                  </div>
+                  <p class="admin-feedback-content">{{ item.question }}</p>
+                  <p class="admin-model-helper warning">{{ (item.errors || []).join('；') }}</p>
+                </div>
+                <aside class="admin-feedback-card-side">
+                  <button type="button" @click="runEvaluationCaseFromResult(item)">重跑单题</button>
+                </aside>
+              </article>
+            </div>
+          </div>
+
+          <div v-if="evaluationCaseResult" class="admin-search-result admin-evaluation-result">
+            <div class="admin-search-result-head">
+              <strong>单题检索结果</strong>
+              <span>Backend: <strong>{{ evaluationCaseResult.retrieval_backend || '-' }}</strong></span>
+              <span>Confidence: <strong>{{ formatRetrievalScore(evaluationCaseResult.confidence) }}</strong></span>
+              <span>来源 {{ evaluationCaseResult.source_count || 0 }}</span>
+            </div>
+            <p v-if="evaluationCaseResult.retrieval_note" class="admin-model-helper">{{ evaluationCaseResult.retrieval_note }}</p>
+            <div v-if="evaluationCaseSources.length" class="admin-search-source-list">
+              <article v-for="item in evaluationCaseSources.slice(0, 8)" :key="`${item.rank}-${item.document_id}-${item.chunk_id || item.chunk_index}`" class="admin-search-source-card">
+                <header>
+                  <strong>#{{ item.rank }} {{ item.document_title || item.filename || '未知文档' }}</strong>
+                  <span>{{ item.retrieval_channel || 'semantic' }}</span>
+                </header>
+                <div class="admin-doc-card-meta">
+                  <span>score {{ formatRetrievalScore(item.score) }}</span>
+                  <span>rerank {{ formatRetrievalScore(item.rerank_score) }}</span>
+                  <span>{{ item.location || '无位置信息' }}</span>
+                </div>
+                <p>{{ item.preview }}</p>
+              </article>
+            </div>
+            <div v-else class="admin-dialog-empty">没有命中可展示来源。</div>
+          </div>
+
+          <div v-if="evaluationCases.length" class="admin-feedback-list">
+            <article v-for="item in evaluationCases" :key="item.id" class="admin-feedback-card reviewed">
+              <div class="admin-feedback-card-main">
+                <div class="admin-feedback-head">
+                  <strong>{{ item.category || '未分类' }} · {{ item.id }}</strong>
+                  <span class="admin-feedback-status reviewed">真实用例</span>
+                </div>
+                <p class="admin-feedback-content">{{ item.question }}</p>
+                <p class="admin-model-helper">{{ item.why }}</p>
+              </div>
+              <aside class="admin-feedback-card-side">
+                <button type="button" @click="fillEvaluationQuestion(item)">填入问题</button>
+                <button type="button" @click="runEvaluationCaseFromResult(item)">运行</button>
+              </aside>
+            </article>
+          </div>
+          <div v-else-if="!loadingEvaluation" class="admin-dialog-empty">暂无真实评测用例。请先维护评测用例，再运行评测。</div>
+        </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="图谱管理" name="graph">
+        <section class="admin-panel-card admin-graph-panel">
+          <header class="admin-section-header">
+            <div>
+              <h3>知识图谱 MVP</h3>
+              <p>作为现有 RAG 的旁路增强层：自动从文档切片抽取实体关系，先在后台审核和测试，不直接替换聊天检索。</p>
+            </div>
+            <el-button :disabled="loadingGraph" @click="loadGraphData(true)">
+              {{ loadingGraph ? '刷新中…' : '刷新图谱' }}
+            </el-button>
+          </header>
+
+          <div class="admin-stat-grid admin-graph-stat-grid">
+            <article class="admin-stat-card">
+              <span>实体</span>
+              <strong>{{ graphOverview?.entity_count || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card">
+              <span>关系</span>
+              <strong>{{ graphOverview?.relation_count || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (graphOverview?.pending_count || 0) > 0 }">
+              <span>待审核关系</span>
+              <strong>{{ graphOverview?.pending_count || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card">
+              <span>已完成文档</span>
+              <strong>{{ graphOverview?.ready_document_count || 0 }}</strong>
+            </article>
+          </div>
+
+          <div class="admin-list-toolbar">
+            <label class="admin-search-box">
+              <span>图谱搜索测试</span>
+              <el-input v-model="graphSearchForm.question" clearable placeholder="例如：入职会触发哪些工单？" class="admin-input-lg" />
+            </label>
+            <el-button type="primary" :loading="graphSearchLoading" @click="runGraphSearchTest">测试图谱命中</el-button>
+          </div>
+
+          <div v-if="graphSearchResult" class="admin-search-result">
+            <div class="admin-search-summary">
+              <span>命中 <strong>{{ graphSearchResult.count || 0 }}</strong> 条图谱证据</span>
+            </div>
+            <div v-if="graphSearchContexts.length" class="admin-search-source-list">
+              <article v-for="item in graphSearchContexts" :key="item.graph?.id || item.chunk_id || item.document_id" class="admin-search-source-card">
+                <strong>{{ item.document_title || item.filename || '未知文档' }}</strong>
+                <p>{{ item.content }}</p>
+                <small>页码 {{ item.page_number || '未知' }} · 置信度 {{ formatRetrievalScore(item.score) }}</small>
+              </article>
+            </div>
+            <div v-else class="admin-dialog-empty">图谱暂未命中。可先确认文档图谱状态，或等待抽取任务完成。</div>
+          </div>
+
+          <section class="admin-graph-visual-card">
+            <div class="admin-graph-visual-head">
+              <div>
+                <h4>图谱关系视图</h4>
+                <p>展示已生成的实体关系，便于确认图谱是否真的构建成功。</p>
+              </div>
+              <span>{{ graphPreviewRelations.length }} 条样例关系</span>
+            </div>
+            <div v-if="graphPreviewRelations.length" class="admin-graph-edge-list">
+              <article v-for="relation in graphPreviewRelations.slice(0, 24)" :key="relation.id" class="admin-graph-edge-card">
+                <div class="admin-graph-edge-line">
+                  <span class="admin-graph-node source">{{ relation.source_entity_name }}</span>
+                  <span class="admin-graph-relation">{{ relation.relation_type }}</span>
+                  <span class="admin-graph-node target">{{ relation.target_entity_name }}</span>
+                </div>
+                <p>{{ relation.evidence_text || relation.description || '暂无证据文本' }}</p>
+                <small>{{ relation.source_document_title || relation.source_document_filename || '未知文档' }} · {{ graphRelationStatusLabel(relation.status) }} · 置信度 {{ formatRetrievalScore(relation.confidence) }}</small>
+              </article>
+            </div>
+            <div v-else-if="!loadingGraph" class="admin-dialog-empty">还没有可展示的图谱关系。请先选择文档重建图谱，完成后这里会显示实体关系。</div>
+          </section>
+
+          <div class="admin-graph-columns">
+            <section>
+              <h4>文档图谱状态</h4>
+              <div v-if="graphDocuments.length" class="admin-task-list">
+                <article v-for="doc in graphDocuments.slice(0, 12)" :key="doc.id" class="admin-task-card">
+                  <div class="admin-task-main">
+                    <div class="admin-task-head">
+                      <div>
+                        <strong>{{ doc.title || doc.filename }}</strong>
+                        <span>{{ doc.filename }}</span>
+                      </div>
+                      <span :class="['admin-task-status-pill', graphStatusKind(doc.graph?.status)]">{{ graphStatusLabel(doc.graph?.status) }}</span>
+                    </div>
+                    <p>{{ graphDocumentSummary(doc) }}</p>
+                    <div class="admin-task-meta">
+                      <span>实体 {{ doc.graph?.entity_count || 0 }}</span>
+                      <span>关系 {{ doc.graph?.relation_count || 0 }}</span>
+                      <span>待审 {{ doc.graph?.pending_count || 0 }}</span>
+                    </div>
+                    <div class="admin-task-meta admin-graph-detail">
+                      <span>{{ graphDocumentDetail(doc) || '暂无更新时间' }}</span>
+                    </div>
+                    <p class="admin-model-helper">{{ graphStatusHint(doc.graph?.status) }}</p>
+                    <div v-if="graphDocumentFailure(doc)" class="admin-task-error"><strong>失败原因：</strong>{{ graphDocumentFailure(doc) }}</div>
+                  </div>
+                  <div class="admin-row-actions admin-task-actions">
+                    <el-button size="small" :disabled="rebuildingGraphDocId === doc.id" @click="rebuildDocumentGraph(doc)">
+                      {{ rebuildingGraphDocId === doc.id ? '已入队…' : '重建图谱' }}
+                    </el-button>
+                    <el-button size="small" plain @click="jumpToTab('tasks')">去任务中心</el-button>
+                  </div>
+                </article>
+              </div>
+              <div v-else-if="!loadingGraph" class="admin-dialog-empty">暂无文档图谱状态。</div>
+            </section>
+
+            <section>
+              <h4>待审核关系</h4>
+              <div v-if="graphRelations.length" class="admin-feedback-list">
+                <article v-for="relation in graphRelations.slice(0, 12)" :key="relation.id" class="admin-feedback-card reviewed">
+                  <div class="admin-feedback-card-main">
+                    <div class="admin-feedback-head">
+                      <strong>{{ relation.source_entity_name }} → {{ relation.target_entity_name }}</strong>
+                      <span class="admin-feedback-status reviewed">{{ graphRelationStatusLabel(relation.status) }}</span>
+                    </div>
+                    <p class="admin-feedback-content">{{ relation.relation_type }}：{{ relation.evidence_text || relation.description }}</p>
+                    <p class="admin-model-helper">{{ relation.source_document_title || relation.source_document_filename }} · 置信度 {{ formatRetrievalScore(relation.confidence) }}</p>
+                  </div>
+                  <aside class="admin-feedback-card-side">
+                    <button type="button" @click="reviewGraphRelation(relation, 'confirmed')">确认</button>
+                    <button type="button" @click="reviewGraphRelation(relation, 'ignored')">忽略</button>
+                  </aside>
+                </article>
+              </div>
+              <div v-else-if="!loadingGraph" class="admin-dialog-empty">暂无待审核关系。</div>
+            </section>
+          </div>
+        </section>
+      </el-tab-pane>
     </el-tabs>
+
+    <el-drawer
+      v-model="feedbackDetailVisible"
+      title="反馈详情"
+      direction="rtl"
+      size="min(820px, calc(100vw - 32px))"
+      class="admin-pageindex-drawer admin-feedback-drawer"
+    >
+      <div v-if="feedbackDetailLoading" class="admin-dialog-empty">正在加载反馈详情…</div>
+      <div v-else-if="feedbackDetail" class="admin-pageindex-drawer-body admin-feedback-detail">
+        <div class="admin-pageindex-drawer-meta">
+          <span>{{ feedbackRatingLabel(feedbackDetail.rating) }} · {{ feedbackCategoryLabel(feedbackDetail.category) }}</span>
+          <strong>{{ feedbackDetail.username || feedbackDetail.user_id || '未知用户' }}</strong>
+          <p>{{ feedbackCreatedTime(feedbackDetail) }} · {{ feedbackStatusLabel(feedbackDetail.status) }} · {{ feedbackRootCauseLabel(feedbackDetail.root_cause) }}</p>
+        </div>
+
+        <section class="admin-feedback-detail-section">
+          <h4>用户反馈</h4>
+          <p>{{ feedbackDetail.content || '无反馈内容' }}</p>
+        </section>
+
+        <section class="admin-feedback-detail-section">
+          <h4>用户问题</h4>
+          <p>{{ feedbackDetail.question || '未记录问题快照' }}</p>
+          <div class="admin-feedback-actions">
+            <button v-if="feedbackDetail.question" type="button" class="admin-feedback-action" :disabled="feedbackCompareLoading" @click="runFeedbackCompareSearch">
+              {{ feedbackCompareLoading ? '正在重跑检索…' : '重跑检索做对照' }}
+            </button>
+            <button v-if="feedbackDetail.question" type="button" class="admin-feedback-action" @click="runFeedbackQuestionSearch">打开完整检索诊断</button>
+          </div>
+        </section>
+
+        <section class="admin-feedback-detail-section">
+          <h4>AI 回答</h4>
+          <pre>{{ feedbackDetail.answer || '未记录回答快照' }}</pre>
+        </section>
+
+        <section class="admin-feedback-detail-section">
+          <h4>引用来源</h4>
+          <div v-if="feedbackDetail.sources?.length" class="admin-feedback-source-list">
+            <article v-for="(source, index) in feedbackDetail.sources" :key="`${source.document_id || source.filename || index}-${source.chunk_id || source.chunk_index || index}`">
+              <strong>#{{ index + 1 }} {{ feedbackSourceTitle(source) }}</strong>
+              <span>{{ source.location || source.filename || source.document_id }}</span>
+              <p>{{ source.content || source.snippet || source.excerpt || '暂无来源摘要' }}</p>
+            </article>
+          </div>
+          <div v-else class="admin-dialog-empty">这条反馈没有记录引用来源。</div>
+        </section>
+
+        <section class="admin-feedback-detail-section admin-feedback-compare-section">
+          <h4>检索对照</h4>
+          <div class="admin-feedback-compare-summary" :class="feedbackCompareResult && feedbackCompareOverlap.matched_count === 0 && feedbackCompareOriginalSources.length && feedbackCompareCurrentSources.length ? 'is-warning' : ''">
+            <strong>{{ feedbackCompareSummary }}</strong>
+            <span v-if="feedbackCompareResult">当前命中 {{ feedbackCompareCurrentSources.length }} 条 · 原引用 {{ feedbackCompareOriginalSources.length }} 条 · 置信度 {{ formatRetrievalScore(feedbackCompareResult.confidence) }}</span>
+            <span v-else>点击“重跑检索做对照”，即可比较这条反馈当时的引用来源和当前检索命中。</span>
+          </div>
+          <div v-if="feedbackCompareResult?.source_warning" class="admin-model-helper warning">{{ feedbackCompareResult.source_warning }}</div>
+          <div v-if="feedbackCompareCurrentSources.length" class="admin-feedback-compare-grid">
+            <article v-for="item in feedbackCompareCurrentSources.slice(0, 6)" :key="`${item.rank}-${item.document_id}-${item.chunk_id || item.chunk_index}`" :class="['admin-feedback-compare-card', feedbackCurrentSourceMatched(item) ? 'matched' : '']">
+              <div>
+                <strong>#{{ item.rank }} {{ item.document_title }}</strong>
+                <span>{{ feedbackCurrentSourceMatched(item) ? '与原引用重合' : '当前新命中' }}</span>
+              </div>
+              <p>{{ item.preview || '暂无片段预览' }}</p>
+              <div class="admin-doc-card-meta">
+                <span>score {{ formatRetrievalScore(item.score) }}</span>
+                <span>rerank {{ formatRetrievalScore(item.rerank_score) }}</span>
+                <span>{{ item.location || `chunk ${item.chunk_index ?? '-'}` }}</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="admin-feedback-detail-section">
+          <h4>处理备注</h4>
+          <label class="admin-feedback-root-select">
+            <span>问题归因</span>
+            <el-select v-model="feedbackRootCause" placeholder="选择问题归因">
+              <el-option v-for="item in feedbackRootCauseOptions" :key="item.value || 'empty'" :label="item.label" :value="item.value" />
+            </el-select>
+          </label>
+          <el-input v-model="feedbackReviewNote" type="textarea" :autosize="{ minRows: 3, maxRows: 6 }" maxlength="1000" show-word-limit placeholder="记录排查结论，例如：检索命中文档不对 / 来源不足 / 回答组织问题" />
+          <div class="admin-feedback-actions">
+            <button type="button" :disabled="feedbackReviewBusy" @click="reviewFeedback('reviewed')">标记已查看</button>
+            <button type="button" :disabled="feedbackReviewBusy" @click="reviewFeedback('resolved')">标记已解决</button>
+            <button type="button" :disabled="feedbackReviewBusy" @click="reviewFeedback('ignored')">忽略</button>
+          </div>
+        </section>
+      </div>
+      <div v-else class="admin-dialog-empty">请选择一条反馈。</div>
+    </el-drawer>
+
+    <el-dialog v-model="approvalDialogVisible" title="账号审批" width="560px">
+      <div v-if="approvalUser" class="admin-approval-dialog">
+        <p><strong>{{ approvalUser.username }}</strong> 正在等待管理员审批。通过后账号会立即启用，拒绝后账号保持不可登录。</p>
+        <label class="admin-feedback-root-select">
+          <span>通过后分配岗位组</span>
+          <el-select v-model="approvalForm.group_ids" multiple placeholder="选择岗位组" class="admin-full-select">
+            <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+          </el-select>
+        </label>
+        <el-checkbox v-model="approvalForm.is_admin">设为管理员</el-checkbox>
+        <el-input v-model="approvalForm.note" type="textarea" :autosize="{ minRows: 3, maxRows: 5 }" maxlength="1000" show-word-limit placeholder="审批说明，例如：已核验部门和岗位，批准访问对应知识库" />
+      </div>
+      <template #footer>
+        <el-button @click="approvalDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="approvalBusy" @click="reviewUserApproval('reject')">拒绝</el-button>
+        <el-button type="primary" :loading="approvalBusy" @click="reviewUserApproval('approve')">通过并启用</el-button>
+      </template>
+    </el-dialog>
 
     <el-drawer
       v-model="pageIndexDialogVisible"
@@ -608,6 +1147,99 @@
           </el-card>
         </div>
         <div v-if="!pageIndexFlatNodes.length" class="admin-dialog-empty">暂无结构树。可点击“重建高级索引”。</div>
+      </div>
+    </el-drawer>
+
+    <el-drawer
+      v-model="documentQualityVisible"
+      title="文件处理质量体检"
+      direction="rtl"
+      size="min(860px, calc(100vw - 32px))"
+      class="admin-pageindex-drawer admin-quality-drawer"
+    >
+      <div v-if="documentQualityLoading" class="admin-dialog-empty">正在生成质量报告…</div>
+      <div v-else class="admin-pageindex-drawer-body">
+        <div class="admin-pageindex-drawer-meta">
+          <span>当前文档</span>
+          <strong>{{ docTitle(documentQualityDoc) }}</strong>
+          <p>{{ docFilename(documentQualityDoc) }}</p>
+        </div>
+
+        <section v-if="documentQualityReport" class="admin-quality-stack">
+          <div class="admin-quality-score-card">
+            <div>
+              <span>综合评分</span>
+              <strong>{{ documentQualityReport.quality?.score ?? 0 }}</strong>
+              <p>{{ qualityGradeLabel(documentQualityReport.quality?.grade) }}</p>
+            </div>
+            <div>
+              <span>问题数量</span>
+              <strong>{{ documentQualityReport.quality?.issue_count ?? 0 }}</strong>
+              <p>严重 {{ documentQualityReport.quality?.critical_count ?? 0 }} · 警告 {{ documentQualityReport.quality?.warning_count ?? 0 }}</p>
+            </div>
+          </div>
+
+          <div class="admin-quality-grid">
+            <div>
+              <span>原文件</span>
+              <strong>{{ documentQualityReport.document?.storage_exists ? '存在' : '缺失' }}</strong>
+              <p>{{ formatFileSize(documentQualityReport.document?.file_size || 0) }}</p>
+            </div>
+            <div>
+              <span>文本切片</span>
+              <strong>{{ documentQualityReport.chunks?.count || 0 }}</strong>
+              <p>{{ documentQualityReport.chunks?.total_chars || 0 }} 字 · 平均 {{ documentQualityReport.chunks?.avg_chars || 0 }} 字</p>
+            </div>
+            <div>
+              <span>表格数据</span>
+              <strong>{{ documentQualityReport.table?.data_rows || 0 }}</strong>
+              <p>{{ documentQualityReport.table?.sheet_count || 0 }} 个 Sheet · {{ documentQualityReport.table?.column_count || 0 }} 列</p>
+            </div>
+            <div>
+              <span>高级索引</span>
+              <strong>{{ pageIndexStatusText(documentQualityReport.page_index) }}</strong>
+              <p>{{ documentQualityReport.page_index?.node_count || 0 }} 节点</p>
+            </div>
+            <div>
+              <span>处理诊断</span>
+              <strong>{{ documentQualityReport.processing?.ocr_triggered ? '已触发 OCR' : '普通解析' }}</strong>
+              <p>抽取 {{ documentQualityReport.processing?.extracted_chars ?? '-' }} 字 · OCR {{ documentQualityReport.processing?.ocr_chars ?? '-' }} 字</p>
+            </div>
+          </div>
+
+          <section class="admin-quality-section">
+            <h4>发现的问题</h4>
+            <div v-if="documentQualityReport.recommended_actions?.length" class="admin-quality-tags semantic">
+              <span v-for="action in documentQualityReport.recommended_actions" :key="action.code">
+                {{ action.label }}
+              </span>
+            </div>
+            <div v-if="documentQualityReport.issues?.length" class="admin-quality-issue-list">
+              <article v-for="issue in documentQualityReport.issues" :key="`${issue.code}-${issue.message}`" :class="['admin-quality-issue', issue.severity]">
+                <strong>{{ qualitySeverityLabel(issue.severity) }} · {{ issue.code }}</strong>
+                <p>{{ issue.message }}</p>
+                <span v-if="issue.suggestion">建议：{{ issue.suggestion }}</span>
+              </article>
+            </div>
+            <div v-else class="admin-dialog-empty">未发现明显文件处理问题。</div>
+          </section>
+
+          <section v-if="documentQualityReport.table?.sheets?.length" class="admin-quality-section">
+            <h4>表格结构</h4>
+            <article v-for="sheet in documentQualityReport.table.sheets" :key="sheet.sheet_name" class="admin-quality-sheet-card">
+              <strong>{{ sheet.sheet_name }}</strong>
+              <p>数据行 {{ sheet.data_rows }} · 表头行 {{ sheet.header_rows }} · 字段 {{ sheet.column_count }}</p>
+              <div v-if="sheet.columns?.length" class="admin-quality-tags">
+                <span v-for="column in sheet.columns.slice(0, 12)" :key="column">{{ column }}</span>
+              </div>
+              <div v-if="sheet.semantic_columns?.length" class="admin-quality-tags semantic">
+                <span v-for="field in sheet.semantic_columns" :key="field.semantic_name">{{ field.label }} → {{ field.raw_name }}</span>
+              </div>
+            </article>
+          </section>
+        </section>
+
+        <div v-else class="admin-dialog-empty">暂无质量报告。</div>
       </div>
     </el-drawer>
 
@@ -656,7 +1288,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../../api'
-import { feishuNativeRuntime, selectFeishuDepartments, selectFeishuUser } from '../../feishuNative'
+
 
 const groups = ref<any[]>([])
 const users = ref<any[]>([])
@@ -671,14 +1303,34 @@ const modelConfig = ref<any>({
   reranker: { enabled: false, model: 'deepseek-chat', max_candidates: 24, ready: false, warning: '' },
 })
 const tasks = ref<any[]>([])
+const feedbackItems = ref<any[]>([])
+const evaluationOverview = ref<any | null>(null)
+const evaluationSuiteResult = ref<any | null>(null)
+const evaluationCaseResult = ref<any | null>(null)
+const graphOverview = ref<any | null>(null)
+const graphDocuments = ref<any[]>([])
+const graphRelations = ref<any[]>([])
+const graphPreviewRelations = ref<any[]>([])
+const graphSearchResult = ref<any | null>(null)
+const documentQualityMap = ref<Record<string, any>>({})
 const docGroupMap = reactive<Record<string, string[]>>({})
 const groupName = ref('')
 const user = reactive({ username: '', password: '', is_admin: false, group_ids: [] as string[] })
-const feishuRuntimeMode = ref<'checking' | 'sdk' | 'mock'>('checking')
+const approvalDialogVisible = ref(false)
+const approvalBusy = ref(false)
+const approvalUser = ref<any | null>(null)
+const approvalForm = reactive({ group_ids: [] as string[], is_admin: false, note: '' })
+const evaluationForm = reactive({ question: '', top_k: 8 })
+const graphSearchForm = reactive({ question: '', top_k: 8 })
+
 type DocStatusFilter = 'all' | 'ready' | 'processing' | 'waiting' | 'failed'
-type UserRoleFilter = 'all' | 'admin' | 'member' | 'unassigned'
+type DocQualityFilter = 'all' | 'good' | 'needs_review' | 'poor' | 'blocked' | 'unknown'
+type UserRoleFilter = 'all' | 'admin' | 'member' | 'unassigned' | 'pending' | 'inactive'
 type TaskStatusFilter = 'all' | 'pending' | 'running' | 'done' | 'failed'
-type TaskTypeFilter = 'all' | 'document_parse' | 'document_reparse' | 'chat_attachment_parse' | 'page_index' | 'page_index_rebuild' | 'ocr' | 'other'
+type TaskTypeFilter = 'all' | 'document_parse' | 'document_reparse' | 'chat_attachment_parse' | 'page_index' | 'page_index_rebuild' | 'graph_extract' | 'graph_rebuild' | 'ocr' | 'other'
+type FeedbackStatusFilter = 'all' | 'new' | 'reviewed' | 'resolved' | 'ignored'
+type FeedbackRootCause = '' | 'answer_quality' | 'retrieval_miss' | 'insufficient_source' | 'document_quality' | 'permission_scope' | 'unclear_question' | 'other'
+type FeedbackRootCauseFilter = 'all' | FeedbackRootCause
 type EditableChunk = { id: string; page_number?: number | null; chunk_index?: number | string | null; content: string }
 type UploadSummary = { docId: string; taskId?: string | null; title?: string; filename?: string; status?: string; message?: string; error?: string; searchable?: boolean }
 
@@ -687,14 +1339,28 @@ const pageIndexDialogVisible = ref(false)
 const pageIndexLoading = ref(false)
 const pageIndexPayload = ref<any | null>(null)
 const pageIndexDoc = ref<any | null>(null)
+const documentQualityVisible = ref(false)
+const documentQualityLoading = ref(false)
+const documentQualityDoc = ref<any | null>(null)
+const documentQualityReport = ref<any | null>(null)
 const chunkEditorVisible = ref(false)
 const chunkEditorLoading = ref(false)
+const feedbackDetailVisible = ref(false)
+const feedbackDetailLoading = ref(false)
+const feedbackDetail = ref<any | null>(null)
+const feedbackReviewBusy = ref(false)
+const feedbackReviewNote = ref('')
+const feedbackRootCause = ref<FeedbackRootCause>('')
+const feedbackCompareLoading = ref(false)
+const feedbackCompareResult = ref<any | null>(null)
 const chunkEditorDoc = ref<any | null>(null)
 const chunkEditorChunks = ref<EditableChunk[]>([])
 const savingChunkId = ref<string | null>(null)
 const openingDocId = ref<string | null>(null)
 const reparsingDocId = ref<string | null>(null)
+const bulkReparsingQualityDocs = ref(false)
 const deletingDocId = ref<string | null>(null)
+const deletingGroupId = ref<string | null>(null)
 const rebuildingPageIndexDocId = ref<string | null>(null)
 const uploadingDoc = ref(false)
 const lastUploadSummary = ref<UploadSummary | null>(null)
@@ -703,18 +1369,43 @@ const userSearch = ref('')
 const userRoleFilter = ref<UserRoleFilter>('all')
 const docSearch = ref('')
 const docStatusFilter = ref<DocStatusFilter>('all')
+const docQualityFilter = ref<DocQualityFilter>('all')
 const taskStatusFilter = ref<TaskStatusFilter>('all')
 const taskTypeFilter = ref<TaskTypeFilter>('all')
 const taskSearch = ref('')
+const feedbackStatusFilter = ref<FeedbackStatusFilter>('all')
+const feedbackRootCauseFilter = ref<FeedbackRootCauseFilter>('all')
+const feedbackSearch = ref('')
+const loadingFeedback = ref(false)
+const loadingEvaluation = ref(false)
+const loadingGraph = ref(false)
+const graphSearchLoading = ref(false)
+const evaluationSuiteRunning = ref(false)
+const evaluationCaseRunning = ref(false)
 const loadingTasks = ref(false)
+const rebuildingGraphDocId = ref<string | null>(null)
 const retryingTaskId = ref<string | null>(null)
 const refreshing = ref(false)
 const lastRefreshAt = ref<Date | null>(null)
 const statusPolling = ref(false)
+const taskPolling = ref(false)
+const taskLastRefreshAt = ref<Date | null>(null)
 let statusPollTimer: number | null = null
+let taskPollTimer: number | null = null
 let statusPollDeadline = 0
 const STATUS_POLL_INTERVAL_MS = 3000
 const STATUS_POLL_TIMEOUT_MS = 5 * 60 * 1000
+const TASK_POLL_INTERVAL_MS = 5000
+const feedbackRootCauseOptions: Array<{ value: FeedbackRootCause; label: string }> = [
+  { value: '', label: '未归因' },
+  { value: 'answer_quality', label: '回答组织问题' },
+  { value: 'retrieval_miss', label: '检索命中错误' },
+  { value: 'insufficient_source', label: '来源不足' },
+  { value: 'document_quality', label: '文档解析/切片问题' },
+  { value: 'permission_scope', label: '权限/可见范围问题' },
+  { value: 'unclear_question', label: '用户问题不清楚' },
+  { value: 'other', label: '其他' },
+]
 const modelForm = reactive({
   base_url: 'https://api.deepseek.com',
   model: 'deepseek-chat',
@@ -733,11 +1424,51 @@ const modelTestMessage = ref('')
 const modelTestStatus = ref<'idle' | 'ok' | 'failed'>('idle')
 const searchTestForm = reactive({ question: '', top_k: 8 })
 const searchTesting = ref(false)
+const searchContextPreviewOpen = ref(false)
+const expandedSearchSources = ref<Record<string, boolean>>({})
 const schemaAliasActionBusy = ref('')
 const searchTestResult = ref<any | null>(null)
 const routerAnalysis = computed(() => searchTestResult.value?.query_analysis || searchTestResult.value?.retrieval_meta?.query_analysis || {})
 const routerRoute = computed(() => searchTestResult.value?.retrieval_route || searchTestResult.value?.retrieval_meta?.retrieval_route || {})
 const routerEvidence = computed(() => searchTestResult.value?.evidence_check || searchTestResult.value?.retrieval_meta?.evidence_check || {})
+const searchSourceQualityNotice = computed(() => searchTestResult.value?.source_quality_notice || {})
+const searchSourceQualityWarning = computed(() => searchTestResult.value?.source_warning || searchSourceQualityNotice.value?.warning || '')
+const retrievalDebugSummary = computed(() => searchTestResult.value?.retrieval_debug_summary || {})
+const promptContextPreview = computed(() => searchTestResult.value?.prompt_context_preview || {})
+const feedbackCompareOriginalSources = computed(() => Array.isArray(feedbackDetail.value?.sources) ? feedbackDetail.value.sources : [])
+const feedbackCompareCurrentSources = computed(() => Array.isArray(feedbackCompareResult.value?.source_diagnostics) ? feedbackCompareResult.value.source_diagnostics : [])
+const feedbackCompareOverlap = computed(() => {
+  const original = new Set(feedbackCompareOriginalSources.value.map((source: any) => String(source?.document_id || source?.filename || source?.document_title || source?.title || '')).filter(Boolean))
+  const current = new Set(feedbackCompareCurrentSources.value.map((source: any) => String(source?.document_id || source?.filename || source?.document_title || source?.title || '')).filter(Boolean))
+  const matched = [...original].filter((key) => current.has(key))
+  return { original_count: original.size, current_count: current.size, matched_count: matched.length, matched }
+})
+const feedbackCompareSummary = computed(() => {
+  if (!feedbackCompareResult.value) return '尚未重跑检索'
+  if (!feedbackCompareCurrentSources.value.length) return '当前检索没有命中来源'
+  if (!feedbackCompareOriginalSources.value.length) return '原回答没有记录引用来源，可直接查看当前检索命中'
+  if (feedbackCompareOverlap.value.matched_count > 0) return `原引用中有 ${feedbackCompareOverlap.value.matched_count}/${feedbackCompareOverlap.value.original_count} 份文档仍能命中`
+  return '当前检索与原回答引用没有文档重合，请重点排查检索或文档状态变化'
+})
+const evaluationCases = computed(() => Array.isArray(evaluationOverview.value?.cases) ? evaluationOverview.value.cases : [])
+const evaluationCaseSources = computed(() => Array.isArray(evaluationCaseResult.value?.source_diagnostics) ? evaluationCaseResult.value.source_diagnostics : [])
+const graphSearchContexts = computed(() => Array.isArray(graphSearchResult.value?.contexts) ? graphSearchResult.value.contexts : [])
+const graphRecentTaskByDoc = computed(() => {
+  const result: Record<string, any> = {}
+  tasks.value.forEach((task: any) => {
+    if (!['graph_extract', 'graph_rebuild'].includes(String(task?.task_type || ''))) return
+    const docId = String(task?.document_id || '')
+    if (!docId || result[docId]) return
+    result[docId] = task
+  })
+  return result
+})
+const evaluationSuiteFailures = computed(() => Array.isArray(evaluationSuiteResult.value?.results) ? evaluationSuiteResult.value.results.filter((item: any) => !item?.ok) : [])
+const evaluationRiskSummary = computed(() => {
+  const risks = evaluationOverview.value?.risk_signals || []
+  if (!Array.isArray(risks) || !risks.length) return '暂无明显风险'
+  return risks.slice(0, 3).join('；')
+})
 const tableQueryDiagnostics = computed(() => {
   const meta = searchTestResult.value?.retrieval_meta || {}
   const plan = meta.table_query_plan || {}
@@ -828,19 +1559,35 @@ const pageIndexEngineText = computed(() => {
 })
 const vectorStatusLabel = computed(() => {
   if (!vectorStatus.value) return '读取中'
-  if (vectorStatus.value.degraded) return 'Qdrant 降级'
+  if (vectorStatus.value.degraded) return 'SQLite 回退中'
   if (vectorStatus.value.qdrant_ready) return 'Qdrant 正常'
   return 'SQLite 本地向量'
 })
-const pageIndexFlatNodes = computed(() => flattenPageIndexNodes(pageIndexPayload.value?.structure || []))
-const feishuRuntimeLabel = computed(() => {
-  if (feishuRuntimeMode.value === 'sdk') return '飞书 SDK 已加载'
-  if (feishuRuntimeMode.value === 'mock') return '本地 Mock 选择器'
-  return '飞书 SDK 检测中'
+const vectorBackendLabel = computed(() => {
+  if (!vectorStatus.value) return '未知'
+  return ({ qdrant: 'Qdrant', sqlite: 'SQLite', sqlite_fallback: 'SQLite 回退', local: 'SQLite 本地', unknown: '未知' } as Record<string, string>)[String(vectorStatus.value.backend || 'unknown')] || String(vectorStatus.value.backend || '未知')
 })
+const vectorRetrievalLabel = computed(() => {
+  if (!vectorStatus.value) return '未知'
+  if (vectorStatus.value.degraded) return '当前检索：SQLite 本地向量检索'
+  if (vectorStatus.value.qdrant_ready) return '当前检索：Qdrant 向量检索'
+  return '当前检索：SQLite 本地向量检索'
+})
+const vectorStatusImpact = computed(() => {
+  if (!vectorStatus.value) return '正在读取向量库状态'
+  if (vectorStatus.value.degraded) return 'Qdrant 暂不可用时，检索会回退到 SQLite，本地结果可能更慢、召回更弱。'
+  if (vectorStatus.value.qdrant_ready) return `Qdrant 正常，集合 ${vectorStatus.value.collection || '默认集合'} 可用。`
+  return '当前使用 SQLite 本地向量检索。'
+})
+const pageIndexFlatNodes = computed(() => flattenPageIndexNodes(pageIndexPayload.value?.structure || []))
+
 const lastRefreshLabel = computed(() => {
   if (!lastRefreshAt.value) return '未刷新'
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(lastRefreshAt.value)
+})
+const taskLastRefreshLabel = computed(() => {
+  if (!taskLastRefreshAt.value) return ''
+  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(taskLastRefreshAt.value)
 })
 const filteredGroups = computed(() => {
   const keyword = normalizeText(groupSearch.value).trim()
@@ -858,13 +1605,17 @@ const filteredGroups = computed(() => {
 const filteredUsers = computed(() => {
   const keyword = normalizeText(userSearch.value).trim()
   return users.value.filter((item: any) => {
-    if (userRoleFilter.value !== 'all' && userRoleKind(item) !== userRoleFilter.value) return false
+    if (userRoleFilter.value === 'pending' && !isUserPending(item)) return false
+    if (userRoleFilter.value === 'inactive' && (item?.is_active || isUserPending(item))) return false
+    if (!['all', 'pending', 'inactive'].includes(userRoleFilter.value) && userRoleKind(item) !== userRoleFilter.value) return false
     if (!keyword) return true
     const haystack = normalizeText([
       item?.username,
       item?.id,
       item?.groups?.map((g: any) => g?.name).join('、'),
       item?.is_admin ? '管理员' : '成员',
+      userApprovalLabel(item),
+      item?.approval_note,
     ].join(' '))
     return haystack.includes(keyword)
   })
@@ -873,6 +1624,7 @@ const filteredDocs = computed(() => {
   const keyword = normalizeText(docSearch.value).trim()
   return docs.value.filter((doc: any) => {
     if (docStatusFilter.value !== 'all' && docStatusKind(doc) !== docStatusFilter.value) return false
+    if (docQualityFilter.value !== 'all' && documentQualityKind(doc) !== docQualityFilter.value) return false
     if (!keyword) return true
     const haystack = normalizeText([
       docTitle(doc),
@@ -895,17 +1647,49 @@ const filteredTasks = computed(() => {
     return taskMatchesSearch(task, keyword)
   })
 })
+const filteredFeedback = computed(() => {
+  const keyword = normalizeText(feedbackSearch.value).trim()
+  return feedbackItems.value.filter((item: any) => {
+    if (feedbackStatusFilter.value !== 'all' && feedbackStatusKind(item) !== feedbackStatusFilter.value) return false
+    if (feedbackRootCauseFilter.value !== 'all' && String(item?.root_cause || '') !== feedbackRootCauseFilter.value) return false
+    if (!keyword) return true
+    const haystack = normalizeText([
+      item?.username,
+      item?.rating,
+      item?.category,
+      item?.content,
+      item?.question,
+      item?.answer,
+      item?.admin_note,
+      item?.root_cause,
+      feedbackRootCauseLabel(item?.root_cause),
+    ].join(' '))
+    return haystack.includes(keyword)
+  })
+})
 const docReadyCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'ready').length)
 const docProcessingCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'processing').length)
 const docWaitingCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'waiting').length)
 const docFailedCount = computed(() => docs.value.filter((doc: any) => docStatusKind(doc) === 'failed').length)
+const docQualityCounts = computed(() => docs.value.reduce((acc: Record<string, number>, doc: any) => {
+  const kind = documentQualityKind(doc)
+  acc[kind] = (acc[kind] || 0) + 1
+  return acc
+}, { good: 0, needs_review: 0, poor: 0, blocked: 0, unknown: 0 }))
+const qualityReparseCandidateCount = computed(() => docs.value.filter((doc: any) => qualityReportHasAction(documentQualityMap.value[String(doc?.id || '')], 'reparse')).length)
 const userAdminCount = computed(() => users.value.filter((item: any) => item?.is_admin).length)
 const userMemberCount = computed(() => users.value.filter((item: any) => !item?.is_admin && (item?.groups || []).length > 0).length)
-const userUnassignedCount = computed(() => users.value.filter((item: any) => !(item?.groups || []).length).length)
+const userUnassignedCount = computed(() => users.value.filter((item: any) => !isUserPending(item) && !(item?.groups || []).length).length)
+const userPendingCount = computed(() => users.value.filter((item: any) => isUserPending(item)).length)
+const userInactiveCount = computed(() => users.value.filter((item: any) => !item?.is_active && !isUserPending(item)).length)
 const taskPendingCount = computed(() => tasks.value.filter((task: any) => taskStatusKind(task) === 'pending').length)
 const taskRunningCount = computed(() => tasks.value.filter((task: any) => taskStatusKind(task) === 'running').length)
 const taskDoneCount = computed(() => tasks.value.filter((task: any) => taskStatusKind(task) === 'done').length)
 const taskFailedCount = computed(() => tasks.value.filter((task: any) => taskStatusKind(task) === 'failed').length)
+const feedbackNewCount = computed(() => feedbackItems.value.filter((item: any) => feedbackStatusKind(item) === 'new').length)
+const feedbackReviewedCount = computed(() => feedbackItems.value.filter((item: any) => feedbackStatusKind(item) === 'reviewed').length)
+const feedbackResolvedCount = computed(() => feedbackItems.value.filter((item: any) => feedbackStatusKind(item) === 'resolved').length)
+const feedbackIgnoredCount = computed(() => feedbackItems.value.filter((item: any) => feedbackStatusKind(item) === 'ignored').length)
 const latestUploadDoc = computed(() => {
   const summary = lastUploadSummary.value
   if (!summary?.docId) return null
@@ -976,7 +1760,25 @@ function userRoleKind(item: any): UserRoleFilter {
 }
 
 function userRoleLabel(item: any) {
-  return ({ admin: '管理员', member: '成员', unassigned: '未分配' } as Record<string, string>)[userRoleKind(item)]
+  return ({ admin: '管理员', member: '成员', unassigned: '未分配', pending: '待审批', inactive: '停用' } as Record<string, string>)[userRoleKind(item)]
+}
+
+function isUserPending(item: any) {
+  return String(item?.approval_status || '').toLowerCase() === 'pending'
+}
+
+function userApprovalKind(item: any) {
+  const status = String(item?.approval_status || 'approved').toLowerCase()
+  if (status === 'pending') return 'waiting'
+  if (status === 'rejected') return 'failed'
+  return 'ready'
+}
+
+function userApprovalLabel(item: any) {
+  const status = String(item?.approval_status || 'approved').toLowerCase()
+  if (status === 'pending') return '待审批'
+  if (status === 'rejected') return '已拒绝'
+  return '已通过'
 }
 
 function userGroupsText(item: any) {
@@ -1022,6 +1824,66 @@ function docStatusKind(doc: any): DocStatusFilter {
   return 'waiting'
 }
 
+function documentQualityKind(doc: any) {
+  const report = documentQualityMap.value[String(doc?.id || '')]
+  return report?.quality?.grade || 'unknown'
+}
+
+function documentQualityLabel(doc: any) {
+  const report = documentQualityMap.value[String(doc?.id || '')]
+  if (!report) return '未体检'
+  return qualityGradeLabel(report?.quality?.grade)
+}
+
+function qualityReportHasAction(report: any, code: string) {
+  return Boolean((report?.recommended_actions || []).some((action: any) => action?.code === code && action?.available !== false))
+}
+
+function docQualityRowClass(doc: any) {
+  const kind = documentQualityKind(doc)
+  return kind === 'blocked' || kind === 'poor' ? 'admin-doc-card-row--quality-issue' : ''
+}
+
+function sourceDiagnosticQualityGrade(item: any) {
+  return String(item?.source_quality?.grade || '').toLowerCase()
+}
+
+function sourceDiagnosticQualityClass(item: any) {
+  const grade = sourceDiagnosticQualityGrade(item)
+  return grade === 'blocked' || grade === 'poor' ? 'admin-doc-card-row--quality-issue' : ''
+}
+
+function sourceDiagnosticQualityLabel(item: any) {
+  const grade = sourceDiagnosticQualityGrade(item)
+  if (grade === 'blocked') return '来源质量：阻断/需修复'
+  if (grade === 'poor') return '来源质量：偏低'
+  return ''
+}
+
+function sourceDiagnosticKey(item: any) {
+  return `${item?.rank || ''}-${item?.document_id || ''}-${item?.chunk_id || item?.chunk_index || ''}`
+}
+
+function sourceDiagnosticText(item: any) {
+  const key = sourceDiagnosticKey(item)
+  const expanded = expandedSearchSources.value[key]
+  const text = String(item?.full_content || item?.preview || '')
+  return expanded ? text : text.slice(0, 420)
+}
+
+function sourceDiagnosticHasMore(item: any) {
+  return String(item?.full_content || item?.preview || '').length > 420
+}
+
+function toggleSearchSourceExpanded(item: any) {
+  const key = sourceDiagnosticKey(item)
+  expandedSearchSources.value = { ...expandedSearchSources.value, [key]: !expandedSearchSources.value[key] }
+}
+
+async function copySearchPromptContext() {
+  await copyText(String(promptContextPreview.value?.text || ''))
+}
+
 function docStatusLabel(doc: any) {
   return statusText(doc?.status)
 }
@@ -1045,6 +1907,8 @@ function taskTypeKind(task: any): TaskTypeFilter {
   if (type === 'chat_attachment_parse') return 'chat_attachment_parse'
   if (type === 'page_index') return 'page_index'
   if (type === 'page_index_rebuild') return 'page_index_rebuild'
+  if (type === 'graph_extract') return 'graph_extract'
+  if (type === 'graph_rebuild') return 'graph_rebuild'
   if (type === 'ocr') return 'ocr'
   return 'other'
 }
@@ -1057,6 +1921,9 @@ function taskMatchesSearch(task: any, keyword: string) {
     task?.document_title,
     task?.document_filename,
     task?.document_id,
+    task?.document_status,
+    task?.document_stage,
+    task?.document_message,
     task?.status,
     taskStatusLabel(task?.status),
     task?.attempts,
@@ -1074,7 +1941,60 @@ function taskTypeCount(type: TaskTypeFilter) {
 }
 
 function taskTypeLabel(type?: string) {
-  return ({ document_parse: '文档解析', document_reparse: '重新解析', chat_attachment_parse: '聊天附件解析', page_index: '高级索引', page_index_rebuild: '重建高级索引', ocr: 'OCR 识别' } as Record<string, string>)[String(type || '')] || type || '后台任务'
+  return ({ document_parse: '文档解析', document_reparse: '重新解析', chat_attachment_parse: '聊天附件解析', page_index: '高级索引', page_index_rebuild: '重建高级索引', graph_extract: '图谱抽取', graph_rebuild: '重建图谱', ocr: 'OCR 识别' } as Record<string, string>)[String(type || '')] || type || '后台任务'
+}
+
+function graphStatusKind(status?: string): TaskStatusFilter {
+  const value = normalizeText(status || 'not_started')
+  if (value === 'processing') return 'running'
+  if (value === 'ready') return 'done'
+  if (value === 'failed') return 'failed'
+  return 'pending'
+}
+
+function graphStatusLabel(status?: string) {
+  return ({ not_started: '未构建', pending: '等待中', processing: '抽取中', ready: '已完成', failed: '失败' } as Record<string, string>)[normalizeText(status || 'not_started')] || status || '未构建'
+}
+
+function graphStatusHint(status?: string) {
+  return ({ not_started: '尚未开始抽取', pending: '已入队，等待后台处理', processing: '正在抽取实体和关系', ready: '图谱已可用于检索测试', failed: '请查看失败原因并重建' } as Record<string, string>)[normalizeText(status || 'not_started')] || ''
+}
+
+function graphRelationStatusLabel(status?: string) {
+  return ({ pending: '待审核', confirmed: '已确认', ignored: '已忽略', auto: '自动确认' } as Record<string, string>)[normalizeText(status || 'pending')] || status || '待审核'
+}
+
+function graphDocumentSummary(doc: any) {
+  const status = normalizeText(doc?.graph?.status || 'not_started')
+  if (status === 'ready') {
+    return `已抽取完成 · 实体 ${doc?.graph?.entity_count || 0} · 关系 ${doc?.graph?.relation_count || 0}`
+  }
+  if (status === 'processing') {
+    return `抽取中 · 实体 ${doc?.graph?.entity_count || 0} · 关系 ${doc?.graph?.relation_count || 0}`
+  }
+  if (status === 'failed') {
+    return doc?.graph?.error_message || doc?.graph?.message || '图谱构建失败'
+  }
+  if (status === 'pending') {
+    return doc?.graph?.message || '已进入抽取队列'
+  }
+  return doc?.graph?.message || '尚未构建图谱'
+}
+
+function graphDocumentDetail(doc: any) {
+  const parts: string[] = []
+  const graph = doc?.graph || {}
+  if (graph?.updated_at) parts.push(`更新时间 ${formatDateTime(graph.updated_at)}`)
+  if (graph?.pending_count !== undefined) parts.push(`待审 ${graph.pending_count || 0}`)
+  const task = graphRecentTaskByDoc.value[String(doc?.id || '')]
+  if (task?.task_type) parts.push(`最近任务 ${taskTypeLabel(task.task_type)}`)
+  if (task?.status) parts.push(`任务状态 ${taskStatusLabel(task.status)}`)
+  return parts.join(' · ')
+}
+
+function graphDocumentFailure(doc: any) {
+  if (normalizeText(doc?.graph?.status || '') !== 'failed') return ''
+  return doc?.graph?.error_message || doc?.graph?.message || '图谱构建失败'
 }
 
 function formatDateTime(value?: string | null) {
@@ -1082,6 +2002,50 @@ function formatDateTime(value?: string | null) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return String(value)
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date)
+}
+
+function feedbackStatusKind(item: any): FeedbackStatusFilter {
+  const status = normalizeText(item?.status || 'new')
+  if (status === 'reviewed' || status === 'resolved' || status === 'ignored') return status as FeedbackStatusFilter
+  return 'new'
+}
+
+function feedbackStatusLabel(status?: string) {
+  return ({ new: '待处理', reviewed: '已查看', resolved: '已解决', ignored: '已忽略' } as Record<string, string>)[normalizeText(status || 'new')] || status || '待处理'
+}
+
+function feedbackRatingLabel(rating?: string) {
+  return ({ helpful: '有帮助', unhelpful: '不够好', wrong: '错误', unsafe: '安全问题', other: '其他', user_feedback: '用户补充' } as Record<string, string>)[normalizeText(rating || '')] || rating || '反馈'
+}
+
+function feedbackCategoryLabel(category?: string) {
+  return ({ incorrect: '答案错误', missing_source: '缺少来源', not_helpful: '不够好', other: '其他' } as Record<string, string>)[normalizeText(category || '')] || category || '其他'
+}
+
+function feedbackRootCauseLabel(value?: string) {
+  const cause = String(value || '') as FeedbackRootCause
+  return feedbackRootCauseOptions.find((item) => item.value === cause)?.label || '未归因'
+}
+
+function feedbackRootCauseClass(value?: string) {
+  return value ? 'has-cause' : 'empty'
+}
+
+function feedbackSourceCount(item: any) {
+  return Array.isArray(item?.sources) ? item.sources.length : 0
+}
+
+function feedbackStatusCount(status: FeedbackStatusFilter) {
+  if (status === 'all') return feedbackItems.value.length
+  return feedbackItems.value.filter((item: any) => feedbackStatusKind(item) === status).length
+}
+
+function feedbackCreatedTime(item: any) {
+  return item?.created_at ? formatDateTime(item.created_at) : '-'
+}
+
+function feedbackSourceTitle(source: any) {
+  return source?.document_title || source?.title || source?.filename || source?.document_id || '未知来源'
 }
 
 function docStageLabel(doc: any) {
@@ -1094,6 +2058,20 @@ function requestErrorDetail(err: any, fallback: string) {
   return status ? `${detail}（HTTP ${status}）` : detail
 }
 
+async function loadDocumentQualityMap() {
+  try {
+    const { data } = await http.get('/admin/document-quality', { params: { limit: 200 } })
+    const map: Record<string, any> = {}
+    for (const report of data?.reports || []) {
+      const id = String(report?.document?.id || '')
+      if (id) map[id] = report
+    }
+    documentQualityMap.value = map
+  } catch {
+    // 质量报告失败不影响主列表渲染
+  }
+}
+
 async function load() {
   try {
     groups.value = (await http.get('/admin/groups')).data || []
@@ -1104,8 +2082,12 @@ async function load() {
     })
     await loadModelConfig()
     await loadTasks(false)
+    await loadFeedback(false)
+    await loadEvaluationOverview(false)
+    await loadGraphData(false)
     await loadPageIndexStatus()
     await loadVectorStatus()
+    await loadDocumentQualityMap()
     lastRefreshAt.value = new Date()
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || '加载后台数据失败')
@@ -1128,8 +2110,10 @@ async function loadDocumentStatus() {
     docGroupMap[d.id] = (d.groups || []).map((g: any) => g.id)
   })
   await loadTasks(false)
+  await loadGraphData(false)
   await loadPageIndexStatus()
   await loadVectorStatus()
+  await loadDocumentQualityMap()
   lastRefreshAt.value = new Date()
 }
 
@@ -1138,6 +2122,10 @@ function removeDocumentFromLocalState(documentId: string) {
   if (!id) return
   docs.value = docs.value.filter((item: any) => String(item?.id) !== id)
   tasks.value = tasks.value.filter((item: any) => String(item?.document_id) !== id)
+  graphDocuments.value = graphDocuments.value.filter((item: any) => String(item?.id) !== id)
+  graphRelations.value = graphRelations.value.filter((item: any) => String(item?.source_document_id) !== id)
+  graphPreviewRelations.value = graphPreviewRelations.value.filter((item: any) => String(item?.source_document_id) !== id)
+  delete documentQualityMap.value[id]
   delete docGroupMap[id]
   if (lastUploadSummary.value?.docId && String(lastUploadSummary.value.docId) === id) lastUploadSummary.value = null
   if (pageIndexDoc.value?.id && String(pageIndexDoc.value.id) === id) {
@@ -1185,6 +2173,35 @@ function startStatusPolling(documentId?: string) {
 
 function startStatusPollingIfNeeded() {
   if (hasActiveDocumentProcessing()) startStatusPolling()
+}
+
+function hasActiveTasks() {
+  return tasks.value.some((task: any) => ['pending', 'running'].includes(taskStatusKind(task)))
+}
+
+function stopTaskPolling() {
+  if (taskPollTimer) window.clearInterval(taskPollTimer)
+  taskPollTimer = null
+  taskPolling.value = false
+}
+
+function ensureTaskPolling() {
+  if (!hasActiveTasks()) {
+    stopTaskPolling()
+    return
+  }
+  taskPolling.value = true
+  if (!taskPollTimer) {
+    taskPollTimer = window.setInterval(() => pollTasks(), TASK_POLL_INTERVAL_MS)
+  }
+}
+
+async function pollTasks() {
+  try {
+    await loadTasks(false, true)
+  } catch {
+    // loadTasks 已负责用户可见错误提示；轮询失败时下次继续尝试
+  }
 }
 
 function jumpToTab(name: string) {
@@ -1275,6 +2292,12 @@ function formatRetrievalScore(value: any) {
   const num = Number(value)
   if (!Number.isFinite(num)) return '-'
   return num.toFixed(4)
+}
+
+function formatPercent(value: any) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
+  return `${Math.round(num * 100)}%`
 }
 
 function formatDiagnosticList(value: any) {
@@ -1394,6 +2417,8 @@ async function runSearchTest() {
   }
   searchTesting.value = true
   searchTestResult.value = null
+  searchContextPreviewOpen.value = false
+  expandedSearchSources.value = {}
   try {
     const { data } = await http.post('/admin/search-test', {
       question,
@@ -1406,17 +2431,223 @@ async function runSearchTest() {
     searchTesting.value = false
   }
 }
-async function loadTasks(showMessage = true) {
+async function loadTasks(showMessage = true, fromPolling = false) {
+  if (loadingTasks.value && fromPolling) return
   loadingTasks.value = true
   try {
     tasks.value = (await http.get('/admin/tasks', { params: { limit: 500 } })).data || []
+    taskLastRefreshAt.value = new Date()
     if (showMessage) ElMessage.success('后台任务已刷新')
+    if (!fromPolling || taskPolling.value) ensureTaskPolling()
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.detail || '加载后台任务失败')
+    if (!fromPolling) ElMessage.error(err?.response?.data?.detail || '加载后台任务失败')
   } finally {
     loadingTasks.value = false
   }
 }
+
+async function loadEvaluationOverview(showMessage = true) {
+  loadingEvaluation.value = true
+  try {
+    evaluationOverview.value = (await http.get('/admin/evaluation/overview', { params: { days: 30 } })).data || null
+    if (showMessage) ElMessage.success('评测面板已刷新')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载评测面板失败')
+  } finally {
+    loadingEvaluation.value = false
+  }
+}
+
+async function loadGraphData(showMessage = true) {
+  loadingGraph.value = true
+  try {
+    const [overviewResp, docsResp, pendingRelationsResp, previewRelationsResp] = await Promise.all([
+      http.get('/admin/graph/overview'),
+      http.get('/admin/graph/documents', { params: { limit: 200 } }),
+      http.get('/admin/graph/relations', { params: { status: 'pending', limit: 100 } }),
+      http.get('/admin/graph/relations', { params: { limit: 120 } }),
+    ])
+    graphOverview.value = overviewResp.data || null
+    graphDocuments.value = docsResp.data || []
+    graphRelations.value = pendingRelationsResp.data || []
+    graphPreviewRelations.value = (previewRelationsResp.data || []).filter((item: any) => item?.status !== 'ignored')
+    if (showMessage) ElMessage.success('图谱数据已刷新')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载图谱数据失败')
+  } finally {
+    loadingGraph.value = false
+  }
+}
+
+async function runGraphSearchTest() {
+  const question = graphSearchForm.question.trim()
+  if (!question) {
+    ElMessage.warning('请输入要测试的图谱问题')
+    return
+  }
+  graphSearchLoading.value = true
+  graphSearchResult.value = null
+  try {
+    graphSearchResult.value = (await http.post('/admin/graph/search-test', { question, top_k: Number(graphSearchForm.top_k) || 8 })).data || null
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '图谱搜索测试失败')
+  } finally {
+    graphSearchLoading.value = false
+  }
+}
+
+async function rebuildDocumentGraph(doc: any) {
+  if (!doc?.id) return
+  rebuildingGraphDocId.value = doc.id
+  try {
+    await http.post(`/admin/documents/${doc.id}/graph/rebuild`)
+    ElMessage.success('图谱重建任务已入队')
+    await loadGraphData(false)
+    await loadTasks(false)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '图谱重建入队失败')
+  } finally {
+    rebuildingGraphDocId.value = null
+  }
+}
+
+async function reviewGraphRelation(relation: any, status: 'confirmed' | 'ignored') {
+  if (!relation?.id) return
+  try {
+    await http.put(`/admin/graph/relations/${relation.id}`, { status })
+    ElMessage.success(status === 'confirmed' ? '已确认关系' : '已忽略关系')
+    await loadGraphData(false)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '更新图谱关系失败')
+  }
+}
+
+function fillEvaluationQuestion(item: any) {
+  evaluationForm.question = String(item?.question || '')
+  evaluationForm.top_k = Number(item?.top_k || evaluationForm.top_k || 8)
+}
+
+async function runEvaluationCase() {
+  const question = String(evaluationForm.question || '').trim()
+  if (!question) {
+    ElMessage.error('请输入评测问题')
+    return
+  }
+  evaluationCaseRunning.value = true
+  evaluationCaseResult.value = null
+  try {
+    evaluationCaseResult.value = (await http.post('/admin/evaluation/run-case', { question, top_k: Number(evaluationForm.top_k) || 8 })).data || null
+    ElMessage.success('单题评测完成')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '单题评测失败')
+  } finally {
+    evaluationCaseRunning.value = false
+  }
+}
+
+async function runEvaluationCaseFromResult(item: any) {
+  fillEvaluationQuestion(item)
+  await runEvaluationCase()
+}
+
+async function runEvaluationSuite() {
+  evaluationSuiteRunning.value = true
+  evaluationSuiteResult.value = null
+  try {
+    evaluationSuiteResult.value = (await http.post('/admin/evaluation/run-suite', null, { params: { limit: 50 } })).data || null
+    const result = evaluationSuiteResult.value || {}
+    if (result.ok) ElMessage.success(`真实评测通过：${result.passed || 0}/${result.total || 0}`)
+    else ElMessage.warning(`真实评测存在失败：${result.failed || 0} 个失败用例`)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '运行真实评测失败')
+  } finally {
+    evaluationSuiteRunning.value = false
+  }
+}
+
+async function loadFeedback(showMessage = true) {
+  loadingFeedback.value = true
+  try {
+    feedbackItems.value = (await http.get('/admin/feedback', { params: { summary: true, limit: 300 } })).data || []
+    if (showMessage) ElMessage.success('反馈列表已刷新')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载反馈列表失败')
+  } finally {
+    loadingFeedback.value = false
+  }
+}
+
+async function openFeedbackDetail(item: any) {
+  if (!item?.id) return
+  feedbackDetailVisible.value = true
+  feedbackDetailLoading.value = true
+  feedbackDetail.value = null
+  feedbackReviewNote.value = ''
+  feedbackRootCause.value = ''
+  feedbackCompareResult.value = null
+  try {
+    feedbackDetail.value = (await http.get(`/admin/feedback/${item.id}`)).data || null
+    feedbackReviewNote.value = feedbackDetail.value?.admin_note || feedbackDetail.value?.review_note || ''
+    feedbackRootCause.value = (feedbackDetail.value?.root_cause || '') as FeedbackRootCause
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载反馈详情失败')
+  } finally {
+    feedbackDetailLoading.value = false
+  }
+}
+
+async function reviewFeedback(status: FeedbackStatusFilter) {
+  if (!feedbackDetail.value?.id || status === 'all') return
+  feedbackReviewBusy.value = true
+  try {
+    await http.put(`/admin/feedback/${feedbackDetail.value.id}`, {
+      status,
+      admin_note: feedbackReviewNote.value,
+      review_note: feedbackReviewNote.value,
+      root_cause: feedbackRootCause.value,
+    })
+    ElMessage.success('反馈状态已更新')
+    await openFeedbackDetail(feedbackDetail.value)
+    await loadFeedback(false)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '处理反馈失败')
+  } finally {
+    feedbackReviewBusy.value = false
+  }
+}
+
+async function runFeedbackCompareSearch() {
+  const question = String(feedbackDetail.value?.question || '').trim()
+  if (!question) return
+  feedbackCompareLoading.value = true
+  feedbackCompareResult.value = null
+  try {
+    const { data } = await http.post('/admin/search-test', { question, top_k: 8 })
+    feedbackCompareResult.value = data || null
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '反馈检索对照失败')
+  } finally {
+    feedbackCompareLoading.value = false
+  }
+}
+
+function runFeedbackQuestionSearch() {
+  const question = String(feedbackDetail.value?.question || '').trim()
+  if (!question) return
+  searchTestForm.question = question
+  adminTabIndex.value = 'model'
+  runSearchTest()
+}
+
+function feedbackSourceKey(source: any) {
+  return String(source?.document_id || source?.filename || source?.document_title || source?.title || '')
+}
+
+function feedbackCurrentSourceMatched(source: any) {
+  const key = feedbackSourceKey(source)
+  return Boolean(key && feedbackCompareOverlap.value.matched.includes(key))
+}
+
 async function retryTask(task: any) {
   if (!task?.id) return
   retryingTaskId.value = task.id
@@ -1435,41 +2666,73 @@ async function createGroup() {
   groupName.value = ''
   await load()
 }
-async function pickFeishuUser() {
-  const selected = await selectFeishuUser()
-  if (!selected?.id) return
-  user.username = selected.id
-  ElMessage.success('已填入飞书用户 ID')
-}
-async function ensureGroupByName(name: string) {
-  const normalized = name.trim()
-  if (!normalized) return ''
-  const existing = groups.value.find((item: any) => String(item.name || '').trim() === normalized)
-  if (existing?.id) return String(existing.id)
-  const { data } = await http.post('/admin/groups', { name: normalized })
-  const group = data || {}
-  if (group.id && !groups.value.some((item: any) => String(item.id) === String(group.id))) {
-    groups.value = [{ id: group.id, name: group.name || normalized }, ...groups.value]
+
+async function deleteGroup(group: any) {
+  if (!group?.id) return
+  const memberCount = groupMemberCount(group.id)
+  const documentCount = groupDocumentCount(group.id)
+  if (memberCount || documentCount) {
+    ElMessage.warning(`该岗位组仍关联 ${memberCount} 名员工、${documentCount} 份文档，请先移除关联后再删除。`)
+    return
   }
-  return String(group.id || '')
-}
-async function pickFeishuDepartments() {
-  const departments = await selectFeishuDepartments()
-  if (!departments.length) return
-  const ids: string[] = []
-  for (const department of departments) {
-    const id = await ensureGroupByName(department.name)
-    if (id) ids.push(id)
+  await ElMessageBox.confirm(`确定删除岗位组「${group.name}」吗？`, '删除岗位组', {
+    confirmButtonText: '删除',
+    cancelButtonText: '取消',
+    type: 'warning',
+    confirmButtonClass: 'el-button--danger',
+  })
+  deletingGroupId.value = group.id
+  try {
+    await http.delete(`/admin/groups/${group.id}`)
+    ElMessage.success('岗位组已删除')
+    await load()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '删除岗位组失败')
+  } finally {
+    deletingGroupId.value = null
   }
-  user.group_ids = Array.from(new Set([...user.group_ids, ...ids]))
-  ElMessage.success('已匹配飞书部门到岗位组')
 }
+
 async function createUser() {
   await http.post('/admin/users', user)
   user.username = ''
   user.password = ''
   user.is_admin = false
   user.group_ids = []
+  await load()
+}
+function openApprovalDialog(item: any) {
+  approvalUser.value = item
+  approvalForm.group_ids = (item?.groups || []).map((g: any) => String(g.id))
+  approvalForm.is_admin = Boolean(item?.is_admin)
+  approvalForm.note = item?.approval_note || ''
+  approvalDialogVisible.value = true
+}
+async function reviewUserApproval(action: 'approve' | 'reject') {
+  if (!approvalUser.value?.id) return
+  approvalBusy.value = true
+  try {
+    await http.post(`/admin/users/${approvalUser.value.id}/approval`, {
+      action,
+      note: approvalForm.note,
+      group_ids: approvalForm.group_ids,
+      is_admin: approvalForm.is_admin,
+    })
+    ElMessage.success(action === 'approve' ? '账号已审批通过并启用' : '账号已拒绝')
+    approvalDialogVisible.value = false
+    approvalUser.value = null
+    await load()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '处理账号审批失败')
+  } finally {
+    approvalBusy.value = false
+  }
+}
+async function toggleUserStatus(item: any) {
+  if (!item?.id) return
+  const nextActive = !item.is_active
+  await http.put(`/admin/users/${item.id}/status`, { is_active: nextActive })
+  ElMessage.success(nextActive ? '账号已启用' : '账号已停用')
   await load()
 }
 async function handleFile(file: any) {
@@ -1618,6 +2881,29 @@ async function reparseDocument(doc: any) {
   }
 }
 
+async function bulkReparseQualityDocs() {
+  if (!qualityReparseCandidateCount.value) return
+  try {
+    await ElMessageBox.confirm(`将按体检结果重新解析 ${qualityReparseCandidateCount.value} 份异常文件，并重新生成切片与索引任务。确定继续？`, '批量修复文件处理问题', {
+      confirmButtonText: '批量重新解析',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  bulkReparsingQualityDocs.value = true
+  try {
+    const { data } = await http.post('/admin/document-quality/reparse', { grades: ['blocked', 'poor'], limit: 200 })
+    ElMessage.success(`已加入重新解析队列 ${data?.queued_count || 0} 份，跳过 ${data?.skipped_count || 0} 份`)
+    await load()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '批量重新解析失败')
+  } finally {
+    bulkReparsingQualityDocs.value = false
+  }
+}
+
 async function deleteDocument(doc: any) {
   if (!doc?.id) return
   try {
@@ -1676,6 +2962,21 @@ async function openDocumentPageIndex(doc: any) {
     pageIndexLoading.value = false
   }
 }
+async function openDocumentQuality(doc: any) {
+  if (!doc?.id) return
+  documentQualityDoc.value = doc
+  documentQualityVisible.value = true
+  documentQualityLoading.value = true
+  documentQualityReport.value = null
+  try {
+    documentQualityReport.value = (await http.get(`/admin/documents/${doc.id}/quality`)).data || null
+  } catch (err: any) {
+    ElMessage.error(requestErrorDetail(err, '加载文件质量报告失败'))
+  } finally {
+    documentQualityLoading.value = false
+  }
+}
+
 async function rebuildDocumentPageIndex(doc: any) {
   if (!doc?.id) return
   rebuildingPageIndexDocId.value = doc.id
@@ -1729,6 +3030,18 @@ async function saveChunk(chunk: EditableChunk) {
     savingChunkId.value = null
   }
 }
+function qualityGradeLabel(grade?: string) {
+  return ({ good: '状态良好', needs_review: '需要复核', poor: '质量较差', blocked: '严重异常' } as Record<string, string>)[grade || ''] || grade || '未知'
+}
+function qualitySeverityLabel(severity?: string) {
+  return ({ critical: '严重', warning: '警告', info: '提示', ok: '正常' } as Record<string, string>)[severity || ''] || severity || '未知'
+}
+function formatFileSize(size: number) {
+  const value = Number(size || 0)
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
 function statusText(status?: string) {
   return ({ ready: '可检索', processing: '处理中', failed: '失败', pending: '等待', queued: '已排队' } as Record<string, string>)[status || ''] || status || '未知'
 }
@@ -1739,17 +3052,14 @@ function stageText(stage?: string) {
 onMounted(async () => {
   document.documentElement.classList.add('admin-scroll-page')
   document.body.classList.add('admin-scroll-page')
-  try {
-    const runtime = await feishuNativeRuntime()
-    feishuRuntimeMode.value = runtime.mode
-  } catch {
-    feishuRuntimeMode.value = 'mock'
-  }
+
   await load()
   startStatusPollingIfNeeded()
+  ensureTaskPolling()
 })
 onUnmounted(() => {
   stopStatusPolling()
+  stopTaskPolling()
   document.documentElement.classList.remove('admin-scroll-page')
   document.body.classList.remove('admin-scroll-page')
 })

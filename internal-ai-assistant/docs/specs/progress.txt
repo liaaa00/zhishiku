@@ -81,15 +81,15 @@
 ### 前端
 - [x] **[中] 无路由守卫**：未登录访问 `/chat` 或 `/admin` 会跳转 `/login`，非管理员访问 `/admin` 会跳转 `/chat`。
 - [x] **[中] 无全局 401 拦截**：Token 过期后 API 返回 401，前端会清理 token/user 并自动跳转登录页。
-- [ ] **[低] 聊天页输入框长文本无自动扩展**：textarea 未设 `autosize`，长问题需要手动滚动。
+- [x] **[低] 聊天页输入框长文本自动扩展**：底部提问框显式使用 `composerAutosize`，最多扩展 10 行并在 240px 后内部滚动。
 
 ### 后端
 - [x] **[低] Embedding 默认 local-hash**：生产环境已拒绝 local-hash，需配置 OpenAI-compatible embedding；本地仍可用 local 便捷试跑。
 
 ### 未完成的重构
 - [x] **[低] Pinia Store 空置**：已落地 `frontend/src/stores/auth.ts` 管理登录态；大型页面内部业务状态暂不拆分，避免无收益大改。
-- [ ] **[低] 无单元测试**：仅有 QA 回归测试脚本，无 `pytest` 或 `vitest` 单元测试。
-- [ ] **[低] SSR HTML 与 Vue SPA 功能重复**：两个版本的聊天页和管理页功能不完全一致。
+- [x] **[低] 无单元测试**：已接入 `pytest`，新增 `backend/tests/unit/` 覆盖安全纯函数与表格 schema 推断。
+- [x] **[低] SSR HTML 与 Vue SPA 功能重复（已缓解）**：后端 `/login`、`/chat`、`/admin` 现在优先返回 Vue dist；仅在未构建时保留 `/chat`、`/admin` 内联 HTML 回退。验证：`python tests/qa_frontend_spa_fallback.py`。
 
 ---
 

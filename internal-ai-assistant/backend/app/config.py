@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+REPO_DIR = BASE_DIR.parent
+FRONTEND_DIST_DIR = Path(os.getenv("FRONTEND_DIST_DIR") or (REPO_DIR / "frontend" / "dist"))
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -30,7 +32,14 @@ PAGEINDEX_ENABLED = os.getenv("PAGEINDEX_ENABLED", "1").lower() not in {"0", "fa
 PAGEINDEX_MIN_CHARS = int(os.getenv("PAGEINDEX_MIN_CHARS", "1"))
 PAGEINDEX_REPO_PATH = os.getenv("PAGEINDEX_REPO_PATH", "").strip()
 
+GRAPH_EXTRACTION_ENABLED = os.getenv("GRAPH_EXTRACTION_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
+GRAPH_AUTO_CONFIRM_THRESHOLD = float(os.getenv("GRAPH_AUTO_CONFIRM_THRESHOLD", "0.85"))
+GRAPH_PENDING_THRESHOLD = float(os.getenv("GRAPH_PENDING_THRESHOLD", "0.60"))
+GRAPH_MAX_CHUNKS_PER_DOCUMENT = int(os.getenv("GRAPH_MAX_CHUNKS_PER_DOCUMENT", "80"))
+GRAPH_MAX_CHARS_PER_CHUNK = int(os.getenv("GRAPH_MAX_CHARS_PER_CHUNK", "3000"))
+
 PDF_OCR_MAX_PAGES = int(os.getenv("PDF_OCR_MAX_PAGES", "20"))
+PDF_OCR_MIN_TEXT_CHARS = int(os.getenv("PDF_OCR_MIN_TEXT_CHARS", "80"))
 PDF_OCR_ZOOM = float(os.getenv("PDF_OCR_ZOOM", "2.0"))
 
 # 文档上传限制：默认 200MB，可通过 MAX_UPLOAD_MB 调整。
@@ -92,3 +101,24 @@ def validate_security() -> None:
     problems.extend(validate_production_embedding())
     if problems:
         raise RuntimeError("生产环境安全检查未通过：\n- " + "\n- ".join(problems))
+
+
+def warn_insecure_defaults() -> list[str]:
+    """非生产环境下，对仍在使用的默认密钥/口令发出告警（不阻断启动）。
+
+    返回告警文案列表，调用方负责记录日志。生产环境由 validate_security() 直接拦截，
+    此处对生产返回空列表以避免重复处理。
+    """
+    if IS_PRODUCTION:
+        return []
+    warnings: list[str] = []
+    if JWT_SECRET == INSECURE_JWT_SECRET:
+        warnings.append(
+            "JWT_SECRET 仍为默认值 'please-change-this-secret'：该密钥公开可知，"
+            "任何人可伪造任意用户（含管理员）的登录令牌。请设置环境变量 JWT_SECRET。"
+        )
+    if DEFAULT_ADMIN_PASSWORD == INSECURE_ADMIN_PASSWORD:
+        warnings.append(
+            "DEFAULT_ADMIN_PASSWORD 仍为默认值：管理员口令极易被猜中，请设置环境变量 DEFAULT_ADMIN_PASSWORD。"
+        )
+    return warnings

@@ -1,13 +1,14 @@
 import json
 import re
+import unicodedata
 from typing import List, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .ai_client import embed_texts
 from .grounding import filter_relevant_contexts, relevance_terms
-from .models import Document, DocumentChunk, DocumentPageIndex, User, document_group_link
+from .models import Document, DocumentChunk, DocumentPageIndex, DocumentProcessingStatus, User, document_group_link
 from .pageindex_adapter import load_pageindex_payload
 from .settings_service import get_model_config, get_reranker_config
 from .table_query import is_table_query
@@ -23,6 +24,7 @@ ADAPTIVE_NEIGHBOR_MAX = 18
 PAGEINDEX_SUPPLEMENT_MAX = 12
 PAGEINDEX_DOC_SCAN_MAX = 50
 PAGEINDEX_PAGE_CHAR_LIMIT = 1800
+PAGEINDEX_PAGE_NEIGHBOR_WINDOW = 1
 
 # Lightweight Agentic RAG guardrails. This is intentionally bounded: simple
 # questions keep the existing one-pass adaptive RAG path, while complex / multi-hop
@@ -159,6 +161,14 @@ ESIGN_EMPLOYEE_ENTRY_MARKERS = ("员工", "本人", "微助手", "外服云", "�
 ESIGN_SIGNING_ACTION_MARKERS = ("点击签署", "点击劳动合同", "签署", "确认签署", "核对", "签署完成")
 ESIGN_INTERNAL_WORKFLOW_MARKERS = ("工单", "工单系统", "合同组", "内部审核", "hr发起", "归档", "盖章", "审批流", "续签申请")
 ESIGN_STRONG_EMPLOYEE_FLOW_MARKERS = ("微助手", "外服云", "员工服务", "点击签署", "点击劳动合同", "核对", "短信")
+
+PORTAL_QUERY_MARKERS = ("微助手", "外服云", "员工服务", "登录", "注册", "入口", "身份认证", "身份验证", "账号", "密码", "微信", "公众号")
+PORTAL_CONTEXT_MARKERS = ("微助手", "外服云", "员工服务", "登录界面", "个人登录", "个人注册", "手机注册", "注册", "登录", "身份认证", "身份验证", "账号", "密码", "微信", "公众号")
+WORKORDER_QUERY_MARKERS = ("工单", "工单系统", "合同组", "入职场景", "离职场景", "离职", "离职证明", "离职联系", "劳动合同续签", "线下交付", "交付完成", "自动派", "派出", "报岗", "商保投保", "待遇申报", "业务员")
+WORKORDER_CONTEXT_MARKERS = ("工单系统", "工单", "合同组", "场景设定", "入职管理", "离职管理", "离职证明", "离职联系", "劳动合同签订", "入职联系", "劳动合同续签", "线下交付", "交付完成", "自动派", "派出", "报岗", "报岗集约录入", "商保投保", "待遇申报", "业务员", "任务分派")
+WORKORDER_SPECIFIC_EVIDENCE_MARKERS = ("劳动合同签订", "入职联系", "商保投保", "报岗集约录入", "离职联系", "小程序", "离职证明", "线下交付", "交付完成")
+EMPLOYEE_ESIGN_CONTEXT_MARKERS = (*ESIGN_SUBJECT_MARKERS, "电子签合同", "点击劳动合同", "点击签署", "签署完成", "实名认证", "支付宝", "下载保存", "短信链接")
+FORM_QUERY_MARKERS = ("入职人员信息表", "全职员工", "表格", "字段", "银行帐号", "银行账号", "开户行", "合同字段", "劳动合同起始日", "劳动合同到期日")
 
 
 def parse_embedding(value: str) -> List[float]:
@@ -313,8 +323,13 @@ def _context_full_text(context: dict) -> str:
     return " ".join([_context_title_text(context), str(context.get("content") or "")])
 
 
+def _normalize_match_text(text: str) -> str:
+    return unicodedata.normalize("NFKC", str(text or ""))
+
+
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
-    return any(marker in text for marker in markers)
+    normalized = _normalize_match_text(text)
+    return any(_normalize_match_text(marker) in normalized for marker in markers)
 
 
 def _is_internal_contract_workflow_context(text: str) -> bool:
@@ -330,23 +345,42 @@ def build_query_profile(question: str) -> dict:
     is_esign = _is_esign_query(question)
     internal_intent = _contains_any(compact, ("工单", "合同组", "内部审核", "盖章", "归档", "审批", "hr", "续签申请"))
     employee_intent = _contains_any(compact, ("员工", "本人", "微助手", "外服云", "电子签", "签署", "怎么签", "如何签", "入口"))
+    portal_intent = _contains_any(compact, PORTAL_QUERY_MARKERS)
+    workorder_intent = _contains_any(compact, WORKORDER_QUERY_MARKERS) or internal_intent
+    form_intent = _contains_any(compact, FORM_QUERY_MARKERS)
     if is_esign and internal_intent and not employee_intent:
         actor = "internal"
     elif is_esign:
         actor = "employee"
     else:
         actor = "unknown"
+
+    if form_intent:
+        topic = "form_fields"
+    elif workorder_intent and not (portal_intent and not internal_intent):
+        topic = "workorder"
+    elif portal_intent and not workorder_intent:
+        topic = "employee_portal"
+    elif is_esign and actor == "employee":
+        topic = "employee_esign"
+    elif is_esign and actor == "internal":
+        topic = "workorder"
+    else:
+        topic = "general"
+
     return {
         "domain": "labor_contract" if _contains_any(compact, ("劳动合同", "合同", "签署", "签")) else "general",
         "task": "esign_process" if is_esign and is_process else ("process" if is_process else "general"),
         "actor": actor,
+        "topic": topic,
         "is_process": is_process,
         "is_esign": is_esign,
     }
 
 
 def _matched_markers(text: str, markers: tuple[str, ...]) -> list[str]:
-    return [marker for marker in markers if marker in text]
+    normalized = _normalize_match_text(text)
+    return [marker for marker in markers if _normalize_match_text(marker) in normalized]
 
 
 def score_context_for_query_profile(profile: dict, context: dict) -> dict:
@@ -361,6 +395,7 @@ def score_context_for_query_profile(profile: dict, context: dict) -> dict:
     conflict_penalty = 0.0
     evidence_score = 0.0
     wrong_source_penalty = 0.0
+    topic_penalty = 0.0
 
     if profile.get("is_process") and _is_form_like_context(context):
         wrong_source_penalty += 0.32
@@ -368,6 +403,74 @@ def score_context_for_query_profile(profile: dict, context: dict) -> dict:
 
     internal_hits = _matched_markers(compact_text, ESIGN_INTERNAL_WORKFLOW_MARKERS)
     strong_employee_hits = _matched_markers(compact_text, ESIGN_STRONG_EMPLOYEE_FLOW_MARKERS)
+    portal_hits = _matched_markers(compact_text, PORTAL_CONTEXT_MARKERS)
+    workorder_hits = _matched_markers(compact_text, WORKORDER_CONTEXT_MARKERS)
+    workorder_specific_hits = _matched_markers(compact_text, WORKORDER_SPECIFIC_EVIDENCE_MARKERS)
+    employee_esign_hits = _matched_markers(compact_text, EMPLOYEE_ESIGN_CONTEXT_MARKERS)
+    form_hits = _matched_markers(compact_text, FORM_QUERY_MARKERS)
+    title_portal_hits = _matched_markers(title_text, PORTAL_CONTEXT_MARKERS)
+    title_workorder_hits = _matched_markers(title_text, WORKORDER_CONTEXT_MARKERS)
+    title_form_hits = _matched_markers(title_text, FORM_QUERY_MARKERS)
+    title_esign_hits = _matched_markers(title_text, EMPLOYEE_ESIGN_CONTEXT_MARKERS)
+
+    topic = str(profile.get("topic") or "general")
+    if topic == "employee_portal":
+        positive.extend((title_portal_hits or portal_hits)[:5])
+        if title_portal_hits:
+            intent_score += 0.18
+        if portal_hits:
+            evidence_score += min(0.16, len(portal_hits) * 0.04)
+        if workorder_hits and not portal_hits:
+            topic_penalty += 0.42
+            negative.append("topic_mismatch:workorder")
+        if employee_esign_hits and not portal_hits:
+            topic_penalty += 0.20
+            negative.append("topic_mismatch:employee_esign")
+        if _is_form_like_context(context):
+            topic_penalty += 0.18
+            negative.append("topic_mismatch:form")
+    elif topic == "workorder":
+        positive.extend((title_workorder_hits or workorder_specific_hits or workorder_hits)[:6])
+        if title_workorder_hits:
+            intent_score += 0.20
+        if workorder_hits:
+            evidence_score += min(0.18, len(workorder_hits) * 0.04)
+        if workorder_specific_hits:
+            intent_score += min(0.18, len(workorder_specific_hits) * 0.04)
+            evidence_score += min(0.24, len(workorder_specific_hits) * 0.06)
+        if portal_hits and not workorder_hits:
+            topic_penalty += 0.36
+            negative.append("topic_mismatch:portal")
+        if employee_esign_hits and not workorder_hits:
+            topic_penalty += 0.34
+            negative.append("topic_mismatch:employee_esign")
+        if _is_form_like_context(context) and not workorder_hits:
+            topic_penalty += 0.34
+            negative.append("topic_mismatch:form")
+    elif topic == "employee_esign":
+        positive.extend((title_esign_hits or employee_esign_hits or portal_hits)[:5])
+        if title_esign_hits:
+            intent_score += 0.16
+        if employee_esign_hits:
+            evidence_score += min(0.16, len(employee_esign_hits) * 0.04)
+        if workorder_hits and not (employee_esign_hits or portal_hits):
+            topic_penalty += 0.42
+            negative.append("topic_mismatch:workorder")
+        if _is_form_like_context(context):
+            topic_penalty += 0.18
+            negative.append("topic_mismatch:form")
+    elif topic == "form_fields":
+        positive.extend((title_form_hits or form_hits)[:5])
+        if title_form_hits:
+            intent_score += 0.20
+        if form_hits or _is_form_like_context(context):
+            evidence_score += 0.14
+        if workorder_hits and not (form_hits or _is_form_like_context(context)):
+            topic_penalty += 0.28
+            negative.append("topic_mismatch:workorder")
+        if employee_esign_hits and not (form_hits or _is_form_like_context(context)):
+            topic_penalty += 0.28
+            negative.append("topic_mismatch:employee_esign")
 
     if profile.get("actor") == "internal":
         negative.extend(strong_employee_hits[:5])
@@ -427,6 +530,8 @@ def score_context_for_query_profile(profile: dict, context: dict) -> dict:
         "evidence_score": round(min(evidence_score, 0.36), 4),
         "conflict_penalty": round(min(conflict_penalty, 0.58), 4),
         "wrong_source_penalty": round(min(wrong_source_penalty, 0.42), 4),
+        "topic_penalty": round(min(topic_penalty, 0.5), 4),
+        "topic": str(profile.get("topic") or "general"),
         "positive_signals": list(dict.fromkeys(positive))[:8],
         "negative_signals": list(dict.fromkeys(negative))[:8],
     }
@@ -474,6 +579,76 @@ def _is_esign_support_context(question: str, context: dict) -> bool:
         and _contains_any(compact_full_text, ("注册", "登录", "入口", "绑定", "验证", "员工服务"))
         and not _is_internal_contract_workflow_context(compact_full_text)
     )
+
+
+def _document_quality_grade(status: DocumentProcessingStatus | None, chunk_count: int, total_chars: int) -> tuple[str, list[str], float]:
+    reasons: list[str] = []
+    if status and status.status == "failed":
+        reasons.append("processing_failed")
+    if chunk_count <= 0:
+        reasons.append("no_chunks")
+    if total_chars < 80:
+        reasons.append("very_low_text")
+    if status and status.stage in {"file_missing", "parse_error", "need_ocr"}:
+        reasons.append(status.stage)
+    if any(reason in reasons for reason in ("processing_failed", "no_chunks", "file_missing", "parse_error", "need_ocr")):
+        return "blocked", reasons, 0.45
+    if "very_low_text" in reasons:
+        return "poor", reasons, 0.18
+    return "good", reasons, 0.0
+
+
+def _quality_signal_by_document(db: Session, document_ids: set[str]) -> dict[str, dict]:
+    if not document_ids:
+        return {}
+    statuses = {
+        item.document_id: item
+        for item in db.execute(select(DocumentProcessingStatus).where(DocumentProcessingStatus.document_id.in_(document_ids))).scalars().all()
+    }
+    rows = db.execute(
+        select(DocumentChunk.document_id, func.count(DocumentChunk.id), func.coalesce(func.sum(func.length(DocumentChunk.content)), 0))
+        .where(DocumentChunk.document_id.in_(document_ids))
+        .group_by(DocumentChunk.document_id)
+    ).all()
+    stats = {str(doc_id): (int(count or 0), int(total or 0)) for doc_id, count, total in rows}
+    result: dict[str, dict] = {}
+    for doc_id in document_ids:
+        chunk_count, total_chars = stats.get(doc_id, (0, 0))
+        grade, reasons, penalty = _document_quality_grade(statuses.get(doc_id), chunk_count, total_chars)
+        result[doc_id] = {
+            "grade": grade,
+            "reasons": reasons,
+            "penalty": penalty,
+            "chunk_count": chunk_count,
+            "total_chars": total_chars,
+        }
+    return result
+
+
+def _apply_context_quality_signal(context: dict, signal: dict | None) -> dict:
+    enriched = dict(context)
+    signal = signal or {"grade": "unknown", "reasons": [], "penalty": 0.0, "chunk_count": None, "total_chars": None}
+    penalty = _safe_float(signal.get("penalty"), 0.0)
+    original_score = _safe_float(enriched.get("score"), 0.0)
+    enriched["source_quality"] = {
+        "grade": signal.get("grade") or "unknown",
+        "reasons": signal.get("reasons") or [],
+        "penalty": penalty,
+        "chunk_count": signal.get("chunk_count"),
+        "total_chars": signal.get("total_chars"),
+    }
+    if penalty > 0:
+        enriched["score"] = round(max(0.0, original_score - penalty), 4)
+        enriched["quality_penalty"] = penalty
+        reason_text = ",".join(signal.get("reasons") or []) or "low_quality_document"
+        enriched["match_reason"] = f"{enriched.get('match_reason') or 'retrieval'}; quality_penalty:{reason_text}"
+    return enriched
+
+
+def apply_document_quality_signals(db: Session, contexts: list[dict]) -> list[dict]:
+    doc_ids = {str(context.get("document_id") or "") for context in contexts if context.get("document_id")}
+    signals = _quality_signal_by_document(db, doc_ids)
+    return [_apply_context_quality_signal(context, signals.get(str(context.get("document_id") or ""))) for context in contexts]
 
 
 def _chunk_context(doc: Document, chunk: DocumentChunk, score: float = 0.35, match_reason: str = "检索补充片段") -> dict:
@@ -866,6 +1041,7 @@ def _rerank_context_score(question: str, question_terms: set[str], context: dict
     lexical_score = min(0.30, coverage * 0.30)
     rank_penalty = min(0.08, original_rank * 0.004)
     profile_features = score_context_for_query_profile(profile or build_query_profile(question), context)
+    quality_penalty = _safe_float(context.get("quality_penalty"), _safe_float((context.get("source_quality") or {}).get("penalty"), 0.0))
     score = (
         source_score
         + lexical_score
@@ -875,11 +1051,14 @@ def _rerank_context_score(question: str, question_terms: set[str], context: dict
         + _safe_float(profile_features.get("evidence_score"), 0.0)
         - _safe_float(profile_features.get("conflict_penalty"), 0.0)
         - _safe_float(profile_features.get("wrong_source_penalty"), 0.0)
+        - _safe_float(profile_features.get("topic_penalty"), 0.0)
+        - quality_penalty
         - rank_penalty
     )
     profile_features.update({
         "lexical_coverage": round(coverage, 4),
         "title_boost": round(title_boost, 4),
+        "quality_penalty": round(quality_penalty, 4),
     })
     return score, profile_features
 
@@ -900,7 +1079,7 @@ def profile_rank_contexts(question: str, contexts: list[dict], profile: dict | N
         enriched["intent_ranking"] = features
         enriched["profile_score"] = round(score, 4)
         scored.append((score, idx, enriched))
-    scored.sort(key=lambda item: (bool(item[2].get("pageindex_source")), item[0]), reverse=True)
+    scored.sort(key=lambda item: (item[0], bool(item[2].get("pageindex_source"))), reverse=True)
     return [item[2] for item in scored]
 
 
@@ -920,19 +1099,24 @@ def rerank_contexts(question: str, contexts: list[dict], limit: int, profile: di
         enriched = dict(context)
         enriched["intent_ranking"] = features
         scored.append((score, idx, enriched))
-    scored.sort(key=lambda item: (bool(item[2].get("pageindex_source")), item[0]), reverse=True)
+    scored.sort(key=lambda item: (item[0], bool(item[2].get("pageindex_source"))), reverse=True)
 
     selected: list[dict] = []
     per_doc_count: dict[str, int] = {}
     seen: set[tuple[str, str]] = set()
     pageindex_selected = 0
     # First pass: keep diversity and prefer at most a few contexts from the same document.
+    # Do not let very weak topic-mismatch items enter early just to satisfy diversity;
+    # they may be used only as last-resort filler below.
     for score, _idx, context in scored:
         key = _context_key(context)
         doc_id = key[0]
         if not doc_id or key in seen:
             continue
-        if per_doc_count.get(doc_id, 0) >= 3 and len(selected) >= ADAPTIVE_FINAL_CONTEXT_MIN:
+        ranking = context.get("intent_ranking") or {}
+        if _safe_float(ranking.get("topic_penalty"), 0.0) >= 0.28 and score < 0.45:
+            continue
+        if per_doc_count.get(doc_id, 0) >= 3:
             continue
         context = dict(context)
         context["rerank_score"] = round(score, 4)
@@ -1150,27 +1334,32 @@ def _flatten_pageindex_nodes(nodes: list[dict], parent_title: str = "") -> list[
 
 
 def _pageindex_node_score(question_terms: set[str], node: dict, doc: Document, payload: dict) -> tuple[float, list[str]]:
-    haystack = " ".join(
+    # Score a structural node by its own title/content, not by the full
+    # breadcrumb. Otherwise every child of a document inherits generic document
+    # title terms and specific sections such as “入职管理” can be buried by the
+    # root/overview node.
+    title = str(node.get("title") or "")
+    node_haystack = " ".join(
         str(item or "")
         for item in [
-            doc.title,
-            doc.filename,
-            payload.get("doc_description"),
-            node.get("section_title") or node.get("title"),
+            title,
             node.get("summary") or node.get("prefix_summary"),
             node.get("text"),
         ]
     )
-    node_terms = relevance_terms(haystack)
-    overlap = sorted(question_terms.intersection(node_terms), key=len, reverse=True)
-    if not overlap:
+    doc_haystack = " ".join(str(item or "") for item in [doc.title, doc.filename])
+    node_terms = relevance_terms(node_haystack)
+    doc_terms = relevance_terms(doc_haystack)
+    node_overlap = sorted((term for term in question_terms.intersection(node_terms) if len(term) >= 2), key=len, reverse=True)
+    doc_overlap = sorted((term for term in question_terms.intersection(doc_terms) if len(term) >= 2), key=len, reverse=True)
+    if not node_overlap and not doc_overlap:
         return 0.0, []
-    long_hits = sum(1 for term in overlap if len(term) >= 2)
-    title = str(node.get("section_title") or node.get("title") or "")
     title_terms = relevance_terms(title)
     title_overlap = question_terms.intersection(title_terms)
-    score = 0.24 + min(0.5, long_hits * 0.08) + min(0.18, len(title_overlap) * 0.06)
-    return min(score, 0.92), overlap[:12]
+    node_long_hits = sum(1 for term in node_overlap if len(term) >= 2)
+    doc_long_hits = sum(1 for term in doc_overlap if len(term) >= 2)
+    score = 0.18 + min(0.56, node_long_hits * 0.08) + min(0.22, len(title_overlap) * 0.07) + min(0.12, doc_long_hits * 0.03)
+    return min(score, 0.92), (node_overlap + [term for term in doc_overlap if term not in node_overlap])[:12]
 
 
 def _pageindex_node_content(payload: dict, node: dict) -> tuple[str, int | None, str]:
@@ -1182,13 +1371,32 @@ def _pageindex_node_content(payload: dict, node: dict) -> tuple[str, int | None,
     location = f"页/行 {start}-{end}" if start and end and start != end else (f"页/行 {start}" if start else "结构节点")
 
     content_parts: list[str] = []
+    node_summary = str(node.get("summary") or node.get("prefix_summary") or "").strip()
+    if node_summary:
+        content_parts.append(f"[章节摘要]\n{node_summary}")
     pages = payload.get("pages") or []
     if isinstance(pages, list) and pages:
-        for page in pages:
-            page_no = _safe_int(page.get("page"), 0) if isinstance(page, dict) else 0
-            if start and page_no and not (start <= page_no <= end):
+        page_by_no = {
+            _safe_int(page.get("page"), 0): page
+            for page in pages
+            if isinstance(page, dict) and _safe_int(page.get("page"), 0)
+        }
+        if start:
+            primary_pages = list(range(start, end + 1))
+            neighbor_pages: list[int] = []
+            for distance in range(1, PAGEINDEX_PAGE_NEIGHBOR_WINDOW + 1):
+                if end + distance in page_by_no:
+                    neighbor_pages.append(end + distance)
+                if start - distance in page_by_no:
+                    neighbor_pages.append(start - distance)
+            page_numbers = list(dict.fromkeys(primary_pages + neighbor_pages))
+        else:
+            page_numbers = list(page_by_no.keys())
+        for page_no in page_numbers:
+            page = page_by_no.get(page_no)
+            if not page:
                 continue
-            text = str(page.get("content") or "") if isinstance(page, dict) else ""
+            text = str(page.get("content") or "")
             if text.strip():
                 content_parts.append(f"[第 {page_no} 页]\n{text.strip()}")
             if sum(len(part) for part in content_parts) >= PAGEINDEX_PAGE_CHAR_LIMIT:
@@ -1318,6 +1526,7 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
             retrieval_backend = "hybrid"
         elif retrieval_backend == "sqlite":
             retrieval_backend = "sqlite+keyword"
+    candidate_contexts = apply_document_quality_signals(db, candidate_contexts)
     filtered = filter_relevant_contexts(candidate_contexts, question, min_score=float(plan["min_score"]))
     filtered = profile_rank_contexts(question, filtered, query_profile)
     candidate_contexts = profile_rank_contexts(question, candidate_contexts, query_profile)
@@ -1367,6 +1576,7 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
             agentic_notes.append(f"rewrite_backend={extra_backend}; extra={extra_count}; filtered={len(extra_filtered)}" + (f"; note={extra_note}" if extra_note else ""))
 
         if agentic_extra_candidate_count:
+            candidate_contexts = apply_document_quality_signals(db, candidate_contexts)
             filtered = filter_relevant_contexts(candidate_contexts, question, min_score=float(plan["min_score"]))
             filtered = profile_rank_contexts(question, filtered, query_profile)
             candidate_contexts = profile_rank_contexts(question, candidate_contexts, query_profile)

@@ -27,8 +27,13 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     is_admin = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    approval_status = Column(String(30), default="approved", nullable=False, index=True)  # pending/approved/rejected
+    approval_note = Column(Text, default="", nullable=False)
+    approved_by_user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_by_username = Column(String(100), default="", nullable=False)
+    approved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    groups = relationship("Group", secondary=user_group_link, back_populates="users")
+    groups = relationship("Group", secondary=user_group_link, back_populates="users", foreign_keys=[user_group_link.c.user_id, user_group_link.c.group_id])
 
 
 class Group(Base):
@@ -80,6 +85,70 @@ class DocumentTableRow(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     document = relationship("Document", back_populates="table_rows")
+
+
+class GraphEntity(Base):
+    __tablename__ = "graph_entities"
+    __table_args__ = (
+        UniqueConstraint("normalized_name", "entity_type", name="ux_graph_entities_normalized_type"),
+    )
+    id = Column(String, primary_key=True)
+    name = Column(String(255), nullable=False, index=True)
+    normalized_name = Column(String(255), nullable=False, index=True)
+    entity_type = Column(String(80), nullable=False, index=True)
+    description = Column(Text, nullable=False, default="")
+    confidence = Column(Float, nullable=False, default=0.0)
+    status = Column(String(30), nullable=False, default="confirmed", index=True)  # confirmed/ignored
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class GraphRelation(Base):
+    __tablename__ = "graph_relations"
+    id = Column(String, primary_key=True)
+    source_entity_id = Column(String, ForeignKey("graph_entities.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_entity_id = Column(String, ForeignKey("graph_entities.id", ondelete="CASCADE"), nullable=False, index=True)
+    relation_type = Column(String(80), nullable=False, index=True)
+    description = Column(Text, nullable=False, default="")
+    confidence = Column(Float, nullable=False, default=0.0)
+    source_document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_chunk_id = Column(String, ForeignKey("document_chunks.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_page_number = Column(Integer, nullable=True)
+    evidence_text = Column(Text, nullable=False, default="")
+    status = Column(String(30), nullable=False, default="pending", index=True)  # pending/confirmed/ignored/auto
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    source_entity = relationship("GraphEntity", foreign_keys=[source_entity_id])
+    target_entity = relationship("GraphEntity", foreign_keys=[target_entity_id])
+    document = relationship("Document")
+    chunk = relationship("DocumentChunk")
+
+
+class GraphMention(Base):
+    __tablename__ = "graph_mentions"
+    id = Column(String, primary_key=True)
+    entity_id = Column(String, ForeignKey("graph_entities.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_id = Column(String, ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=True, index=True)
+    page_number = Column(Integer, nullable=True)
+    mention_text = Column(String(255), nullable=False, default="")
+    confidence = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    entity = relationship("GraphEntity")
+
+
+class GraphExtractionStatus(Base):
+    __tablename__ = "graph_extraction_status"
+    document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
+    status = Column(String(30), nullable=False, default="not_started", index=True)  # not_started/pending/processing/ready/failed
+    message = Column(Text, nullable=False, default="")
+    entity_count = Column(Integer, nullable=False, default=0)
+    relation_count = Column(Integer, nullable=False, default=0)
+    pending_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    document = relationship("Document")
 
 
 class DocumentPageIndex(Base):
@@ -199,6 +268,7 @@ class Feedback(Base):
     reviewed_at = Column(DateTime, nullable=True)
     review_note = Column(Text, nullable=False, default="")
     admin_note = Column(Text, nullable=False, default="")
+    root_cause = Column(String(50), nullable=False, default="", index=True)
     handled_by_user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     handled_by_username = Column(String(100), nullable=False, default="")
     handled_at = Column(DateTime, nullable=True)

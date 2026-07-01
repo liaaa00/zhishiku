@@ -176,7 +176,7 @@
   3. 创建 `routers/deps.py`，集中 `require_user`、`require_admin`、`audit`、`row_to_user` 等共享依赖
   4. 在 `main.py` 中导入并注册 `auth_router`
 - [x] **验证方式**：运行 `python tests/qa_security_regression.py`，确认登录 API 与 `/api/me` 依赖链可用。
-- [x] **注意**：路由拆分后 `main.py` 仅保留应用初始化、router 注册、HTML fallback 和 health check。
+- [x] **注意**：路由拆分后 `main.py` 仅保留应用初始化、router 注册、Vue SPA 优先响应、HTML fallback 和 health check。
 
 ---
 
@@ -280,3 +280,4 @@
 | 6 | 6.1 收紧 CORS 配置 | 已完成 | 2026-06-27 |
 | 7 | 7.4 生产环境切换 OpenAI-compatible embedding 并补充检索质量评估 | 已完成 | 2026-06-27 |
 | 7 | 7.5 评估 Pinia Store 落地范围，最小落地 auth store | 已完成 | 2026-06-27 |
+| 7 | 7.6 接入后端 pytest 单元测试基础设施 | 已完成 | 2026-06-27 |

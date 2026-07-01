@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .models import User
-from .table_plan import CITY_TERMS, COLUMN_ALIASES, clean as plan_clean, compact as _compact, describe_table_query_plan, parse_table_query_plan
+from .table_plan import CITY_EQUIVALENTS, CITY_TERMS, COLUMN_ALIASES, clean as plan_clean, compact as _compact, describe_table_query_plan, parse_table_query_plan
 from .table_query import row_to_context, select_table_documents, table_rows_for_documents
 from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_schema_suggestions, semantic_value
 from .table_schema_aliases import apply_confirmed_schema_aliases, load_table_schema_aliases, merge_schema_suggestion_status
@@ -55,6 +55,10 @@ def _month_tokens(question: str) -> list[str]:
                 f"{year}年{month_no:02d}月",
             }
         )
+    for month in re.findall(r"(?<!\d)(\d{1,2})\s*月", text):
+        month_no = int(month)
+        if 1 <= month_no <= 12:
+            tokens.add(f"{month_no:02d}")
     return [token for token in sorted(tokens, key=len, reverse=True) if len(token) >= 2]
 
 
@@ -63,6 +67,19 @@ def _sheet_matches_month(sheet_name: str, month_tokens: list[str]) -> bool:
     if not sheet or not month_tokens:
         return False
     return any(token == sheet or token in sheet or sheet in token for token in month_tokens)
+
+
+def _document_month_tokens(context: dict) -> list[str]:
+    text = _context_document_text(context)
+    tokens: set[str] = set()
+    for year, month in re.findall(r"(20\d{2})(\d{2})", re.sub(r"\s+", "", text)):
+        month_no = int(month)
+        if 1 <= month_no <= 12:
+            tokens.add(f"{year}{month_no:02d}")
+            tokens.add(f"{year}-{month_no:02d}")
+            tokens.add(f"{year}年{month_no}月")
+            tokens.add(f"{year}年{month_no:02d}月")
+    return [token for token in sorted(tokens, key=len, reverse=True) if len(token) >= 2]
 
 
 def _year_tokens(question: str) -> list[str]:
@@ -81,6 +98,17 @@ def _city_tokens(question: str) -> list[str]:
     return [city for city in CITY_TERMS if city in compact]
 
 
+def _city_equivalents(city: str) -> tuple[str, ...]:
+    return CITY_EQUIVALENTS.get(city, (city,))
+
+
+def _context_document_text(context: dict) -> str:
+    return " ".join(
+        str(context.get(key) or "")
+        for key in ("document_title", "filename", "document_id")
+    )
+
+
 def _row_matches_city(context: dict, city_tokens: list[str]) -> bool:
     if not city_tokens:
         return True
@@ -93,7 +121,7 @@ def _row_matches_city(context: dict, city_tokens: list[str]) -> bool:
     if not focused_values:
         focused_values = [str(value or "") for value in row.values()]
     haystack = " ".join(focused_values)
-    return any(city in haystack for city in city_tokens)
+    return any(alias in haystack for city in city_tokens for alias in _city_equivalents(city))
 
 
 def _column_matches(key: str, alias_group: str) -> bool:
@@ -186,6 +214,10 @@ def _row_matches_single_filter(context: dict, item: dict[str, str]) -> bool:
     value = item.get("value") or ""
     focused_values = _row_values_for_aliases(row, (column,), semantic_map)
     combined = " ".join(value for value in focused_values if value)
+    if column == "city" and operator in {"contains", "eq"} and value:
+        return any(alias in combined for alias in _city_equivalents(value))
+    if column == "city" and operator == "not_contains" and value:
+        return not any(alias in combined for alias in _city_equivalents(value))
     if operator in {"contains", "not_contains"}:
         return _compare_values(combined, value, operator)
     if operator == "is_empty":
@@ -261,9 +293,12 @@ def _row_score(question: str, context: dict, doc_rank: int) -> float:
     row_keys = _clean(" ".join(str(key) for key in row.keys())) if row else ""
     row_values = _clean(" ".join(str(value) for value in row.values())) if row else ""
     semantic_values = _clean(" ".join(semantic_value(row, key, semantic_map) for key in ("city", "company", "status") if semantic_value(row, key, semantic_map)))
-    combined = " ".join(part for part in [sheet, row_text, row_keys, row_values, semantic_values] if part).lower()
+    combined = " ".join(part for part in [sheet, row_text, row_keys, row_values, semantic_values, _context_document_text(context)] if part).lower()
 
     score = 0.4 - doc_rank * 0.05
+    for city in _city_tokens(question):
+        if any(alias.lower() in combined for alias in _city_equivalents(city)):
+            score += 0.6
     month_tokens = _month_tokens(question)
     if month_tokens:
         if _sheet_matches_month(sheet, month_tokens):
@@ -272,6 +307,10 @@ def _row_score(question: str, context: dict, doc_rank: int) -> float:
             score += 1.5
         else:
             score -= 1.25
+    else:
+        document_month_tokens = _document_month_tokens(context)
+        if document_month_tokens and _sheet_matches_month(sheet, document_month_tokens):
+            score += 0.35
 
     for token in _question_tokens(question):
         needle = token.lower()

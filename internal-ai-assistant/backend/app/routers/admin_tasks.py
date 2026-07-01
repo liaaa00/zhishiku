@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..citation_utils import bounded_limit
 from ..database import get_db
-from ..models import BackgroundTask, User
+from ..models import BackgroundTask, DocumentProcessingStatus, User
 from .deps import audit, require_admin
 
 router = APIRouter()
@@ -18,6 +18,10 @@ def list_tasks(limit: int = Query(500, ge=1, le=500), db: Session = Depends(get_
     rows = db.execute(
         select(BackgroundTask).options(selectinload(BackgroundTask.document)).order_by(BackgroundTask.created_at.desc()).limit(row_limit)
     ).scalars().all()
+    status_by_doc = {
+        item.document_id: item
+        for item in db.execute(select(DocumentProcessingStatus)).scalars().all()
+    }
     return [
         {
             "id": t.id,
@@ -25,6 +29,9 @@ def list_tasks(limit: int = Query(500, ge=1, le=500), db: Session = Depends(get_
             "document_id": t.document_id,
             "document_title": t.document.title if t.document else "",
             "document_filename": t.document.filename if t.document else "",
+            "document_status": status_by_doc.get(t.document_id).status if t.document_id and status_by_doc.get(t.document_id) else "",
+            "document_stage": status_by_doc.get(t.document_id).stage if t.document_id and status_by_doc.get(t.document_id) else "",
+            "document_message": status_by_doc.get(t.document_id).message if t.document_id and status_by_doc.get(t.document_id) else "",
             "status": t.status,
             "attempts": t.attempts,
             "last_error": t.last_error,

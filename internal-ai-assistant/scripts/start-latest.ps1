@@ -56,22 +56,36 @@ Write-Host '=== Internal AI Assistant one-click launcher ==='
 Write-Host "Project: $ProjectRoot"
 Write-Host 'It starts from the current project folder, so it always uses the latest edited code.'
 
-Stop-PortProcess 8000
 Stop-PortProcess 5174
 
-Write-Host 'Starting backend at http://localhost:8000 ...'
-$backendCommand = "cd /d `"$BackendDir`" && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+$BackendPort = 8000
+if (Test-Http 'http://localhost:8000/api/health') {
+  Write-Host 'Port 8000 already has a healthy backend. Reusing it.'
+} else {
+  Stop-PortProcess 8000
+  Start-Sleep -Seconds 1
+  if (Test-Http 'http://localhost:8000/api/health') {
+    Write-Host 'Backend on port 8000 became healthy after cleanup.'
+  } else {
+    $BackendPort = 8002
+    Stop-PortProcess 8002
+  }
+}
+
+$BackendUrl = "http://127.0.0.1:$BackendPort"
+Write-Host "Starting backend at $BackendUrl ..."
+$backendCommand = "cd /d `"$BackendDir`" && python -m uvicorn app.main:app --host 0.0.0.0 --port $BackendPort --reload"
 Start-Process cmd.exe -ArgumentList '/k', $backendCommand -WindowStyle Normal | Out-Null
 
-if (Wait-Http 'http://localhost:8000/api/health' 60) {
-  Write-Host 'Backend is ready.'
+if (Wait-Http "$BackendUrl/api/health" 60) {
+  Write-Host "Backend is ready: $BackendUrl"
 } else {
-  Write-Warning 'Backend was not ready in 60 seconds. Please check the backend command window.'
+  Write-Warning "Backend was not ready in 60 seconds. Please check the backend command window."
 }
 
 Write-Host 'Starting frontend Vite dev server at fixed port http://localhost:5174 ...'
 $frontendRunner = Join-Path $PSScriptRoot 'run-frontend.ps1'
-Start-Process powershell.exe -ArgumentList @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $frontendRunner, '-FrontendDir', $FrontendDir, '-LogFile', $FrontendLog) -WindowStyle Normal | Out-Null
+Start-Process powershell.exe -ArgumentList @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $frontendRunner, '-FrontendDir', $FrontendDir, '-LogFile', $FrontendLog, '-BackendUrl', $BackendUrl) -WindowStyle Normal | Out-Null
 
 $frontendUrl = 'http://localhost:5174/'
 Set-Content -LiteralPath $UrlFile -Value $frontendUrl -Encoding UTF8

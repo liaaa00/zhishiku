@@ -16,8 +16,13 @@ def configure_sqlite_connection(dbapi_connection, _connection_record):
         return
     cursor = dbapi_connection.cursor()
     try:
-        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=30000")
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            # Docker Desktop + Windows bind mounts can reject SQLite WAL with disk I/O error.
+            # Keep the service available and let SQLite use its default journal mode instead.
+            pass
     finally:
         cursor.close()
 

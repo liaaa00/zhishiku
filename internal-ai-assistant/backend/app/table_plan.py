@@ -10,6 +10,7 @@ CITY_TERMS = (
     "成都",
     "宁波",
     "北仑",
+    "宁波北仑",
     "重庆",
     "杭州",
     "长沙",
@@ -17,6 +18,13 @@ CITY_TERMS = (
     "郑州",
     "石家庄",
 )
+
+CITY_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+    # 业务资料里“北仑派单截止时间”文件的表内城市写作“宁波”，
+    # 另一个北仑进度表写作“宁波北仑”；检索时按同一业务区域处理。
+    "北仑": ("北仑", "宁波北仑", "宁波"),
+    "宁波北仑": ("宁波北仑", "北仑", "宁波"),
+}
 
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "city": ("城市", "所在城市", "地市", "地区", "省市"),
@@ -209,6 +217,35 @@ def _filter_key(column: str, operator: str, value: str) -> tuple[str, str, str]:
     return (column, operator, clean(value))
 
 
+_QUESTION_VALUE_WORDS = (
+    "多少",
+    "多少？",
+    "是多少",
+    "是多少？",
+    "是什么",
+    "是什么？",
+    "哪天",
+    "哪天？",
+    "几号",
+    "几号？",
+    "什么时候",
+    "什么时候？",
+    "谁",
+    "谁？",
+    "哪位",
+    "哪位？",
+    "吗",
+    "吗？",
+)
+
+
+def _is_question_value(value: str) -> bool:
+    text = clean(value).strip(" ？?")
+    if not text:
+        return True
+    return text in {item.strip(" ？?") for item in _QUESTION_VALUE_WORDS}
+
+
 def _normalize_filter(column: str, value: str = "", operator: str = "contains") -> dict[str, str]:
     normalized = {"column": column, "operator": operator}
     cleaned_value = clean(value)
@@ -251,13 +288,17 @@ def _parse_marker_filters(text: str, alias: str, marker: str) -> list[dict[str, 
                 break
 
         if parsed is None:
-            for phrase, operator in _VALUE_OPERATORS:
-                if not tail.startswith(phrase):
-                    continue
-                value = _extract_value_after_operator(tail, len(phrase))
-                if value:
-                    parsed = _normalize_filter(alias, value, operator)
-                break
+            # “是否/是不是” are yes-no question words, not equality filters like 字段=否...
+            if tail.startswith(("是否", "是不是")):
+                parsed = None
+            else:
+                for phrase, operator in _VALUE_OPERATORS:
+                    if not tail.startswith(phrase):
+                        continue
+                    value = _extract_value_after_operator(tail, len(phrase))
+                    if value and not _is_question_value(value):
+                        parsed = _normalize_filter(alias, value, operator)
+                    break
         if parsed:
             filters.append(parsed)
         # A marker appearing as a selected/display column should not become a filter.
@@ -436,8 +477,10 @@ def metric_specs(question: str, aggregate_op: str = "", measure: str = "") -> li
     return metrics
 
 
-def query_operation(question: str, group_by: str = "", distinct_by: str = "", aggregate_op: str = "", metrics: list[dict[str, str]] | None = None) -> str:
+def query_operation(question: str, group_by: str = "", distinct_by: str = "", aggregate_op: str = "", metrics: list[dict[str, str]] | None = None, select_cols: list[str] | None = None) -> str:
     text = compact(question)
+    if select_cols and any(term in text for term in ("多少", "是什么", "是多少", "哪天", "几号", "什么时候", "谁", "哪位")):
+        return "retrieve"
     if group_by and metrics and len(metrics) > 1:
         return "multi_metric_group"
     if aggregate_op:
@@ -482,7 +525,7 @@ def time_dimension(question: str) -> tuple[str, str, list[str]]:
     matches = re.findall(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", text)
     matches.extend(re.findall(r"(20\d{2})\s*[-/]\s*(\d{1,2})", text))
     compact_text = compact(text)
-    for token in re.findall(r"\b(20\d{2})(\d{2})\b", compact_text):
+    for token in re.findall(r"(20\d{2})(\d{2})", compact_text):
         matches.append(token)
     if not matches:
         return "", "", []
@@ -593,7 +636,7 @@ def parse_table_query_plan(question: str, *, branch_completion: bool | None = No
     time_grain, time_value, time_tokens = time_dimension(question)
     selected = select_columns(question, filters)
     return TableQueryPlan(
-        query_op=query_operation(question, group_by, distinct_by, aggregate_op, metrics),
+        query_op=query_operation(question, group_by, distinct_by, aggregate_op, metrics, selected),
         filters=filters,
         filter_logic=filter_logic,
         filter_groups=filter_groups,

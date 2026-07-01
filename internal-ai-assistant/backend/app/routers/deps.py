@@ -18,11 +18,16 @@ def new_id() -> str:
 
 
 def row_to_user(user: User) -> dict:
+    approved_at = getattr(user, "approved_at", None)
     return {
         "id": user.id,
         "username": user.username,
         "is_admin": user.is_admin,
         "is_active": getattr(user, "is_active", True),
+        "approval_status": getattr(user, "approval_status", "approved") or "approved",
+        "approval_note": getattr(user, "approval_note", "") or "",
+        "approved_by_username": getattr(user, "approved_by_username", "") or "",
+        "approved_at": approved_at.isoformat() if approved_at else None,
         "groups": [{"id": g.id, "name": g.name} for g in user.groups],
     }
 

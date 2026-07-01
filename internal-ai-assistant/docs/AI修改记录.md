@@ -2,6 +2,76 @@
 
 > 用途：记录 AI 修改过什么、为什么改、验证过什么、有哪些遗留风险。新对话或长时间后继续时必须先读。
 
+## 2026-06-28：方案 A 部署形态与部署前测试基线
+
+### 用户要求
+
+- 用户确认采用方案 A：前端 Nginx + 后端 API + Qdrant，并同意先测试、测试通过后再进入部署改造。
+
+### 测试基线结果
+
+- `python -m compileall app`（`backend`）：通过。
+- `python tests/qa_frontend_spa_fallback.py`（`backend`）：通过。
+- `python tests/qa_security_regression.py`（`backend`）：通过。
+- `python tests/qa_api_validation.py`（`backend`）：通过，20 项检查通过。
+- `python tests/qa_final_regression.py`（`backend`）：通过。
+- `npm run build`（`frontend`）：通过；仍有 Vite chunk size warning 和 VueUse PURE 注释 warning，不阻断。
+
+### 本次部署改造
+
+- `docker-compose.yml`：新增 `frontend` 服务，构建 `./frontend`，对外暴露 `${FRONTEND_PORT:-8080}:80`；`backend` 改为 compose 内部 `expose: 8000`，由 frontend Nginx 代理 `/api/`；`qdrant` 保持向量库服务。
+- `frontend/nginx.conf`：补充 `client_max_body_size 200m`、`proxy_http_version 1.1`、`proxy_buffering off`、`proxy_read_timeout 300s` 和转发头，支持大文件上传与流式 API。
+- `README.md`：说明 Docker Compose 三服务部署形态和前端入口端口。
+
+### 验证结果
+
+- `docker compose config`：通过，渲染结果确认 frontend 发布 `${FRONTEND_PORT:-8080}`、backend 内部暴露 `8000`、qdrant 端口保持 `6333/6334`。
+- `docker compose build`：最终通过；backend 与 frontend 镜像均构建成功。
+- `docker compose up -d`：最终通过；本机 `8080` 已被 `sub2api` 容器占用，因此使用 `FRONTEND_PORT=8081` 启动 frontend。
+- Smoke 验证通过：
+  - `http://localhost:8081/api/health` → 200，返回 `{"ok":true,"version":"0.9.0"}`。
+  - `http://localhost:8081/login`、`/chat`、`/admin` → 200，均返回 Vue SPA index。
+  - `/assets/index-*.js`、`/assets/vendor-feishu-*.js`、`/assets/index-*.css` → 200。
+  - `http://localhost:8081/api/me` 未登录返回 401，符合预期。
+
+### Docker 验证期间的修复
+
+- `frontend/.dockerignore`：新增，排除 `node_modules`、`dist`、日志和本地环境文件，避免 Windows 本机依赖覆盖 Linux 容器依赖。
+- `frontend/Dockerfile`：在 Alpine 构建环境中显式补齐 Rollup 的 `@rollup/rollup-linux-x64-musl` 可选原生包，修复 `Cannot find module @rollup/rollup-linux-x64-musl`。
+- `docker-compose.yml`：Qdrant 镜像从 `qdrant/qdrant:latest` 固定为 `qdrant/qdrant:v1.15.4`，避免 `latest` 拉取受 Docker Hub 匿名限流影响，并提高部署可复现性。
+
+### 注意
+
+- `docker compose config` 渲染出当前 `.env` 中 `CORS_ORIGINS` 包含 `http://localhost:5173`，该值来自本地 `.env`；方案 A 下前端同源代理 `/api/` 不依赖 CORS，但后续整理生产 `.env` 时应改为实际域名/端口，并避免误用 5173。
+- 当前本机 8080 被 `sub2api` 占用，本项目验证入口为 `http://localhost:8081`；若释放 8080，可不设置 `FRONTEND_PORT`，按默认 `8080` 启动。
+- 未操作 `5173`，未提交或推送。
+
+## 2026-06-27：后端页面路由收敛为 Vue SPA 优先
+
+### 用户要求
+
+- 用户要求继续处理“后端内联 SSR HTML 与 Vue SPA 功能重复”的技术债，降低聊天页和管理页双实现分叉风险。
+
+### 本次修改范围
+
+- `backend/app/config.py`：新增 `FRONTEND_DIST_DIR`，默认指向仓库 `frontend/dist`，也支持通过环境变量覆盖。
+- `backend/app/main.py`：
+  - `/login`、`/chat`、`/admin` 优先返回 `FRONTEND_DIST_DIR/index.html`，让后端直连场景也能使用 Vue SPA。
+  - `/assets/{asset_path}` 从 `FRONTEND_DIST_DIR/assets` 按需返回构建资源，并阻止路径穿越。
+  - 仅当前端 dist 不存在时，`/chat`、`/admin` 保留内联 `CHAT_HTML` / `ADMIN_HTML` 容灾回退；`/login` 回退重定向到 `/chat`。
+- `backend/tests/qa_frontend_spa_fallback.py`：新增独立回归脚本，覆盖 SPA 优先、资源返回、路径穿越保护和 SSR fallback。
+- `docs/specs/APP_FLOW.md`、`docs/specs/progress.txt`、`docs/specs/CLAUDE.md`：同步更新当前路由形态和技术债状态。
+
+### 验证结果
+
+- `python -m py_compile app/main.py app/config.py tests/qa_frontend_spa_fallback.py`：通过。
+- `python tests/qa_frontend_spa_fallback.py`：通过。
+
+### 注意
+
+- 当前 `backend/Dockerfile` 的 build context 是 `backend/`，不会自动复制 `../frontend/dist`；容器内如需后端直接服务 Vue SPA，需要在部署流程中提供 `FRONTEND_DIST_DIR` 对应的构建产物，或继续通过前端 Nginx 容器提供 SPA。
+- 未操作 `5173`，未重启服务，未提交或推送。
+
 ## 2026-06-25：历史未提交改动梳理与构建验证
 
 ### 用户要求

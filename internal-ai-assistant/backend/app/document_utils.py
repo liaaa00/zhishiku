@@ -159,9 +159,19 @@ def _normalize_header(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "").strip())
 
 
-def _xlsx_rows(root, shared: list[str]) -> list[dict[int, str]]:
-    rows: list[dict[int, str]] = []
+XlsxRow = tuple[int, dict[int, str]]
+
+
+def _row_number(row, fallback: int) -> int:
+    raw = str(row.attrib.get("r") or "").strip()
+    return int(raw) if raw.isdigit() else fallback
+
+
+def _xlsx_rows(root, shared: list[str]) -> list[XlsxRow]:
+    rows: list[XlsxRow] = []
+    fallback_row_number = 0
     for row in [e for e in root.iter() if e.tag.endswith("}row") or e.tag == "row"]:
+        fallback_row_number += 1
         values: dict[int, str] = {}
         for cell in [e for e in row if e.tag.endswith("}c") or e.tag == "c"]:
             value = _cell_text(cell, shared)
@@ -170,28 +180,58 @@ def _xlsx_rows(root, shared: list[str]) -> list[dict[int, str]]:
                 if col:
                     values[col] = value
         if values:
-            rows.append(values)
+            rows.append((_row_number(row, fallback_row_number), values))
     return rows
 
 
-def _table_headers(rows: list[dict[int, str]]) -> tuple[dict[int, str], int]:
+def _header_start_index(rows: list[XlsxRow]) -> int:
+    for idx, (_row_number_value, row) in enumerate(rows[:8]):
+        next_row = rows[idx + 1][1] if idx + 1 < len(rows) else {}
+        # Skip document titles or instruction rows before the real table header.
+        if len(row) <= 1 and len(next_row) >= 2:
+            continue
+        if len(row) >= 2:
+            return idx
+    return 0
+
+
+def _should_use_second_header_row(header1: dict[int, str], header2: dict[int, str]) -> bool:
+    if not header1 or not header2:
+        return False
+    first_cols = len(header1)
+    second_cols = len(header2)
+    if first_cols <= 1:
+        return False
+    max_col = max([*header1.keys(), *header2.keys()] or [0])
+    if not max_col:
+        return False
+    first_density = first_cols / max_col
+    second_density = second_cols / max_col
+    # Use a second header row only when the first row looks like grouped headers.
+    # A normal sheet with one header row followed by data should keep the first data row.
+    return first_cols < second_cols and first_density < 0.75 and second_density >= 0.5
+
+
+def _table_headers(rows: list[XlsxRow]) -> tuple[dict[int, str], int]:
     if not rows:
         return {}, 0
-    header1 = rows[0]
-    header2 = rows[1] if len(rows) > 1 else {}
-    max_col = max([*header1.keys(), *header2.keys()] or [0])
+    header_start = _header_start_index(rows)
+    header1 = rows[header_start][1]
+    header2 = rows[header_start + 1][1] if len(rows) > header_start + 1 else {}
+    use_second_header = _should_use_second_header_row(header1, header2)
+    max_col = max([*header1.keys(), *(header2.keys() if use_second_header else [])] or [0])
     headers: dict[int, str] = {}
     active_group = ""
     for col in range(1, max_col + 1):
         top = _normalize_header(header1.get(col, ""))
-        sub = _normalize_header(header2.get(col, ""))
+        sub = _normalize_header(header2.get(col, "")) if use_second_header else ""
         if top:
             active_group = top
-        if sub and active_group and sub != active_group:
+        if use_second_header and sub and active_group and sub != active_group:
             headers[col] = f"{active_group}-{sub}"
         else:
             headers[col] = top or sub or f"列{col}"
-    data_start = 2 if any(_normalize_header(v) for v in header2.values()) else 1
+    data_start = header_start + (2 if use_second_header else 1)
     return headers, data_start
 
 
@@ -224,8 +264,8 @@ def extract_xlsx_text(file_path: str) -> List[PageText]:
             headers, data_start = _table_headers(rows)
             header_line = "表头 | " + " | ".join(f"列{col}={header}" for col, header in sorted(headers.items()))
             lines = [f"[{title}]", header_line]
-            for row_index, row in enumerate(rows[data_start:], start=data_start + 1):
-                lines.append(_format_table_row(title, row_index, row, headers))
+            for row_number, row in rows[data_start:]:
+                lines.append(_format_table_row(title, row_number, row, headers))
             pages.append((idx, "\n".join(lines)))
     return pages
 

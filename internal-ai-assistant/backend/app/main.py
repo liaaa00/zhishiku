@@ -1,17 +1,20 @@
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
-from .config import CORS_ORIGINS, validate_security
+from .config import CORS_ORIGINS, FRONTEND_DIST_DIR, validate_security, warn_insecure_defaults
 from .database import Base, engine
 from .ai_client import chat_answer, embed_texts
 from .html_pages import ADMIN_HTML, CHAT_HTML
 from .routers.admin_documents import router as admin_documents_router
+from .routers.admin_evaluation import router as admin_evaluation_router
 from .routers.admin_feedback import router as admin_feedback_router
+from .routers.admin_graph import router as admin_graph_router
 from .routers.admin_groups import router as admin_groups_router
 from .routers.admin_model import router as admin_model_router
+from .routers.admin_quality import router as admin_quality_router
 from .routers.admin_table_schema import router as admin_table_schema_router
 from .routers.admin_tasks import router as admin_tasks_router
 from .routers.admin_users import router as admin_users_router
@@ -37,11 +40,30 @@ app.include_router(documents_router)
 app.include_router(admin_model_router)
 app.include_router(admin_vector_router)
 app.include_router(admin_table_schema_router)
+app.include_router(admin_quality_router)
 app.include_router(admin_tasks_router)
+app.include_router(admin_evaluation_router)
 app.include_router(admin_feedback_router)
+app.include_router(admin_graph_router)
 app.include_router(admin_groups_router)
 app.include_router(admin_users_router)
 app.include_router(admin_documents_router)
+
+def frontend_index_response():
+    """Serve the built Vue SPA when available; otherwise keep backend HTML as fallback."""
+    index_path = FRONTEND_DIST_DIR / "index.html"
+    if index_path.is_file():
+        return FileResponse(index_path)
+    return None
+
+
+@app.get("/assets/{asset_path:path}", include_in_schema=False)
+def frontend_asset(asset_path: str):
+    asset_file = (FRONTEND_DIST_DIR / "assets" / asset_path).resolve()
+    assets_root = (FRONTEND_DIST_DIR / "assets").resolve()
+    if not asset_file.is_relative_to(assets_root) or not asset_file.is_file():
+        raise HTTPException(status_code=404, detail="Frontend asset not found")
+    return FileResponse(asset_file)
 
 # 日志：输出到 stdout，由 Docker / systemd 统一收集
 logging.basicConfig(
@@ -76,6 +98,8 @@ def ensure_runtime_schema() -> None:
 @app.on_event("startup")
 def startup():
     validate_security()
+    for warning in warn_insecure_defaults():
+        logger.warning("安全告警 | %s", warning)
     Base.metadata.create_all(bind=engine)
     initialize_runtime_schema()
     bootstrap_default_admin()
@@ -87,13 +111,27 @@ def root():
     return RedirectResponse("/chat")
 
 
-@app.get("/chat", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/login", include_in_schema=False)
+def login_page():
+    spa_response = frontend_index_response()
+    if spa_response is not None:
+        return spa_response
+    return RedirectResponse("/chat")
+
+
+@app.get("/chat", include_in_schema=False)
 def chat_page():
+    spa_response = frontend_index_response()
+    if spa_response is not None:
+        return spa_response
     return HTMLResponse(CHAT_HTML)
 
 
-@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/admin", include_in_schema=False)
 def admin_page():
+    spa_response = frontend_index_response()
+    if spa_response is not None:
+        return spa_response
     return HTMLResponse(ADMIN_HTML)
 
 

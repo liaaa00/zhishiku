@@ -115,6 +115,105 @@ def model_contexts_for_answer(contexts: list[dict], summary_mode: bool, max_cont
     return selected
 
 
+LOW_SOURCE_QUALITY_GRADES = {"poor", "blocked"}
+SOURCE_QUALITY_WARNING = "部分来源质量较低，请结合原文或后台体检结果核验答案。"
+
+
+def build_source_quality_notice(sources: list[dict]) -> dict:
+    grade_counts: dict[str, int] = {}
+    reasons: set[str] = set()
+    affected_documents: dict[str, str] = {}
+    affected_source_count = 0
+
+    for source in sources or []:
+        if not isinstance(source, dict):
+            continue
+        quality = source.get("source_quality") or {}
+        if not isinstance(quality, dict):
+            quality = {}
+        grade = str(quality.get("grade") or "").lower()
+        if grade not in LOW_SOURCE_QUALITY_GRADES:
+            continue
+
+        affected_source_count += 1
+        grade_counts[grade] = grade_counts.get(grade, 0) + 1
+        doc_key = str(source.get("document_id") or source.get("filename") or source.get("document_title") or affected_source_count)
+        doc_title = str(source.get("document_title") or source.get("title") or source.get("filename") or doc_key)
+        affected_documents.setdefault(doc_key, doc_title)
+        for reason in quality.get("reasons") or []:
+            if reason:
+                reasons.add(str(reason))
+
+    has_low_quality = affected_source_count > 0
+    return {
+        "has_low_quality_sources": has_low_quality,
+        "warning": SOURCE_QUALITY_WARNING if has_low_quality else "",
+        "affected_source_count": affected_source_count,
+        "affected_document_count": len(affected_documents),
+        "grades": grade_counts,
+        "reasons": sorted(reasons),
+        "documents": list(affected_documents.values())[:6],
+    }
+
+
+def build_prompt_context_preview(contexts: list[dict], max_chars_per_source: int = 1200, max_total_chars: int = 12000) -> dict:
+    blocks: list[str] = []
+    total_chars = 0
+    clipped_sources = 0
+    for index, context in enumerate(contexts or [], start=1):
+        content = str(context.get("content") or "")
+        normalized = " ".join(content.split())
+        clipped = len(normalized) > max_chars_per_source
+        if clipped:
+            clipped_sources += 1
+            normalized = normalized[:max_chars_per_source].rstrip() + "…"
+        block = (
+            f"[来源{index}] 文档：{context.get('document_title') or context.get('filename') or '未知文档'}；"
+            f"页码：{context.get('page_number') or '未知'}；"
+            f"类型：{context.get('source_type') or 'document'}；"
+            f"位置：{context.get('location') or context.get('chunk_index') or '-'}\n"
+            f"{normalized}"
+        )
+        if total_chars + len(block) > max_total_chars:
+            blocks.append("…后续来源因预览长度限制已省略")
+            break
+        blocks.append(block)
+        total_chars += len(block)
+    return {
+        "text": "\n\n".join(blocks),
+        "source_count": len(contexts or []),
+        "previewed_source_count": len([block for block in blocks if block.startswith("[来源")]),
+        "clipped_sources": clipped_sources,
+        "max_chars_per_source": max_chars_per_source,
+        "max_total_chars": max_total_chars,
+    }
+
+
+def build_retrieval_debug_summary(contexts: list[dict], candidate_count: int, confidence: float, quality_notice: dict) -> dict:
+    document_ids = {str(c.get("document_id") or c.get("filename") or c.get("document_title") or "") for c in contexts or [] if c}
+    channels: dict[str, int] = {}
+    for context in contexts or []:
+        channel = str(context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "semantic"))
+        channels[channel] = channels.get(channel, 0) + 1
+    warnings: list[str] = []
+    if not contexts:
+        warnings.append("没有命中可用于回答的片段")
+    if candidate_count and len(contexts) < min(candidate_count, 3):
+        warnings.append("候选被过滤较多，请检查关键词或权限范围")
+    if confidence < LOW_CONFIDENCE_THRESHOLD and contexts:
+        warnings.append("整体置信度偏低，请重点核验前几条来源")
+    if quality_notice.get("has_low_quality_sources"):
+        warnings.append(quality_notice.get("warning") or SOURCE_QUALITY_WARNING)
+    return {
+        "answer_context_count": len(contexts or []),
+        "unique_document_count": len(document_ids),
+        "candidate_count": candidate_count,
+        "channel_counts": channels,
+        "confidence": confidence,
+        "warnings": warnings,
+    }
+
+
 def _call_knowledge_answer(question: str, contexts: list[dict], api_key: str | None, base_url: str | None, model: str | None, history: list[dict] | None = None, structured_digest: str = "") -> str:
     legacy_answer = _main_compat_callable("chat_answer")
     if callable(legacy_answer) and not _is_default_ai_client_callable(legacy_answer, "chat_answer"):
@@ -222,6 +321,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
             retrieval_note = retrieval_note or "recent_context_or_sqlite"
 
     sources = summary_display_sources(contexts, interaction_meta, summary_mode)
+    source_quality_notice = build_source_quality_notice(sources)
     answer_contexts = model_contexts_for_answer(contexts, summary_mode)
     confidence = compute_grounding_confidence(contexts)
     if summary_mode and contexts:
@@ -281,6 +381,9 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         "sources": sources,
         "citations": sources,
         "source_count": len(sources),
+        "source_quality_notice": source_quality_notice,
+        "source_warning": source_quality_notice.get("warning") or "",
+        "source_warnings": [source_quality_notice.get("warning")] if source_quality_notice.get("warning") else [],
         "document_count": int(interaction_meta.get("document_count") or len(sources) or 0),
         "citation_mode": "accessible_documents" if summary_mode else "matched_chunks",
         "grounded": grounded,
@@ -375,6 +478,7 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                     retrieval_note = retrieval_note or "recent_context_or_sqlite"
 
             sources = summary_display_sources(contexts, interaction_meta, summary_mode)
+            source_quality_notice = build_source_quality_notice(sources)
             answer_contexts = model_contexts_for_answer(contexts, summary_mode)
             confidence = compute_grounding_confidence(contexts)
             if summary_mode and contexts:
@@ -401,6 +505,9 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                 "sources": sources,
                 "citations": sources,
                 "source_count": len(sources),
+                "source_quality_notice": source_quality_notice,
+                "source_warning": source_quality_notice.get("warning") or "",
+                "source_warnings": [source_quality_notice.get("warning")] if source_quality_notice.get("warning") else [],
                 "document_count": int(interaction_meta.get("document_count") or len(sources) or 0),
                 "citation_mode": "accessible_documents" if summary_mode else "matched_chunks",
                 "grounded": grounded,
@@ -431,8 +538,9 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                 retrieval_note = retrieval_note or ("no_relevant_knowledge_context" if should_retrieve else "conversation_only_intent")
                 if should_retrieve:
                     answer_text = "未在知识库中找到依据：当前没有检索到你有权限访问且与问题相关的资料。请换一个更具体的问题，或让管理员确认文档上传、解析和授权状态。"
-                    answer_parts.append(answer_text)
-                    yield _sse_event("delta", answer_text)
+                    for piece in [answer_text[i : i + 24] for i in range(0, len(answer_text), 24)]:
+                        answer_parts.append(piece)
+                        yield _sse_event("delta", piece)
                 else:
                     for piece in stream_conversational_answer(question, history, cfg["api_key"], cfg["base_url"], cfg["model"]):
                         answer_parts.append(piece)
@@ -453,7 +561,7 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                     answer_text = build_table_answer(question, answer_contexts)
                     retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
                     retrieval_meta["answer_composer"] = "table_local"
-                    for piece in [answer_text[i : i + 80] for i in range(0, len(answer_text), 80)]:
+                    for piece in [answer_text[i : i + 24] for i in range(0, len(answer_text), 24)]:
                         answer_parts.append(piece)
                         yield _sse_event("delta", piece)
                 else:
@@ -464,7 +572,7 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                             answer_text = legacy_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history)
                         except TypeError:
                             answer_text = legacy_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"])
-                        for piece in [answer_text[i : i + 80] for i in range(0, len(answer_text), 80)]:
+                        for piece in [answer_text[i : i + 24] for i in range(0, len(answer_text), 24)]:
                             answer_parts.append(piece)
                             yield _sse_event("delta", piece)
                     else:
@@ -525,6 +633,10 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
         raise HTTPException(status_code=400, detail="请输入测试问题")
     contexts, retrieval_backend, retrieval_note, candidate_count, retrieval_meta = retrieve_contexts(db, question, user, req.top_k)
     sources = serialize_sources(contexts)
+    source_quality_notice = build_source_quality_notice(sources)
+    confidence = compute_grounding_confidence(contexts)
+    prompt_context_preview = build_prompt_context_preview(model_contexts_for_answer(contexts, False))
+    retrieval_debug_summary = build_retrieval_debug_summary(contexts, candidate_count, confidence, source_quality_notice)
     if retrieval_meta.get("retrieval_route", {}).get("name") == "table":
         retrieval_meta["table_structured_result"] = build_table_structured_result(question, model_contexts_for_answer(contexts, False))
     source_diagnostics = []
@@ -543,22 +655,31 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
             "rerank_score": context.get("rerank_score"),
             "llm_rerank_score": context.get("llm_rerank_score"),
             "llm_rerank_reason": context.get("llm_rerank_reason") or "",
+            "source_quality": context.get("source_quality") or {},
+            "quality_penalty": context.get("quality_penalty") or 0,
             "match_reason": context.get("match_reason") or "",
             "match_terms": context.get("match_terms") or [],
             "pageindex_source": bool(context.get("pageindex_source")),
             "retrieval_channel": context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "semantic"),
             "location": context.get("location") or "",
-            "preview": content[:360],
+            "content_length": len(content),
+            "preview": content[:1000],
+            "full_content": content,
         })
     return {
         "question": question,
         "retrieval_backend": retrieval_backend,
         "retrieval_note": retrieval_note,
         "candidate_count": candidate_count,
-        "confidence": compute_grounding_confidence(contexts),
+        "confidence": confidence,
         "sources": sources,
         "source_diagnostics": source_diagnostics,
         "source_count": len(sources),
+        "prompt_context_preview": prompt_context_preview,
+        "retrieval_debug_summary": retrieval_debug_summary,
+        "source_quality_notice": source_quality_notice,
+        "source_warning": source_quality_notice.get("warning") or "",
+        "source_warnings": [source_quality_notice.get("warning")] if source_quality_notice.get("warning") else [],
         "query_analysis": retrieval_meta.get("query_analysis") or {},
         "retrieval_route": retrieval_meta.get("retrieval_route") or {},
         "evidence_check": retrieval_meta.get("evidence_check") or {},

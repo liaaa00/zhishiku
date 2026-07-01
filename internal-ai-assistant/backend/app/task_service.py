@@ -9,9 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .ai_client import image_to_text
-from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME, PDF_OCR_MAX_PAGES, PDF_OCR_ZOOM
+from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME, GRAPH_EXTRACTION_ENABLED, PDF_OCR_MAX_PAGES, PDF_OCR_MIN_TEXT_CHARS, PDF_OCR_ZOOM
 from .database import SessionLocal, engine
 from .document_index import add_chunks
+from .graph_extraction import extract_graph_for_document
+from .graph_store import set_extraction_status
 from .document_status import set_doc_status
 from .document_utils import extract_supported_document
 from .models import BackgroundTask, Document, DocumentPageIndex, Setting, User
@@ -29,6 +31,22 @@ worker_lock = threading.Lock()
 
 def _total_extracted_chars(pages: list[tuple[int | None, str]]) -> int:
     return sum(len((text or "").strip()) for _, text in pages or [])
+
+
+def _pdf_needs_ocr(pages: list[tuple[int | None, str]]) -> bool:
+    return _total_extracted_chars(pages) < max(1, int(PDF_OCR_MIN_TEXT_CHARS or 80))
+
+
+def _pdf_ocr_reason(pages: list[tuple[int | None, str]]) -> str:
+    chars = _total_extracted_chars(pages)
+    return "no_text" if chars == 0 else f"low_text:{chars}"
+
+
+def _pdf_diagnostic_message(reason: str, extracted_chars: int, ocr_chars: int | None = None) -> str:
+    base = f"PDF 文本抽取不足（原因={reason}；普通抽取={extracted_chars} 字；阈值={PDF_OCR_MIN_TEXT_CHARS} 字）"
+    if ocr_chars is None:
+        return f"{base}，正在对前 {PDF_OCR_MAX_PAGES} 页进行视觉 OCR。"
+    return f"{base}；OCR 后={ocr_chars} 字。"
 
 
 def _ocr_pdf_pages(file_path: Path, cfg: dict) -> list[tuple[int | None, str]]:
@@ -54,6 +72,22 @@ def _ocr_pdf_pages(file_path: Path, cfg: dict) -> list[tuple[int | None, str]]:
     return result
 
 
+def extract_pdf_pages_with_ocr_fallback(db: Session, doc: Document, storage_path: Path) -> list[tuple[int | None, str]]:
+    pages = extract_supported_document(str(storage_path))
+    if not _pdf_needs_ocr(pages):
+        return pages
+    cfg = get_model_config(db)
+    reason = _pdf_ocr_reason(pages)
+    extracted_chars = _total_extracted_chars(pages)
+    set_doc_status(db, doc, "processing", "pdf_vision_ocr", _pdf_diagnostic_message(reason, extracted_chars))
+    db.commit()
+    ocr_pages = _ocr_pdf_pages(storage_path, cfg)
+    ocr_chars = _total_extracted_chars(ocr_pages)
+    set_doc_status(db, doc, "processing", "pdf_vision_ocr", _pdf_diagnostic_message(reason, extracted_chars, ocr_chars))
+    db.flush()
+    return ocr_pages or pages
+
+
 def enqueue_document_task(db: Session, doc: Document, task_type: str, actor: Optional[User]) -> BackgroundTask:
     task = BackgroundTask(
         id=new_id(),
@@ -65,6 +99,34 @@ def enqueue_document_task(db: Session, doc: Document, task_type: str, actor: Opt
     db.add(task)
     set_doc_status(db, doc, "pending", "queued", "已进入后台解析队列，稍后自动处理。", 0, False)
     audit(db, actor, "task.enqueue", "document", doc.id, {"task_type": task_type, "filename": doc.filename})
+    return task
+
+
+def enqueue_graph_task(db: Session, doc: Document, task_type: str = "graph_extract", actor: Optional[User] = None) -> BackgroundTask | None:
+    if not GRAPH_EXTRACTION_ENABLED:
+        return None
+    source_type = str(doc.source_type or "")
+    if source_type.startswith("chat_"):
+        return None
+    existing = db.execute(
+        select(BackgroundTask).where(
+            BackgroundTask.document_id == doc.id,
+            BackgroundTask.task_type.in_(["graph_extract", "graph_rebuild"]),
+            BackgroundTask.status.in_(["pending", "running"]),
+        )
+    ).scalars().first()
+    if existing:
+        return existing
+    task = BackgroundTask(
+        id=new_id(),
+        task_type=task_type,
+        document_id=doc.id,
+        status="pending",
+        created_by=actor.id if actor else None,
+    )
+    db.add(task)
+    set_extraction_status(db, doc.id, "pending", "已进入知识图谱抽取队列")
+    audit(db, actor, "graph.task.enqueue", "document", doc.id, {"task_type": task_type, "filename": doc.filename})
     return task
 
 
@@ -142,12 +204,10 @@ def parse_document_to_chunks(db: Session, doc: Document) -> int:
         }.get(ext, "document_extract")
         set_doc_status(db, doc, "processing", stage, "正在解析文档内容。")
         db.commit()
-        pages = extract_supported_document(str(storage_path))
-        if ext == ".pdf" and _total_extracted_chars(pages) == 0:
-            cfg = get_model_config(db)
-            set_doc_status(db, doc, "processing", "pdf_vision_ocr", f"PDF 未提取到文本，正在对前 {PDF_OCR_MAX_PAGES} 页进行视觉 OCR。")
-            db.commit()
-            pages = _ocr_pdf_pages(storage_path, cfg)
+        if ext == ".pdf":
+            pages = extract_pdf_pages_with_ocr_fallback(db, doc, storage_path)
+        else:
+            pages = extract_supported_document(str(storage_path))
         chunks = add_chunks(db, doc.id, pages)
         db.commit()
         _maybe_build_pageindex(db, doc, pages)
@@ -174,15 +234,29 @@ def process_task_once(task_id: str):
         task.attempts += 1
         task.started_at = datetime.utcnow()
         task.updated_at = datetime.utcnow()
-        set_doc_status(db, doc, "processing", "worker", "后台任务正在处理。", 0, False)
+        if task.task_type in {"graph_extract", "graph_rebuild"}:
+            set_extraction_status(db, doc.id, "processing", "正在抽取知识图谱")
+        else:
+            set_doc_status(db, doc, "processing", "worker", "后台任务正在处理。", 0, False)
         db.commit()
 
         try:
+            if task.task_type in {"graph_extract", "graph_rebuild"}:
+                result = extract_graph_for_document(db, doc.id)
+                task.status = "success"
+                task.last_error = ""
+                task.finished_at = datetime.utcnow()
+                task.updated_at = datetime.utcnow()
+                audit(db, None, "graph.task.finish", "document", doc.id, {"task_id": task.id, "status": task.status, **result})
+                db.commit()
+                return
+
             chunks = parse_document_to_chunks(db, doc)
             if chunks:
                 set_doc_status(db, doc, "ready", "indexed", "后台解析完成，文档已加入检索索引。", chunks, True)
                 task.status = "success"
                 task.last_error = ""
+                enqueue_graph_task(db, doc, "graph_extract", None)
             else:
                 set_doc_status(db, doc, "failed", "need_ocr", "没有解析出可检索文本；扫描件 PDF 需要接入 PDF OCR。", 0, False)
                 task.status = "failed"
@@ -196,8 +270,12 @@ def process_task_once(task_id: str):
             task.last_error = str(exc)
             task.finished_at = datetime.utcnow()
             task.updated_at = datetime.utcnow()
-            set_doc_status(db, doc, "failed", "parse_error", f"后台解析失败：{exc}", 0, False)
-            audit(db, None, "task.fail", "document", doc.id, {"task_id": task.id, "error": str(exc)})
+            if task.task_type in {"graph_extract", "graph_rebuild"}:
+                set_extraction_status(db, doc.id, "failed", error_message=str(exc))
+                audit(db, None, "graph.task.fail", "document", doc.id, {"task_id": task.id, "error": str(exc)})
+            else:
+                set_doc_status(db, doc, "failed", "parse_error", f"后台解析失败：{exc}", 0, False)
+                audit(db, None, "task.fail", "document", doc.id, {"task_id": task.id, "error": str(exc)})
             db.commit()
     finally:
         db.close()
@@ -242,6 +320,11 @@ def initialize_runtime_schema():
 
     with engine.begin() as conn:
         add_column_if_missing(conn, "users", "is_active", "is_active BOOLEAN NOT NULL DEFAULT 1")
+        add_column_if_missing(conn, "users", "approval_status", "approval_status TEXT NOT NULL DEFAULT 'approved'")
+        add_column_if_missing(conn, "users", "approval_note", "approval_note TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(conn, "users", "approved_by_user_id", "approved_by_user_id TEXT")
+        add_column_if_missing(conn, "users", "approved_by_username", "approved_by_username TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(conn, "users", "approved_at", "approved_at DATETIME")
         add_column_if_missing(conn, "chat_messages", "sources_json", "sources_json TEXT NOT NULL DEFAULT '[]'")
         add_column_if_missing(conn, "chat_messages", "mode", "mode TEXT NOT NULL DEFAULT 'knowledge'")
         add_column_if_missing(conn, "feedback", "sources_json", "sources_json TEXT NOT NULL DEFAULT '[]'")
@@ -250,6 +333,7 @@ def initialize_runtime_schema():
         add_column_if_missing(conn, "feedback", "review_note", "review_note TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(conn, "feedback", "category", "category TEXT NOT NULL DEFAULT 'other'")
         add_column_if_missing(conn, "feedback", "admin_note", "admin_note TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(conn, "feedback", "root_cause", "root_cause TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(conn, "feedback", "handled_by_user_id", "handled_by_user_id TEXT")
         add_column_if_missing(conn, "feedback", "handled_by_username", "handled_by_username TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(conn, "feedback", "handled_at", "handled_at DATETIME")
@@ -297,6 +381,84 @@ def initialize_runtime_schema():
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_table_schema_aliases_semantic_name ON table_schema_aliases(semantic_name)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_table_schema_aliases_suggestion_key ON table_schema_aliases(suggestion_key)")
         conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_table_schema_aliases_mapping ON table_schema_aliases(document_id, sheet_name, raw_name, semantic_name)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS graph_entities (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'confirmed',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_entities_name ON graph_entities(name)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_entities_normalized_name ON graph_entities(normalized_name)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_entities_entity_type ON graph_entities(entity_type)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_entities_status ON graph_entities(status)")
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_graph_entities_normalized_type ON graph_entities(normalized_name, entity_type)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS graph_relations (
+                id TEXT PRIMARY KEY,
+                source_entity_id TEXT NOT NULL REFERENCES graph_entities(id) ON DELETE CASCADE,
+                target_entity_id TEXT NOT NULL REFERENCES graph_entities(id) ON DELETE CASCADE,
+                relation_type TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0,
+                source_document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                source_chunk_id TEXT REFERENCES document_chunks(id) ON DELETE SET NULL,
+                source_page_number INTEGER,
+                evidence_text TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_relations_source_entity_id ON graph_relations(source_entity_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_relations_target_entity_id ON graph_relations(target_entity_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_relations_relation_type ON graph_relations(relation_type)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_relations_source_document_id ON graph_relations(source_document_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_relations_source_chunk_id ON graph_relations(source_chunk_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_relations_status ON graph_relations(status)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS graph_mentions (
+                id TEXT PRIMARY KEY,
+                entity_id TEXT NOT NULL REFERENCES graph_entities(id) ON DELETE CASCADE,
+                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                chunk_id TEXT REFERENCES document_chunks(id) ON DELETE CASCADE,
+                page_number INTEGER,
+                mention_text TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_mentions_entity_id ON graph_mentions(entity_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_mentions_document_id ON graph_mentions(document_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_mentions_chunk_id ON graph_mentions(chunk_id)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS graph_extraction_status (
+                document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'not_started',
+                message TEXT NOT NULL DEFAULT '',
+                entity_count INTEGER NOT NULL DEFAULT 0,
+                relation_count INTEGER NOT NULL DEFAULT 0,
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_extraction_status_status ON graph_extraction_status(status)")
 
 
 def bootstrap_default_admin():
@@ -304,9 +466,19 @@ def bootstrap_default_admin():
     try:
         admin = db.execute(select(User).where(User.username == DEFAULT_ADMIN_USERNAME)).scalar_one_or_none()
         if not admin:
-            db.add(User(id=new_id(), username=DEFAULT_ADMIN_USERNAME, password_hash=hash_password(DEFAULT_ADMIN_PASSWORD), is_admin=True, is_active=True))
+            db.add(User(
+                id=new_id(),
+                username=DEFAULT_ADMIN_USERNAME,
+                password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
+                is_admin=True,
+                is_active=True,
+                approval_status="approved",
+                approval_note="系统默认管理员",
+            ))
         else:
             admin.is_active = True
+            admin.approval_status = "approved"
+            admin.approval_note = admin.approval_note or "系统默认管理员"
         if not db.get(Setting, "deepseek_base_url"):
             db.add(Setting(key="deepseek_base_url", value="https://api.deepseek.com"))
         if not db.get(Setting, "deepseek_model"):

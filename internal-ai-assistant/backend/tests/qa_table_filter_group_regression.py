@@ -148,10 +148,10 @@ def main() -> None:
         if multi_meta.get("query_op") != "list":
             raise AssertionError(f"multi filter list query should be query_op=list, got {multi_meta}")
         multi_answer = build_table_answer(multi_filter_question, multi_contexts)
-        if "过滤条件：城市 等于 上海 且 状态 等于 有效" not in multi_answer:
-            raise AssertionError(f"answer should explain multi filters; answer={multi_answer}")
-        if "查询操作：明细列举" not in multi_answer:
-            raise AssertionError(f"answer should explain list operation; answer={multi_answer}")
+        if "条件：城市 等于 上海 且 状态 等于 有效" not in multi_answer:
+            raise AssertionError(f"answer should include concise filter conditions; answer={multi_answer}")
+        if "查询操作" in multi_answer or "来源明细" in multi_answer or "命中列" in multi_answer:
+            raise AssertionError(f"answer body should not include source/provenance noise; answer={multi_answer}")
 
         projection_question = "列出城市=上海且状态=有效的公司名称、城市、状态"
         parsed_plan = parse_table_query_plan(projection_question).to_dict()
@@ -172,12 +172,12 @@ def main() -> None:
         if projection_meta.get("select_columns") != ["company", "city", "status"]:
             raise AssertionError(f"projection should detect company/city/status, got {projection_meta}")
         projection_answer = build_table_answer(projection_question, projection_contexts)
-        if "展示字段：公司、城市、状态" not in projection_answer:
-            raise AssertionError(f"answer should explain selected columns; answer={projection_answer}")
+        if "展示字段" in projection_answer or "来源明细" in projection_answer or "命中列" in projection_answer:
+            raise AssertionError(f"answer body should stay concise and avoid provenance noise; answer={projection_answer}")
         if "公司=上海一号网点 | 城市=上海 | 状态=有效" not in projection_answer:
-            raise AssertionError(f"preview should prioritize projected fields; answer={projection_answer}")
+            raise AssertionError(f"details should prioritize projected fields; answer={projection_answer}")
         if "公司=上海新表机构 | 城市=上海 | 状态=有效" not in projection_answer:
-            raise AssertionError(f"preview should project fields through nonstandard schema; answer={projection_answer}")
+            raise AssertionError(f"details should project fields through nonstandard schema; answer={projection_answer}")
 
         or_question = "列出城市=上海或城市=北京的网点清单"
         or_plan = parse_table_query_plan(or_question).to_dict()
@@ -199,8 +199,8 @@ def main() -> None:
         if inherited_or_row_ids != {"row-sh-1", "row-sh-2", "row-sh-disabled", "row-ns-sh-1", "row-ns-sh-off"}:
             raise AssertionError(f"inherited OR should stay within Shanghai and include active/stopped rows, got {sorted(inherited_or_row_ids)}; meta={inherited_or_meta}")
         inherited_or_answer = build_table_answer(inherited_or_question, inherited_or_contexts)
-        if "或" not in inherited_or_answer or "状态 等于 停用" not in inherited_or_answer:
-            raise AssertionError(f"answer should explain OR filter groups; answer={inherited_or_answer}")
+        if "条件：" not in inherited_or_answer or "或" not in inherited_or_answer or "状态 等于 停用" not in inherited_or_answer:
+            raise AssertionError(f"answer should include concise OR filter conditions; answer={inherited_or_answer}")
 
         not_equal_question = "列出城市=上海且状态!=停用的公司名称、城市、状态"
         not_equal_contexts, not_equal_meta = table_mode_contexts(db, not_equal_question, user, top_k=10)
@@ -210,8 +210,8 @@ def main() -> None:
         if {"column": "status", "operator": "ne", "value": "停用"} not in not_equal_meta.get("value_filters", []):
             raise AssertionError(f"not-equal operator should be in meta filters, got {not_equal_meta}")
         not_equal_answer = build_table_answer(not_equal_question, not_equal_contexts)
-        if "状态 不等于 停用" not in not_equal_answer:
-            raise AssertionError(f"answer should explain not-equal filter; answer={not_equal_answer}")
+        if "条件：" not in not_equal_answer or "状态 不等于 停用" not in not_equal_answer:
+            raise AssertionError(f"answer should include concise not-equal filter; answer={not_equal_answer}")
 
         non_empty_question = "列出银行账户非空的公司名称、银行账户"
         non_empty_contexts, non_empty_meta = table_mode_contexts(db, non_empty_question, user, top_k=10)
@@ -248,10 +248,12 @@ def main() -> None:
         if "识别为：分组求和" not in sum_explanation.get("summary", "") or sum_explanation.get("group_by") != "城市" or sum_explanation.get("measure") != "金额":
             raise AssertionError(f"sum retrieval meta should expose plan explanation, got {sum_meta}")
         sum_answer = build_table_answer(sum_question, sum_contexts)
-        if "查询操作：分组求和" not in sum_answer or "按城市汇总金额" not in sum_answer or "计划解释：识别为：分组求和" not in sum_answer:
-            raise AssertionError(f"sum answer should explain grouped sum; meta={sum_meta}; answer={sum_answer}")
-        if "上海：3800" not in sum_answer or "北京：800" not in sum_answer or "成都：200" not in sum_answer:
+        if "结论：金额汇总为 4800" not in sum_answer or "### 统计结果" not in sum_answer:
+            raise AssertionError(f"sum answer should be concise and include result section; meta={sum_meta}; answer={sum_answer}")
+        if "城市=上海 | 金额汇总=3800" not in sum_answer or "城市=北京 | 金额汇总=800" not in sum_answer or "城市=成都 | 金额汇总=200" not in sum_answer:
             raise AssertionError(f"sum answer should include expected city totals; meta={sum_meta}; answer={sum_answer}")
+        if "查询操作" in sum_answer or "来源明细" in sum_answer:
+            raise AssertionError(f"sum answer body should not include provenance noise; answer={sum_answer}")
 
         month_sum_question = "2026年6月按城市统计缴费金额总和"
         month_sum_plan = parse_table_query_plan(month_sum_question).to_dict()
@@ -261,8 +263,8 @@ def main() -> None:
         if month_sum_meta.get("time_value") != "2026-06" or "时间范围：2026-06" not in (month_sum_meta.get("table_query_explanation") or {}).get("summary", ""):
             raise AssertionError(f"month sum meta should expose time dimension, got {month_sum_meta}")
         month_sum_answer = build_table_answer(month_sum_question, month_sum_contexts)
-        if "时间范围：2026-06" not in month_sum_answer or "上海：3800" not in month_sum_answer:
-            raise AssertionError(f"month sum answer should explain time range and totals; meta={month_sum_meta}; answer={month_sum_answer}")
+        if "时间范围：2026-06" not in month_sum_answer or "城市=上海 | 金额汇总=3800" not in month_sum_answer:
+            raise AssertionError(f"month sum answer should include concise time range and totals; meta={month_sum_meta}; answer={month_sum_answer}")
 
         multi_metric_question = "按城市统计公司数、缴费金额总和、平均公积金比例"
         multi_metric_plan = parse_table_query_plan(multi_metric_question).to_dict()
@@ -273,10 +275,12 @@ def main() -> None:
         if len(multi_metric_meta.get("metrics", [])) < 3 or "指标：数量、金额汇总、公积金比例平均值" not in (multi_metric_meta.get("table_query_explanation") or {}).get("summary", ""):
             raise AssertionError(f"multi metric meta should expose metric specs and explanation, got {multi_metric_meta}")
         multi_metric_answer = build_table_answer(multi_metric_question, multi_metric_contexts)
-        if "查询操作：分组多指标统计" not in multi_metric_answer or "按城市多指标统计" not in multi_metric_answer:
-            raise AssertionError(f"multi metric answer should explain multi metric grouping; meta={multi_metric_meta}; answer={multi_metric_answer}")
+        if "结论：已按 城市 生成 3 个统计指标" not in multi_metric_answer or "### 统计结果" not in multi_metric_answer:
+            raise AssertionError(f"multi metric answer should be concise and include result section; meta={multi_metric_meta}; answer={multi_metric_answer}")
         if "城市=上海 | 数量=5 | 金额汇总=3800 | 公积金比例平均值=5.5" not in multi_metric_answer or "城市=北京 | 数量=2 | 金额汇总=800 | 公积金比例平均值=5" not in multi_metric_answer:
             raise AssertionError(f"multi metric answer should include expected grouped metrics; meta={multi_metric_meta}; answer={multi_metric_answer}")
+        if "查询操作" in multi_metric_answer or "来源明细" in multi_metric_answer:
+            raise AssertionError(f"multi metric answer body should not include provenance noise; answer={multi_metric_answer}")
         structured = build_table_structured_result(multi_metric_question, multi_metric_contexts)
         if structured.get("columns") != ["城市", "数量", "金额汇总", "公积金比例平均值"]:
             raise AssertionError(f"structured result should expose multi metric columns, got {structured}")
@@ -291,9 +295,9 @@ def main() -> None:
         if avg_meta.get("aggregate_op") != "avg" or avg_meta.get("measure_column") != "fund_ratio":
             raise AssertionError(f"avg retrieval meta should expose aggregate plan, got {avg_meta}")
         avg_answer = build_table_answer(avg_question, avg_contexts)
-        if "查询操作：分组平均" not in avg_answer or "按城市平均值公积金比例" not in avg_answer:
-            raise AssertionError(f"avg answer should explain grouped average; meta={avg_meta}; answer={avg_answer}")
-        if "上海：5.5" not in avg_answer or "北京：5" not in avg_answer:
+        if "结论：公积金比例平均值为" not in avg_answer or "### 统计结果" not in avg_answer:
+            raise AssertionError(f"avg answer should be concise and include result section; meta={avg_meta}; answer={avg_answer}")
+        if "城市=上海 | 公积金比例平均值=5.5" not in avg_answer or "城市=北京 | 公积金比例平均值=5" not in avg_answer:
             raise AssertionError(f"avg answer should include expected city averages; meta={avg_meta}; answer={avg_answer}")
 
         max_question = "按城市统计缴费金额最大值"
@@ -302,7 +306,7 @@ def main() -> None:
             raise AssertionError(f"max plan should detect grouped amount max, got {max_plan}")
         max_contexts, max_meta = table_mode_contexts(db, max_question, user, top_k=10)
         max_answer = build_table_answer(max_question, max_contexts)
-        if "查询操作：分组最大值" not in max_answer or "上海：2500" not in max_answer or "北京：800" not in max_answer or "成都：200" not in max_answer:
+        if "城市=上海 | 金额最大值=2500" not in max_answer or "城市=北京 | 金额最大值=800" not in max_answer or "城市=成都 | 金额最大值=200" not in max_answer:
             raise AssertionError(f"max answer should include expected city maximums; meta={max_meta}; answer={max_answer}")
 
         min_question = "按城市统计缴费金额最小值"
@@ -311,7 +315,7 @@ def main() -> None:
             raise AssertionError(f"min plan should detect grouped amount min, got {min_plan}")
         min_contexts, min_meta = table_mode_contexts(db, min_question, user, top_k=10)
         min_answer = build_table_answer(min_question, min_contexts)
-        if "查询操作：分组最小值" not in min_answer or "上海：300" not in min_answer or "北京：800" not in min_answer or "成都：200" not in min_answer:
+        if "城市=上海 | 金额最小值=300" not in min_answer or "城市=北京 | 金额最小值=800" not in min_answer or "城市=成都 | 金额最小值=200" not in min_answer:
             raise AssertionError(f"min answer should include expected city minimums; meta={min_meta}; answer={min_answer}")
 
         group_question = "有效网点按城市统计分别有多少个？"
@@ -319,10 +323,10 @@ def main() -> None:
         if group_meta.get("query_op") != "group_count":
             raise AssertionError(f"group query should be query_op=group_count, got {group_meta}")
         answer = build_table_answer(group_question, group_contexts)
-        if "按城市统计" not in answer or "上海：5 条" not in answer or "北京：2 条" not in answer:
+        if "### 统计结果" not in answer or "城市=上海 | 数量=5" not in answer or "城市=北京 | 数量=2" not in answer:
             raise AssertionError(f"grouped answer missing expected city counts; meta={group_meta}; answer={answer}")
-        if "查询操作：分组计数" not in answer:
-            raise AssertionError(f"answer should explain group_count operation; answer={answer}")
+        if "查询操作" in answer or "来源明细" in answer:
+            raise AssertionError(f"grouped answer body should not include provenance noise; answer={answer}")
 
         top_question = "有效网点最多的前2个城市"
         top_plan = parse_table_query_plan(top_question).to_dict()
@@ -335,10 +339,10 @@ def main() -> None:
         if top_explanation.get("sort") != "降序" or top_explanation.get("limit") != 2 or "展开：前 2 项" not in top_explanation.get("summary", ""):
             raise AssertionError(f"topN retrieval meta should explain sort/limit, got {top_meta}")
         top_answer = build_table_answer(top_question, top_contexts)
-        if "结果排序：按结果值降序，最多展开 2 项" not in top_answer:
-            raise AssertionError(f"topN answer should explain desc limit; meta={top_meta}; answer={top_answer}")
-        if "上海：5 条" not in top_answer or "北京：2 条" not in top_answer or "成都：1 条" in top_answer or "另有 1 个分组未展开" not in top_answer:
+        if "城市=上海 | 数量=5" not in top_answer or "城市=北京 | 数量=2" not in top_answer or "城市=成都 | 数量=1" in top_answer:
             raise AssertionError(f"topN answer should include only top 2 cities; meta={top_meta}; answer={top_answer}")
+        if "说明：已按你的要求只显示前 2 项" not in top_answer:
+            raise AssertionError(f"topN answer should briefly explain explicit limit; meta={top_meta}; answer={top_answer}")
 
         bottom_question = "有效网点最少的前1个城市"
         bottom_plan = parse_table_query_plan(bottom_question).to_dict()
@@ -346,8 +350,10 @@ def main() -> None:
             raise AssertionError(f"bottomN plan should detect grouped count, asc sort, and limit=1, got {bottom_plan}")
         bottom_contexts, bottom_meta = table_mode_contexts(db, bottom_question, user, top_k=10)
         bottom_answer = build_table_answer(bottom_question, bottom_contexts)
-        if "结果排序：按结果值升序，最多展开 1 项" not in bottom_answer or "成都：1 条" not in bottom_answer or "北京：2 条" in bottom_answer:
+        if "城市=成都 | 数量=1" not in bottom_answer or "城市=北京 | 数量=2" in bottom_answer:
             raise AssertionError(f"bottomN answer should include only the least city; meta={bottom_meta}; answer={bottom_answer}")
+        if "说明：已按你的要求只显示前 1 项" not in bottom_answer:
+            raise AssertionError(f"bottomN answer should briefly explain explicit limit; meta={bottom_meta}; answer={bottom_answer}")
 
         distinct_question = "有效网点覆盖多少个城市？"
         distinct_contexts, distinct_meta = table_mode_contexts(db, distinct_question, user, top_k=10)
@@ -356,8 +362,8 @@ def main() -> None:
         distinct_answer = build_table_answer(distinct_question, distinct_contexts)
         if "共有 3 个城市" not in distinct_answer:
             raise AssertionError(f"distinct city answer should count 3 cities; meta={distinct_meta}; answer={distinct_answer}")
-        if "查询操作：去重计数" not in distinct_answer:
-            raise AssertionError(f"answer should explain distinct_count operation; answer={distinct_answer}")
+        if "查询操作" in distinct_answer or "来源明细" in distinct_answer:
+            raise AssertionError(f"distinct answer body should not include provenance noise; answer={distinct_answer}")
 
         print("Table filter/group regression passed.")
     finally:

@@ -17,6 +17,10 @@ class UserPayload(BaseModel):
     username: str
     is_admin: bool
     is_active: bool
+    approval_status: str = "approved"
+    approval_note: str = ""
+    approved_by_username: str = ""
+    approved_at: Optional[str] = None
     groups: List[GroupPayload] = []
 
 
@@ -59,6 +63,13 @@ class UserStatusUpdate(BaseModel):
     is_active: bool
 
 
+class UserApprovalReview(BaseModel):
+    action: str
+    note: str = ""
+    group_ids: List[str] = []
+    is_admin: bool = False
+
+
 class UserGroupsUpdate(BaseModel):
     group_ids: List[str] = []
     is_admin: Optional[bool] = None
@@ -99,6 +110,7 @@ class FeedbackReview(BaseModel):
     status: str = "reviewed"
     review_note: str = ""
     admin_note: str = ""
+    root_cause: str = ""
 
 
 class TableSchemaAliasAction(BaseModel):

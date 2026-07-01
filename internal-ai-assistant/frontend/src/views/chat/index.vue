@@ -87,6 +87,7 @@
               <div v-if="showAnswerMeta(message)" class="answer-meta">
                 <span class="answer-meta-pill primary">{{ answerModeLabel(message) }}</span>
                 <span v-if="message.sources.length" class="answer-meta-pill">{{ sourceBlockCount(message) }}</span>
+                <span v-if="sourceQualityWarningText(message)" class="answer-meta-pill warning">{{ sourceQualityWarningText(message) }}</span>
                 <span v-if="message.waitSeconds && message.streaming" class="answer-meta-pill subtle">已等待 {{ message.waitSeconds }} 秒</span>
               </div>
 
@@ -167,6 +168,7 @@
               <div>
                 <strong>{{ sourceBlockTitle(message) }}</strong>
                 <span>{{ sourceBlockSubtitle(message) }}</span>
+                <span v-if="sourceQualityWarningText(message)" class="source-quality-warning">{{ sourceQualityWarningText(message) }}</span>
               </div>
               <button type="button" @click="openSources(message)">{{ sourceTriggerLabel(message) }}</button>
             </div>
@@ -176,9 +178,8 @@
               <button type="button" @click="copyText(message.content)">复制 Markdown</button>
               <button type="button" @click="copyText(answerWithSourceSummary(message))">复制含来源</button>
               <button type="button" :disabled="sending" @click="regenerateAnswer(message)">重新生成</button>
-              <button type="button" :disabled="message.feedbackSubmitted" @click="openFeedbackDialog(message, 'helpful')">有帮助</button>
-              <button type="button" :disabled="message.feedbackSubmitted" @click="openFeedbackDialog(message, 'unhelpful')">不够好</button>
-              <button type="button" :disabled="message.feedbackSubmitted" @click="openFeedbackDialog(message, 'user_feedback')">我要补充反馈</button>
+              <button type="button" :disabled="message.feedbackSubmitted || feedbackSubmitting" @click="submitQuickFeedback(message, 'helpful')">有帮助</button>
+              <button type="button" :disabled="message.feedbackSubmitted || feedbackSubmitting" @click="openFeedbackDialog(message, 'unhelpful')">不够好</button>
               <span v-if="message.feedbackSubmitted">已反馈</span>
             </div>
             <div v-else-if="message.role === 'user'" class="message-actions user-message-actions">
@@ -206,7 +207,7 @@
         <div class="feedback-dialog-body">
           <div class="feedback-dialog-intro">
             <strong>{{ feedbackDialogTitle }}</strong>
-            <span>请尽量写清楚问题、期望结果，或这条回答哪里有帮助。</span>
+            <span>请尽量写清楚这条回答哪里不对、不完整，或你期望看到什么结果。</span>
           </div>
           <el-input
             v-model="feedbackForm.content"
@@ -292,8 +293,10 @@
           </div>
           <el-input
             v-model="question"
+            class="composer-input"
             type="textarea"
-            :autosize="{ minRows: 1, maxRows: 10 }"
+            :autosize="composerAutosize"
+            :input-style="composerInputStyle"
             resize="none"
             maxlength="4000"
             :placeholder="pendingAttachments.length ? '描述你想基于附件了解什么…' : '输入问题，Shift + Enter 换行'"
@@ -394,6 +397,7 @@
           :class="['source-card-modern', {
             related: sourceViewMode === 'related',
             highlighted: isHighlightedSource(source, index),
+            'quality-warning': isLowQualitySource(source),
             overview: isSourcePanelDocumentOverview,
           }]"
         >
@@ -404,7 +408,8 @@
                 <h3>{{ sourceTitle(source) }}</h3>
                 <span v-if="isSourcePanelDocumentOverview" class="document-file-name">{{ sourceFilename(source) }}</span>
               </div>
-              <span v-if="isSourcePanelDocumentOverview" :class="['document-status-pill', documentStatusKind(source)]">
+              <span v-if="isLowQualitySource(source)" class="source-quality-pill">{{ sourceQualityLabel(source) }}</span>
+              <span v-else-if="isSourcePanelDocumentOverview" :class="['document-status-pill', documentStatusKind(source)]">
                 {{ documentStatusLabel(source) }}
               </span>
               <span v-else-if="source.summary_source" class="source-coverage-pill">已纳入 {{ source.chunks_used || 0 }}/{{ source.total_chunks || 0 }}</span>
@@ -450,10 +455,21 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 
 type Role = 'assistant' | 'user'
-type FeedbackRating = 'helpful' | 'unhelpful' | 'wrong' | 'unsafe' | 'other' | 'user_feedback'
+type FeedbackRating = 'helpful' | 'unhelpful'
 
-type StructuredSectionKind = 'lead' | 'section' | 'highlight' | 'warning' | 'action'
+type StructuredSectionKind = 'lead' | 'section' | 'highlight' | 'warning' | 'action' | 'data'
 type DocumentStatusFilter = 'all' | 'ready' | 'partial' | 'empty'
+
+interface SourceQualityNotice {
+  has_low_quality_sources?: boolean
+  warning?: string
+  affected_source_count?: number
+  affected_document_count?: number
+  grades?: Record<string, number>
+  reasons?: string[]
+  documents?: string[]
+  [key: string]: unknown
+}
 
 interface SourceItem {
   document_id?: string
@@ -474,6 +490,8 @@ interface SourceItem {
   chunks_used?: number | string | null
   total_chunks?: number | string | null
   retrieval_channel?: string
+  source_quality?: SourceQualityNotice
+  quality_penalty?: number | string | null
   table_row?: Record<string, unknown> | null
   sheet_name?: string
   row_number?: number | string | null
@@ -509,6 +527,9 @@ interface ChatMessageItem {
   citation_mode?: string
   document_count?: number
   summary_mode?: boolean
+  source_quality_notice?: SourceQualityNotice
+  source_warning?: string
+  source_warnings?: string[]
   feedbackSubmitted?: boolean
   requestText?: string
   displayText?: string
@@ -575,9 +596,11 @@ const previewSourceTitle = ref('')
 const feedbackDialogVisible = ref(false)
 const feedbackSubmitting = ref(false)
 const feedbackTargetMessage = ref<ChatMessageItem | null>(null)
-const feedbackTargetRating = ref<FeedbackRating>('user_feedback')
+const feedbackTargetRating = ref<FeedbackRating>('unhelpful')
 const feedbackForm = ref({ content: '' })
 const CHAT_SCROLL_THRESHOLD = 72
+const composerAutosize = { minRows: 1, maxRows: 10 }
+const composerInputStyle = { maxHeight: '240px', overflowY: 'auto' }
 const isChatAtBottom = ref(true)
 const chatSearchQuery = ref('')
 const currentSearchMatchIndex = ref(0)
@@ -642,11 +665,7 @@ const filteredSources = computed(() => {
   const section = activeSourceSection.value
   return section ? getRelatedSources(message, section) : []
 })
-const feedbackDialogTitle = computed(() => {
-  if (feedbackTargetRating.value === 'helpful') return '提交正向反馈'
-  if (feedbackTargetRating.value === 'unhelpful') return '提交问题反馈'
-  return '补充详细反馈'
-})
+const feedbackDialogTitle = computed(() => feedbackTargetRating.value === 'helpful' ? '提交正向反馈' : '提交问题反馈')
 const isSourcePanelDocumentOverview = computed(() => isDocumentOverview(activeSourceMessage.value))
 const overviewDocumentTotal = computed(() => {
   const message = activeSourceMessage.value
@@ -702,6 +721,63 @@ function stripInlineSourceMarkers(value: string) {
     .replace(/\s*\(来源\s*\d+\)/g, '')
 }
 
+const LOW_SOURCE_QUALITY_GRADES = new Set(['poor', 'blocked'])
+const SOURCE_QUALITY_WARNING_TEXT = '部分来源质量较低，请结合原文或后台体检结果核验答案。'
+
+function sourceQualityGrade(source: SourceItem) {
+  const quality = source.source_quality && typeof source.source_quality === 'object' ? source.source_quality : null
+  return String(quality?.grade || '').toLowerCase()
+}
+
+function isLowQualitySource(source: SourceItem) {
+  return LOW_SOURCE_QUALITY_GRADES.has(sourceQualityGrade(source))
+}
+
+function buildSourceQualityNotice(sources: SourceItem[]): SourceQualityNotice {
+  const affected = sources.filter(isLowQualitySource)
+  const grades: Record<string, number> = {}
+  const reasons = new Set<string>()
+  const documents = new Map<string, string>()
+  for (const source of affected) {
+    const quality = source.source_quality && typeof source.source_quality === 'object' ? source.source_quality : {}
+    const grade = sourceQualityGrade(source)
+    if (grade) grades[grade] = (grades[grade] || 0) + 1
+    for (const reason of (quality.reasons || []) as string[]) if (reason) reasons.add(String(reason))
+    const key = String(source.document_id || source.filename || sourceTitle(source))
+    documents.set(key, sourceTitle(source))
+  }
+  const hasLowQuality = affected.length > 0
+  return {
+    has_low_quality_sources: hasLowQuality,
+    warning: hasLowQuality ? SOURCE_QUALITY_WARNING_TEXT : '',
+    affected_source_count: affected.length,
+    affected_document_count: documents.size,
+    grades,
+    reasons: Array.from(reasons).sort(),
+    documents: Array.from(documents.values()).slice(0, 6),
+  }
+}
+
+function sourceQualityNotice(message: ChatMessageItem): SourceQualityNotice {
+  const notice = message.source_quality_notice || buildSourceQualityNotice(message.sources)
+  if (notice.has_low_quality_sources !== undefined) return notice
+  return buildSourceQualityNotice(message.sources)
+}
+
+function sourceQualityWarningText(message: ChatMessageItem) {
+  const notice = sourceQualityNotice(message)
+  if (!notice.has_low_quality_sources) return ''
+  const affected = Number(notice.affected_document_count || notice.affected_source_count || 0)
+  return affected > 0 ? `${notice.warning || SOURCE_QUALITY_WARNING_TEXT}（${affected} 个来源受影响）` : (notice.warning || SOURCE_QUALITY_WARNING_TEXT)
+}
+
+function sourceQualityLabel(source: SourceItem) {
+  const grade = sourceQualityGrade(source)
+  if (grade === 'blocked') return '低质来源 · 需核验'
+  if (grade === 'poor') return '来源质量偏低'
+  return ''
+}
+
 function sourceDisplayScore(source: SourceItem, message?: ChatMessageItem | null) {
   const channel = String(source.retrieval_channel || '')
   const name = String(source.filename || source.document_title || source.title || '').toLowerCase()
@@ -736,6 +812,9 @@ function fillAssistantMessage(message: ChatMessageItem, data: any, overwriteAnsw
   message.citation_mode = data.citation_mode || message.citation_mode
   message.document_count = Number(data.document_count || data.interaction_meta?.document_count || sources.length || 0)
   message.summary_mode = Boolean(data.summary_mode || message.summary_mode)
+  message.source_quality_notice = data.source_quality_notice || message.source_quality_notice || buildSourceQualityNotice(sources)
+  message.source_warning = data.source_warning || message.source_quality_notice?.warning || ''
+  message.source_warnings = Array.isArray(data.source_warnings) ? data.source_warnings : (message.source_warning ? [message.source_warning] : [])
   if (typeof data.streaming === 'boolean') message.streaming = data.streaming
 }
 
@@ -1238,19 +1317,26 @@ async function openSession(id: string) {
   try {
     const { data } = await http.get(`/chat/sessions/${id}`)
     sessionId.value = id
-    messages.value = (data.messages || []).map((item: any) => ({
-      id: item.id || messageId(item.role || 'message'),
-      role: item.role,
-      content: item.content || '',
-      created_at: item.created_at,
-      sources: item.role === 'assistant' ? normalizeSources(item.sources, item.citations) : [],
-      mode: item.mode,
-      citation_mode: item.citation_mode,
-      document_count: Number(item.document_count || 0),
-      summary_mode: Boolean(item.summary_mode),
-      requestText: item.content || '',
-      displayText: item.content || '',
-    }))
+    messages.value = (data.messages || []).map((item: any) => {
+      const sources = item.role === 'assistant' ? normalizeSources(item.sources, item.citations) : []
+      const sourceNotice = item.source_quality_notice || buildSourceQualityNotice(sources)
+      return {
+        id: item.id || messageId(item.role || 'message'),
+        role: item.role,
+        content: item.content || '',
+        created_at: item.created_at,
+        sources,
+        mode: item.mode,
+        citation_mode: item.citation_mode,
+        document_count: Number(item.document_count || 0),
+        summary_mode: Boolean(item.summary_mode),
+        source_quality_notice: sourceNotice,
+        source_warning: item.source_warning || sourceNotice.warning || '',
+        source_warnings: Array.isArray(item.source_warnings) ? item.source_warnings : (sourceNotice.warning ? [sourceNotice.warning] : []),
+        requestText: item.content || '',
+        displayText: item.content || '',
+      }
+    })
     if (!messages.value.length) messages.value = [welcomeMessage()]
     await scrollToBottom()
   } catch (err: any) {
@@ -1279,6 +1365,9 @@ async function recoverAssistantMessageFromSession(assistantMessage: ChatMessageI
     if (!saved?.content) return false
     assistantMessage.content = stripInlineSourceMarkers(saved.content || '')
     assistantMessage.sources = normalizeSources(saved.sources, saved.citations)
+    assistantMessage.source_quality_notice = saved.source_quality_notice || buildSourceQualityNotice(assistantMessage.sources)
+    assistantMessage.source_warning = saved.source_warning || assistantMessage.source_quality_notice.warning || ''
+    assistantMessage.source_warnings = Array.isArray(saved.source_warnings) ? saved.source_warnings : (assistantMessage.source_warning ? [assistantMessage.source_warning] : [])
     assistantMessage.mode = saved.mode || assistantMessage.mode
     assistantMessage.citation_mode = saved.citation_mode || assistantMessage.citation_mode
     assistantMessage.document_count = Number(saved.document_count || assistantMessage.sources.length || 0)
@@ -1813,6 +1902,66 @@ async function copyText(text: string) {
   }
 }
 
+function feedbackCategoryOf(rating: FeedbackRating) {
+  return rating === 'helpful' ? 'other' : 'not_helpful'
+}
+
+async function submitFeedback(message: ChatMessageItem, rating: FeedbackRating, content: string) {
+  if (!message || message.feedbackSubmitted) return
+  feedbackSubmitting.value = true
+  try {
+    const payload = {
+      session_id: sessionId.value || undefined,
+      message_id: message.id,
+      rating,
+      category: feedbackCategoryOf(rating),
+      feedback_category: feedbackCategoryOf(rating),
+      content: content.trim(),
+    }
+    await http.post('/chat/feedback', payload)
+    message.feedbackSubmitted = true
+    ElMessage.success(rating === 'helpful' ? '感谢反馈' : '反馈已提交')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '反馈提交失败')
+  } finally {
+    feedbackSubmitting.value = false
+  }
+}
+
+async function submitQuickFeedback(message: ChatMessageItem, rating: FeedbackRating) {
+  const content = rating === 'helpful' ? '这条回答有帮助' : '这条回答不够好'
+  await submitFeedback(message, rating, content)
+}
+
+function openFeedbackDialog(message: ChatMessageItem, rating: FeedbackRating) {
+  if (!message || message.feedbackSubmitted) return
+  feedbackTargetMessage.value = message
+  feedbackTargetRating.value = rating
+  feedbackForm.value = { content: '' }
+  feedbackDialogVisible.value = true
+}
+
+function closeFeedbackDialog() {
+  feedbackDialogVisible.value = false
+  feedbackTargetMessage.value = null
+  feedbackForm.value = { content: '' }
+  feedbackTargetRating.value = 'unhelpful'
+}
+
+async function confirmFeedbackSubmit() {
+  const message = feedbackTargetMessage.value
+  const content = feedbackForm.value.content.trim()
+  if (!message || !content) return
+  await submitFeedback(message, feedbackTargetRating.value, content)
+  if (message.feedbackSubmitted) closeFeedbackDialog()
+}
+
+function feedbackPlaceholderOf(rating: FeedbackRating) {
+  return rating === 'helpful'
+    ? '可以简单写：这条回答有帮助。'
+    : '请描述哪里不对、不完整，或者你期望的回答是什么。'
+}
+
 function escapeHtml(value: string) {
   return String(value || '').replace(/[&<>'"]/g, (char) => ({
     '&': '&amp;',
@@ -1841,6 +1990,57 @@ function splitTableRow(line: string) {
     .replace(/\|$/, '')
     .split('|')
     .map((cell) => inlineMarkdown(cell.trim()))
+}
+
+function previewRowMatch(line: string) {
+  return /^行\s*(\d+)\s*[：:]\s*(.+)$/.exec(String(line || '').trim())
+}
+
+function parsePreviewRow(line: string) {
+  const raw = String(line || '').trim()
+  const rowMatch = previewRowMatch(raw)
+  const bulletMatch = /^(?:[-*]|•)\s+(.+)$/.exec(raw)
+  let payload = ''
+
+  if (rowMatch) {
+    payload = rowMatch[2]
+  } else if (bulletMatch && bulletMatch[1].includes('=') && bulletMatch[1].includes('|')) {
+    payload = bulletMatch[1]
+  } else {
+    return null
+  }
+
+  const values: Record<string, string> = {}
+  for (const part of payload.split(/\s*\|\s*/)) {
+    const index = part.indexOf('=')
+    if (index <= 0) continue
+    const key = part.slice(0, index).trim()
+    const value = part.slice(index + 1).trim()
+    if (key) values[key] = value
+  }
+  return Object.keys(values).length ? { rowNumber: rowMatch?.[1] || '', values } : null
+}
+
+function renderPreviewRowsTable(rows: Array<{ rowNumber: string; values: Record<string, string> }>) {
+  const headers: string[] = []
+  for (const row of rows) {
+    for (const key of Object.keys(row.values)) {
+      if (!headers.includes(key)) headers.push(key)
+    }
+  }
+  const body = rows.map((row) => {
+    const cells = headers.map((header) => inlineMarkdown(row.values[header] || ''))
+    return `<tr>${cells.map((cell) => `<td>${cell}</td>`).join('')}</tr>`
+  }).join('')
+  return `<div class="answer-data-table"><div class="answer-data-table-head"><strong>明细列表</strong><span>${rows.length} 条</span></div><div class="answer-data-table-scroll"><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div></div>`
+}
+
+function renderConclusionCard(text: string) {
+  const metric = /共有\s*([\d,]+)\s*([^，。,.\s]*)/.exec(text)
+  const metricHtml = metric
+    ? `<div class="answer-stat-metric"><strong>${escapeHtml(metric[1])}</strong><span>${escapeHtml(metric[2] || '条')}</span></div>`
+    : ''
+  return `<div class="answer-stat-card"><div><span>统计结论</span><p>${inlineMarkdown(text)}</p></div>${metricHtml}</div>`
 }
 
 function renderMarkdown(content: string) {
@@ -1873,6 +2073,27 @@ function renderMarkdown(content: string) {
       continue
     }
 
+    const conclusion = /^结论[：:]\s*(.+)$/.exec(trimmed)
+    if (conclusion) {
+      closeList()
+      html.push(renderConclusionCard(conclusion[1]))
+      continue
+    }
+
+    const previewRow = parsePreviewRow(trimmed)
+    if (previewRow) {
+      closeList()
+      const rows = [previewRow]
+      while (index + 1 < lines.length) {
+        const nextRow = parsePreviewRow(lines[index + 1])
+        if (!nextRow) break
+        rows.push(nextRow)
+        index += 1
+      }
+      html.push(renderPreviewRowsTable(rows))
+      continue
+    }
+
     if (trimmed.includes('|') && next && isTableSeparator(next)) {
       closeList()
       const headers = splitTableRow(trimmed)
@@ -1889,7 +2110,7 @@ function renderMarkdown(content: string) {
         index += 1
       }
       html.push(
-        `<table><thead><tr>${headers.map((cell) => `<th>${cell}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody></table>`,
+        `<div class="answer-data-table"><div class="answer-data-table-scroll"><table><thead><tr>${headers.map((cell) => `<th>${cell}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`,
       )
       continue
     }
@@ -1933,6 +2154,7 @@ function renderMarkdown(content: string) {
 
 function classifyStructuredSection(title: string, body: string, index: number, total: number) {
   const titleText = String(title || '')
+  if (/(表格|统计|口径|来源明细|命中行|预览|Sheet|数据)/.test(titleText)) return { kind: 'data' as StructuredSectionKind, badge: '数据' }
   if (/(总结|结论|摘要|概览|总览)/.test(titleText)) return { kind: 'highlight' as StructuredSectionKind, badge: '摘要' }
   if (/(风险|注意|提醒|限制|警告|问题)/.test(titleText)) return { kind: 'warning' as StructuredSectionKind, badge: '风险' }
   if (/(建议|下一步|行动|处理|方案)/.test(titleText)) return { kind: 'action' as StructuredSectionKind, badge: '建议' }

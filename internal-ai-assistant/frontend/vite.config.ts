@@ -9,8 +9,22 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000',
         changeOrigin: true,
+        configure: (proxy) => {
+          // 透传 SSE：禁用代理对 text/event-stream 的缓冲，确保增量 delta 实时到达浏览器
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.setHeader('Accept-Encoding', 'identity')
+          })
+          proxy.on('proxyRes', (proxyRes) => {
+            const ct = String(proxyRes.headers['content-type'] || '')
+            if (ct.includes('text/event-stream')) {
+              proxyRes.headers['cache-control'] = 'no-cache, no-transform'
+              proxyRes.headers['x-accel-buffering'] = 'no'
+              delete proxyRes.headers['content-length']
+            }
+          })
+        },
       },
     },
   },

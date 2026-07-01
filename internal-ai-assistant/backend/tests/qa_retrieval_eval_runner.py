@@ -21,8 +21,10 @@ import argparse
 import importlib
 import json
 import os
+import re
 import shutil
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -93,7 +95,11 @@ def load_cases(path: Path) -> dict[str, Any]:
 
 
 def normalize_text(value: Any) -> str:
-    return str(value or "").casefold()
+    # PDF/PPT extraction often yields CJK compatibility ideographs and arbitrary
+    # line breaks inside words, e.g. “⼊职 联系”. Normalize before matching so
+    # evaluation checks evidence semantics instead of OCR/layout artifacts.
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"\s+", "", text)
 
 
 def context_title_text(context: dict) -> str:

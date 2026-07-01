@@ -12,10 +12,10 @@
 |------|----------|----------|----------|-----------|
 | `/` | 根路径 | 302 重定向到 `/chat` | 否 | 否 |
 | `/login` | 员工登录页 | Vue SPA (Element Plus) | 否 | 否 |
-| `/chat` | 聊天问答页 | Vue SPA (完整功能) + SSR 回退页 | 是 | 否 |
-| `/admin` | 后台管理页 | Vue SPA (完整功能) + SSR 回退页 | 是 | 是 |
+| `/chat` | 聊天问答页 | Vue SPA (完整功能，后端可回退 SSR) | 是 | 否 |
+| `/admin` | 后台管理页 | Vue SPA (完整功能，后端可回退 SSR) | 是 | 是 |
 
-**注意**：后端 FastAPI 同时提供了 `/chat` 和 `/admin` 的 SSR 回退 HTML（`CHAT_HTML` 和 `ADMIN_HTML`），当用户直接访问后端 8000 端口时会返回预渲染页面而非 SPA。通过 Nginx 代理访问时，前端 SPA 由 Vue Router 接管。
+**注意**：后端 FastAPI 在 `FRONTEND_DIST_DIR` 存在构建产物时，会优先为 `/login`、`/chat`、`/admin` 返回 Vue SPA 的 `index.html`，并通过 `/assets/...` 提供前端资源。仅当未构建或未挂载前端 dist 时，`/chat` 和 `/admin` 才回退到内联 SSR HTML（`CHAT_HTML` 和 `ADMIN_HTML`）。
 
 ---
 
@@ -217,7 +217,7 @@ API 401 ──(Axios 响应拦截)──→ 尝试刷新并重试一次；仍失
 
 | 形态 | 触发方式 | 技术栈 | 说明 |
 |------|----------|--------|------|
-| Vue SPA | Nginx 代理访问 `/chat` 或 `/admin` | Vue 3 + Element Plus + Vite | 完整交互（反馈对话框、来源预览抽屉等） |
-| SSR HTML | 直接访问后端 8000 端口的 `/chat` 或 `/admin` | FastAPI `HTMLResponse` + 内联 JS | 基础功能回退（发送消息、查看来源、管理文档权限） |
+| Vue SPA | Nginx 代理访问，或后端 8000 端口存在 `FRONTEND_DIST_DIR/index.html` 时访问 `/login`、`/chat`、`/admin` | Vue 3 + Element Plus + Vite | 完整交互（反馈对话框、来源预览抽屉等） |
+| SSR HTML | 后端 8000 端口缺少前端 dist 时访问 `/chat` 或 `/admin` | FastAPI `HTMLResponse` + 内联 JS | 基础功能回退（发送消息、查看来源、管理文档权限） |
 
-两个形态共享同一套后端 API。Vue SPA 为**主要支持形态**，SSR HTML 为**容灾回退**。
+两个形态共享同一套后端 API。Vue SPA 为**主要支持形态**，SSR HTML 为**容灾回退**；生产优先维护 Vue SPA，避免双实现长期分叉。

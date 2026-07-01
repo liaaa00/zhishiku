@@ -12,10 +12,19 @@
       "why": "用户明确问员工侧电子劳动合同签署流程，应该优先找员工操作指南和微助手入口资料。",
       "expected": {
         "top_n": 5,
-        "top_n_must_match_titles": ["电子劳动合同", "微助手"],
-        "top_n_must_not_match_titles": ["工单系统"],
-        "must_include_terms": ["微助手"],
-        "must_have_positive_signals": ["微助手"]
+        "top_n_must_match_titles": [
+          "电子劳动合同",
+          "微助手"
+        ],
+        "top_n_must_not_match_titles": [
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "微助手"
+        ],
+        "must_have_positive_signals": [
+          "微助手"
+        ]
       }
     },
     {
@@ -25,9 +34,15 @@
       "why": "真实用户不一定会说“电子签”，但语义仍是员工签署入口。",
       "expected": {
         "top_n": 5,
-        "top_n_must_match_titles": ["电子劳动合同", "微助手"],
-        "top_n_must_not_match_titles": ["工单系统"],
-        "must_include_terms": ["微助手"]
+        "top_n_must_match_titles": [
+          "电子劳动合同"
+        ],
+        "top_n_must_not_match_titles": [
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "微助手"
+        ]
       }
     },
     {
@@ -37,9 +52,15 @@
       "why": "注册问题应该优先命中微助手平台注册流程，而不是劳动合同操作或工单系统。",
       "expected": {
         "top_n": 3,
-        "top_n_must_match_titles": ["微助手"],
-        "top_n_must_not_match_titles": ["工单系统"],
-        "must_include_terms": ["微助手"]
+        "top_n_must_match_titles": [
+          "微助手"
+        ],
+        "top_n_must_not_match_titles": [
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "微助手"
+        ]
       }
     },
     {
@@ -49,9 +70,20 @@
       "why": "这里问的是内部合同组/工单处理，不应该被员工签署指南压过去。",
       "expected": {
         "top_n": 5,
-        "top_n_must_match_titles": ["工单系统"],
-        "must_include_terms": ["合同组"],
-        "must_match_contexts": [["线下交付"], ["交付完成"]]
+        "top_n_must_match_titles": [
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "合同组"
+        ],
+        "must_match_contexts": [
+          [
+            "线下交付"
+          ],
+          [
+            "交付完成"
+          ]
+        ]
       }
     },
     {
@@ -62,9 +94,17 @@
       "expected": {
         "backend": "table",
         "top_n": 5,
-        "top_n_must_match_titles": ["北仑", "派单截止时间"],
-        "must_not_match_titles": ["电子劳动合同", "工单系统"],
-        "must_include_terms": ["北仑"]
+        "top_n_must_match_titles": [
+          "北仑",
+          "派单截止时间"
+        ],
+        "must_not_match_titles": [
+          "电子劳动合同",
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "北仑"
+        ]
       }
     },
     {
@@ -76,7 +116,182 @@
         "backend": "table",
         "max_contexts": 0,
         "top_n": 5,
-        "top_n_must_not_match_titles": ["电子劳动合同", "工单系统"]
+        "top_n_must_not_match_titles": [
+          "电子劳动合同",
+          "工单系统"
+        ]
+      }
+    },
+    {
+      "id": "real_micro_assistant_entry_001",
+      "category": "PDF/入口定位",
+      "question": "上海外服微助手从哪里进入登录？",
+      "why": "覆盖微助手PDF的入口页，应命中新版外服云平台注册流程-微助手，而不是电子劳动合同或工单系统。",
+      "expected": {
+        "top_n": 3,
+        "top_n_must_match_titles": [
+          "微助手"
+        ],
+        "top_n_must_not_match_titles": [
+          "工单系统"
+        ],
+        "must_match_contexts": [
+          [
+            "微信",
+            "员工服务"
+          ],
+          [
+            "登录界面"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "real_micro_assistant_identity_001",
+      "category": "PDF/流程步骤",
+      "question": "外服云微助手身份认证有哪些入口或类型？",
+      "why": "覆盖微助手PDF中的身份认证内容，应召回身份验证相关页面。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "微助手"
+        ],
+        "must_match_contexts": [
+          [
+            "身份认证"
+          ],
+          [
+            "身份验证"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "real_esign_realname_001",
+      "category": "PDF/电子合同步骤",
+      "question": "员工签电子劳动合同时实名认证用什么方式？",
+      "why": "覆盖电子劳动合同PDF第3-4步，应该命中支付宝或微信实名认证。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "电子劳动合同"
+        ],
+        "must_match_contexts": [
+          [
+            "支付宝"
+          ],
+          [
+            "微信"
+          ],
+          [
+            "实名认证"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "real_esign_download_after_sign_001",
+      "category": "PDF/电子合同完成后",
+      "question": "电子劳动合同签署完成后，员工怎么下载保存合同？",
+      "why": "覆盖电子劳动合同PDF签署完成短信和下载保存说明。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "电子劳动合同"
+        ],
+        "must_match_contexts": [
+          [
+            "签署完成"
+          ],
+          [
+            "下载保存"
+          ],
+          [
+            "外服微助手"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "real_workorder_onboarding_dispatch_001",
+      "category": "PDF/工单系统入职场景",
+      "question": "工单系统在员工入职场景会自动派出哪些工单？",
+      "why": "覆盖工单系统需求文档入职管理场景，应命中劳动合同签订、入职联系、商保投保和报岗集约录入。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "工单系统"
+        ],
+        "top_n_must_not_match_titles": [
+          "入职人员信息表"
+        ],
+        "must_match_contexts": [
+          [
+            "劳动合同签订"
+          ],
+          [
+            "入职联系"
+          ],
+          [
+            "商保投保"
+          ],
+          [
+            "报岗集约录入"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "real_workorder_resignation_contact_001",
+      "category": "PDF/工单系统离职场景",
+      "question": "离职场景里合同组怎么联系员工并开具离职证明？",
+      "why": "覆盖工单系统需求文档离职场景，不应命中员工电子合同签署指南。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "工单系统"
+        ],
+        "top_n_must_not_match_titles": [
+          "电子劳动合同",
+          "入职人员信息表"
+        ],
+        "must_match_contexts": [
+          [
+            "离职联系"
+          ],
+          [
+            "小程序"
+          ],
+          [
+            "离职证明"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "real_onboarding_form_fields_001",
+      "category": "Excel/入职信息表字段",
+      "question": "入职人员信息表里的全职员工需要填写哪些银行和合同字段？",
+      "why": "覆盖聊天上传的入职人员信息表，应命中银行帐号、开户行、劳动合同起始日和到期日字段。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "入职人员信息表"
+        ],
+        "must_match_contexts": [
+          [
+            "银行帐号"
+          ],
+          [
+            "开户行"
+          ],
+          [
+            "劳动合同起始日"
+          ],
+          [
+            "劳动合同到期日"
+          ]
+        ]
       }
     }
   ]

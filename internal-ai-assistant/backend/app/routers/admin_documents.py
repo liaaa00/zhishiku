@@ -16,7 +16,7 @@ from ..document_utils import extract_supported_document
 from ..models import BackgroundTask, Document, DocumentChunk, DocumentPageIndex, DocumentProcessingStatus, User
 from ..pageindex_adapter import build_pageindex_for_document, load_pageindex_payload, pageindex_admin_summary, pageindex_integration_status
 from ..settings_service import get_model_config
-from ..task_service import IMAGE_EXTENSIONS, _ocr_pdf_pages, _total_extracted_chars, enqueue_document_task
+from ..task_service import IMAGE_EXTENSIONS, enqueue_document_task, extract_pdf_pages_with_ocr_fallback
 from ..upload_policy import KNOWLEDGE_FILE_EXTENSIONS, MAX_CHUNK_CONTENT_CHARS
 from ..upload_security import validate_upload_file
 from ..upload_storage import save_upload
@@ -127,10 +127,10 @@ def rebuild_document_page_index(document_id: str, db: Session = Depends(get_db),
         if ext in IMAGE_EXTENSIONS:
             text_content = image_to_text(str(doc.storage_path), cfg["api_key"], cfg["base_url"], cfg["model"])
             pages = [(1, text_content)] if text_content else []
+        elif ext == ".pdf":
+            pages = extract_pdf_pages_with_ocr_fallback(db, doc, Path(doc.storage_path))
         else:
             pages = extract_supported_document(str(doc.storage_path))
-            if ext == ".pdf" and _total_extracted_chars(pages) == 0:
-                pages = _ocr_pdf_pages(Path(doc.storage_path), cfg)
         row = build_pageindex_for_document(db, doc, pages, cfg=cfg, force=True)
         audit(db, actor, "page_index.rebuild", "document", doc.id, {"status": row.status if row else "not_built"})
         db.commit()

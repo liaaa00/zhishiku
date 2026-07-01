@@ -11,6 +11,8 @@
 docker compose up -d --build
 ```
 
+Docker Compose 使用三服务部署形态：`frontend`（Nginx + Vue SPA）对外暴露 `8080`，`backend` 在内部网络提供 `8000` API，`qdrant` 提供向量库。可通过环境变量 `FRONTEND_PORT` 调整前端入口端口；例如本机 `8080` 已被其他容器占用时，可先执行 PowerShell 命令 `$env:FRONTEND_PORT='8081'`，再运行 `docker compose up -d --build`。
+
 如果你不想用 Docker，也可以直接：
 
 ```bash
