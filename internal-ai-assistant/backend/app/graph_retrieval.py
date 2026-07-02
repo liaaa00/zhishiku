@@ -10,6 +10,7 @@ from .retrieval import accessible_document_ids, user_group_ids
 
 CITY_TERMS = (
     "北京", "上海", "深圳", "广州", "宁波", "北仑", "宁波北仑", "杭州", "成都", "郑州", "石家庄", "贵阳", "南京", "乌鲁木齐",
+    "苏州", "运城", "青岛", "昆明", "济南", "沈阳", "大连", "重庆", "西安", "长沙", "武汉", "合肥", "福州", "厦门", "天津",
 )
 BUSINESS_TERMS = (
     "社保", "医保", "公积金", "银行账户", "社保公积金账户", "截止时间", "操作规则", "预计缴款时间", "开设公司", "公司名称", "公积金比例",
@@ -72,10 +73,14 @@ def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int =
         return []
 
     direct_entities = _candidate_entities(db, text, limit=30)
-    matched_ids = [item.id for item in direct_entities[:12]]
+    query_terms = set(_query_entity_terms(text))
+    strict_entities = [item for item in direct_entities if item.name and (item.name in text or item.name in query_terms)]
+    search_entities_used = strict_entities or direct_entities
+    matched_ids = [item.id for item in search_entities_used[:12]]
     if not matched_ids:
         return []
 
+    candidate_limit = max(12, top_k * 4)
     rows = db.execute(
         select(GraphRelation)
         .options(
@@ -90,8 +95,48 @@ def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int =
             or_(GraphRelation.source_entity_id.in_(matched_ids), GraphRelation.target_entity_id.in_(matched_ids)),
         )
         .order_by(GraphRelation.confidence.desc(), GraphRelation.updated_at.desc())
-        .limit(max(1, top_k))
+        .limit(candidate_limit)
     ).scalars().all()
+
+    query_terms.update(item.name for item in search_entities_used[:12] if getattr(item, "name", ""))
+
+    if not rows and strict_entities:
+        contexts: list[dict] = []
+        for entity in strict_entities[: max(1, top_k)]:
+            contexts.append(
+                {
+                    "document_id": "",
+                    "chunk_id": "",
+                    "document_title": "知识图谱",
+                    "filename": "",
+                    "page_number": None,
+                    "content": f"{entity.name} 是图谱实体（类型：{entity.entity_type}）。当前可访问图谱中未找到它关联的已确认/自动关系。",
+                    "source_type": "graph",
+                    "retrieval_channel": "graph",
+                    "score": entity.confidence,
+                    "graph": {"entity": {"id": entity.id, "name": entity.name, "entity_type": entity.entity_type}},
+                }
+            )
+        return contexts
+
+    wants_rule = "操作规则" in text
+    wants_deadline = "截止时间" in text
+
+    def row_rank(row: GraphRelation) -> tuple[float, float]:
+        source_name = row.source_entity.name if row.source_entity else ""
+        target_name = row.target_entity.name if row.target_entity else ""
+        haystack = f"{source_name} {target_name} {row.relation_type} {row.description or ''} {row.evidence_text or ''}"
+        exact_hits = sum(1 for term in query_terms if term and term in haystack)
+        endpoint_hits = int(bool(source_name and source_name in text)) + int(bool(target_name and target_name in text))
+        rule_bonus = 0.4 if "派单规则" in source_name and source_name in haystack else 0.0
+        relation_bonus = 0.0
+        if wants_rule and row.relation_type == "requires" and "操作规则" in target_name:
+            relation_bonus += 3.0
+        if wants_deadline and row.relation_type == "has_deadline" and "截止时间" in target_name:
+            relation_bonus += 3.0
+        return (endpoint_hits * 2.0 + exact_hits * 0.25 + rule_bonus + relation_bonus, row.confidence or 0.0)
+
+    rows = sorted(rows, key=row_rank, reverse=True)[: max(1, top_k)]
 
     contexts: list[dict] = []
     seen: set[str] = set()

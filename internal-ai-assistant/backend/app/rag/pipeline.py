@@ -17,6 +17,10 @@ GRAPH_QUERY_TERMS = (
     "图谱",
     "关系",
     "关联",
+    "节点",
+    "图谱节点",
+    "派单规则",
+    "触发",
     "对应",
     "属于",
     "谁负责",
@@ -33,6 +37,11 @@ GRAPH_QUERY_TERMS = (
     "公司名称",
     "公积金比例",
 )
+
+
+def _is_explicit_graph_query(question: str) -> bool:
+    text = re.sub(r"\s+", "", question or "")
+    return any(term in text for term in ("图谱", "关系", "关联", "节点", "派单规则", "触发"))
 
 
 def _retrieve_by_route(db: Session, question: str, user: User, top_k: int, analysis, route) -> RetrievalResult:
@@ -97,16 +106,30 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
 
     graph_checked = _should_check_graph(question, route.name)
     graph_contexts = _graph_contexts_for_question(db, question, user, top_k) if graph_checked else []
+    explicit_graph_query = _is_explicit_graph_query(question)
+    original_route = route.to_dict()
     contexts = result.contexts
     backend = result.backend
     note_parts = [result.note]
+    route_meta = route.to_dict()
     if graph_checked:
         note_parts.append(f"graph_checked={len(graph_contexts)}")
-    if graph_contexts and route.name != "table":
+    if graph_contexts and explicit_graph_query:
+        # 显式询问图谱/关系/节点时，图谱证据就是主答案上下文；避免 table 路由把图谱问题改写成普通表格明细。
+        contexts = graph_contexts
+        backend = "graph"
+        route_meta = {"name": "text", "intent": "text_qa", "confidence": max(float(route.confidence or 0.0), 0.86), "reason": f"explicit_graph_query_overrode_{route.name}"}
+        note_parts.append("graph_direct")
+    elif graph_contexts and route.name != "table":
         contexts = _merge_contexts(contexts, graph_contexts, max(top_k, len(contexts), 8))
         backend = "hybrid+graph" if backend else "graph"
         note_parts.append("graph_merged")
 
+    evidence_route_name = route_meta.get("name") or route.name
+    if evidence_route_name != route.name:
+        route.name = evidence_route_name
+        route.intent = route_meta.get("intent") or route.intent
+        route.reason = route_meta.get("reason") or route.reason
     evidence = check_evidence(contexts, analysis, route)
 
     meta = dict(result.meta or {})
@@ -114,15 +137,17 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
         {
             "rag_router_version": "phase1_rules",
             "query_analysis": analysis.to_dict(),
-            "retrieval_route": route.to_dict(),
+            "retrieval_route": route_meta,
+            "original_retrieval_route": original_route,
             "evidence_check": evidence.to_dict(),
             "graph_retrieval": {
                 "checked": graph_checked,
                 "matched": bool(graph_contexts),
                 "context_count": len(graph_contexts),
-                "merged_into_contexts": bool(graph_contexts and route.name != "table"),
+                "merged_into_contexts": bool(graph_contexts and (route.name != "table" or explicit_graph_query)),
+                "direct_answer": bool(graph_contexts and explicit_graph_query),
             },
         }
     )
-    note = "; ".join(part for part in [*note_parts, f"route={route.name}", f"evidence={evidence.reason}"] if part)
+    note = "; ".join(part for part in [*note_parts, f"route={route_meta.get('name') or route.name}", f"evidence={evidence.reason}"] if part)
     return contexts, backend, note, result.candidate_count + len(graph_contexts), meta
