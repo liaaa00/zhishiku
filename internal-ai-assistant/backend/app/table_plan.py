@@ -264,9 +264,10 @@ def is_branch_completion_query(question: str) -> bool:
     social_hit = any(term in text for term in ("社保公积金账户", "社保公积金", "社保账户", "公积金账户"))
     ratio_hit = any(term in text for term in ("公积金比例", "比例"))
     complete_hit = any(term in text for term in ("全部", "全都", "都", "完成", "开设完成", "开具完成"))
-    global_intent = any(term in text for term in ("多少", "几家", "几个", "哪些", "哪几", "列出", "名单", "清单", "统计", "全部分公司", "所有分公司", "各分公司"))
+    global_intent = any(term in text for term in ("多少家", "多少个", "有多少", "几家", "几个", "哪些", "哪几", "列出", "名单", "清单", "统计", "全部分公司", "所有分公司", "各分公司"))
     concrete_city_hit = any(city in text for city in CITY_TERMS)
-    if concrete_city_hit and not global_intent:
+    strong_completion_count_intent = global_intent and any(term in text for term in ("多少家分公司", "开设了多少家", "统计", "为准"))
+    if concrete_city_hit and not ("北仑" in text and strong_completion_count_intent):
         return False
     return branch_hit and bank_hit and social_hit and ratio_hit and complete_hit
 
@@ -432,6 +433,12 @@ def parse_filter_expression(
         return filters, "or", groups
 
     filters = _parse_filters_from_text(text, include_city_tokens=True)
+    city_filters = [item for item in filters if item.get("column") == "city" and item.get("operator") == "contains"]
+    if len(city_filters) > 1 and any(term in text for term in ("是否包含", "是否包括", "有没有", "是否有", "包含")):
+        shared = [item for item in filters if item.get("column") != "city"]
+        groups = [_dedupe_filters(shared + [city_filter]) for city_filter in city_filters]
+        filters = _dedupe_filters([item for group in groups for item in group])
+        return filters, "or", groups
 
     if include_quoted_company:
         quoted_values = re.findall(r"[‘'\"]([^‘’'\"]{1,30})[’'\"]", question or "")
@@ -445,12 +452,12 @@ def parse_filter_expression(
 
 def group_by_column(question: str) -> str:
     text = compact(question)
-    ranking_intent = any(term in text for term in ("最多", "最少", "倒数", "前", "top", "bottom"))
+    ranking_intent = any(term in text for term in ("最多", "最少", "倒数", "top", "bottom")) or bool(re.search(r"(?:排名)?前(?:\d+|几|十|[一二三四五六七八九])", text))
     if any(term in text for term in ("按城市", "各城市", "每个城市", "分城市", "城市分布", "城市分别")) or (ranking_intent and "城市" in text):
         return "city"
     if any(term in text for term in ("按省份", "各省", "每个省", "分省", "省份分布")) or (ranking_intent and "省" in text):
         return "province"
-    if any(term in text for term in ("按公司", "各公司", "每家公司", "分公司分别")) or (ranking_intent and any(term in text for term in ("公司", "单位", "网点", "机构"))):
+    if any(term in text for term in ("按公司", "各公司", "每家公司")) or (ranking_intent and any(term in text for term in ("公司", "单位", "网点", "机构"))):
         return "company"
     return ""
 

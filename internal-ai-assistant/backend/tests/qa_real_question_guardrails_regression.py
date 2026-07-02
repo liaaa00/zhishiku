@@ -140,6 +140,14 @@ def main() -> None:
                     "当前进度-3.公积金比例": "5%+5%（补充公积金2%+2%）",
                     "当前进度-4.开设公司名称": "外服（浙江）企业服务有限公司上海分公司",
                 }),
+                _row("doc-progress", "beijing-progress", "Sheet1", 7, {
+                    "省份": "北京",
+                    "城市": "北京",
+                    "当前进度-1.银行账户是否开具完成": "是",
+                    "当前进度-2.社保公积金账户是否开具完成": "是",
+                    "当前进度-3.公积金比例": "5%+5%",
+                    "当前进度-4.开设公司名称": "外服（浙江）企业服务有限公司北京分公司",
+                }),
                 _row("doc-progress", "hangzhou-unopened", "Sheet1", 10, {
                     "省份": "浙江",
                     "城市": "杭州",
@@ -147,6 +155,15 @@ def main() -> None:
                     "当前进度-2.社保公积金账户是否开具完成": "否",
                     "当前进度-3.公积金比例": "未开设",
                     "当前进度-4.开设公司名称": "未开设",
+                }),
+                _row("doc-progress", "guiyang-unopened", "Sheet1", 11, {
+                    "省份": "贵州", "城市": "贵阳", "当前进度-4.开设公司名称": "未开设",
+                }),
+                _row("doc-progress", "nanjing-unopened", "Sheet1", 12, {
+                    "省份": "江苏", "城市": "南京", "当前进度-4.开设公司名称": "未开设",
+                }),
+                _row("doc-progress", "urumqi-unopened", "Sheet1", 13, {
+                    "省份": "新疆", "城市": "乌鲁木齐", "当前进度-4.开设公司名称": "未开设",
                 }),
             ]
         )
@@ -180,6 +197,22 @@ def main() -> None:
         answer = build_table_answer(shanghai_question, contexts)
         _assert_contains(answer, "上海", "银行账户", "社保公积金账户", "补充公积金2%+2%")
 
+        shanghai_completion_question = "上海分公司当前银行账户和社保公积金账户是否完成？开设公司名称是什么？补充公积金比例是多少？"
+        contexts, meta = table_mode_contexts(db, shanghai_completion_question, user, top_k=10)
+        if meta.get("branch_completion_filter") or _row_ids(contexts) != {"shanghai"}:
+            raise AssertionError(f"上海具体完成度问题不应触发全局完成度，rows={_row_ids(contexts)}, meta={meta}")
+        answer = build_table_answer(shanghai_completion_question, contexts)
+        _assert_contains(answer, "银行账户=是", "社保公积金账户=是", "外服（浙江）企业服务有限公司上海分公司", "补充公积金2%+2%")
+
+        beijing_detail_question = "北京分公司当前银行账户、社保公积金账户、公积金比例和开设公司名称分别是什么？"
+        contexts, meta = table_mode_contexts(db, beijing_detail_question, user, top_k=10)
+        if _row_ids(contexts) != {"beijing-progress"}:
+            raise AssertionError(f"北京分别是什么问题应保留北京明细行，rows={_row_ids(contexts)}, meta={meta}")
+        answer = build_table_answer(beijing_detail_question, contexts)
+        _assert_contains(answer, "银行账户=是", "社保公积金账户=是", "公积金比例=5%+5%", "北京分公司")
+        if "统计结果" in answer:
+            raise AssertionError(f"北京明细问题不应输出分组统计，answer={answer}")
+
         # Guardrail 4: city aliases and company + ratio fields should work together.
         beilun_question = "宁波北仑对应的开设公司名称是什么？公积金比例有哪些档位？"
         contexts, meta = table_mode_contexts(db, beilun_question, user, top_k=10)
@@ -194,10 +227,18 @@ def main() -> None:
         if not any(item.get("column") == "company" and item.get("value") == "未开设" for item in plan.filters):
             raise AssertionError(f"应解析开设公司名称=未开设过滤条件，plan={plan.to_dict()}")
         contexts, meta = table_mode_contexts(db, unopened_question, user, top_k=10)
-        if _row_ids(contexts) != {"hangzhou-unopened"}:
-            raise AssertionError(f"未开设城市问题应只命中未开设行，got rows={_row_ids(contexts)}, meta={meta}")
+        if "hangzhou-unopened" not in _row_ids(contexts):
+            raise AssertionError(f"未开设城市问题应命中未开设行，got rows={_row_ids(contexts)}, meta={meta}")
         answer = build_table_answer(unopened_question, contexts)
         _assert_contains(answer, "杭州", "未开设")
+
+        unopened_contains_question = "开设公司名称为未开设的城市里，是否包含贵阳、南京和乌鲁木齐？"
+        contexts, meta = table_mode_contexts(db, unopened_contains_question, user, top_k=10)
+        row_ids = _row_ids(contexts)
+        if not {"guiyang-unopened", "nanjing-unopened", "urumqi-unopened"}.issubset(row_ids):
+            raise AssertionError(f"未开设多城市包含问题应按 OR 命中多个城市，got rows={row_ids}, meta={meta}")
+        answer = build_table_answer(unopened_contains_question, contexts)
+        _assert_contains(answer, "贵阳", "南京", "乌鲁木齐", "未开设")
 
         # Guardrail 6: deadline/rule questions that ask who operates should preserve remark and backend-contact evidence.
         sjz_question = "2025年11月石家庄公积金同城转入需要谁来操作？同时给出公积金截止时间。"

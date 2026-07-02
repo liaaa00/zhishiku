@@ -1,9 +1,64 @@
+import re
+
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .graph_store import normalize_entity_name, relation_to_dict, search_entities
 from .models import GraphRelation, User
 from .retrieval import accessible_document_ids, user_group_ids
+
+
+CITY_TERMS = (
+    "北京", "上海", "深圳", "广州", "宁波", "北仑", "宁波北仑", "杭州", "成都", "郑州", "石家庄", "贵阳", "南京", "乌鲁木齐",
+)
+BUSINESS_TERMS = (
+    "社保", "医保", "公积金", "银行账户", "社保公积金账户", "截止时间", "操作规则", "预计缴款时间", "开设公司", "公司名称", "公积金比例",
+    "劳动合同", "电子劳动合同", "入职", "入职联系", "报岗", "报岗集约录入", "商保投保", "待遇申报", "材料用印申请", "合同组",
+)
+
+
+def _month_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for year, month in re.findall(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", text or ""):
+        try:
+            tokens.append(f"{year}{int(month):02d}")
+        except ValueError:
+            pass
+    tokens.extend(re.findall(r"\b20\d{4}\b", text or ""))
+    return list(dict.fromkeys(tokens))
+
+
+def _query_entity_terms(text: str) -> list[str]:
+    compact = re.sub(r"\s+", "", text or "")
+    months = _month_tokens(text)
+    cities = [city for city in CITY_TERMS if city in compact]
+    businesses = [term for term in BUSINESS_TERMS if term in compact]
+    terms: list[str] = []
+    terms.extend(months)
+    terms.extend(cities)
+    terms.extend(businesses)
+    for city in cities:
+        terms.append(f"{city}派单规则")
+    for month in months:
+        for city in cities:
+            terms.append(f"{month}{city}")
+            for biz in businesses[:4]:
+                terms.append(f"{month}{city}{biz}")
+    for phrase in re.findall(r"[\u4e00-\u9fff]{2,12}", compact):
+        if any(marker in phrase for marker in ("劳动合同", "待遇申报", "入职", "账号注销", "薪酬查询")):
+            terms.append(phrase)
+    return list(dict.fromkeys(term for term in terms if term))[:40]
+
+
+def _candidate_entities(db: Session, text: str, limit: int = 30):
+    entities = []
+    for query in [text, *_query_entity_terms(text)]:
+        for entity in search_entities(db, query, limit=max(3, min(10, limit))):
+            if entity.id not in {item.id for item in entities}:
+                entities.append(entity)
+            if len(entities) >= limit:
+                return entities
+    return entities
 
 
 def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int = 8) -> list[dict]:
@@ -15,17 +70,8 @@ def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int =
     if not allowed_doc_ids:
         return []
 
-    direct_entities = search_entities(db, text, limit=20)
-    normalized_question = normalize_entity_name(text)
-    matched_ids: list[str] = []
-    for entity in direct_entities:
-        normalized_name = normalize_entity_name(entity.name)
-        if not normalized_name:
-            continue
-        if normalized_name in normalized_question or normalized_question in normalized_name or entity.name in text:
-            matched_ids.append(entity.id)
-    if not matched_ids:
-        matched_ids = [item.id for item in direct_entities[:5]]
+    direct_entities = _candidate_entities(db, text, limit=30)
+    matched_ids = [item.id for item in direct_entities[:12]]
     if not matched_ids:
         return []
 

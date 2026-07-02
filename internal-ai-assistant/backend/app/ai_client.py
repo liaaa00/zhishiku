@@ -4,6 +4,7 @@ import json
 import math
 import mimetypes
 import re
+import unicodedata
 from pathlib import Path
 from typing import List, Optional
 
@@ -99,15 +100,55 @@ def extractive_fallback_answer(question: str, contexts: List[dict], reason: str 
 
     docs: list[str] = []
     highlights: list[str] = []
+    compact_question = re.sub(r"\s+", "", question or "")
+    detail_terms = (
+        "字段", "字段名", "哪些字段", "表里", "工单", "派出", "传导", "流程", "步骤", "前四步", "前几步",
+        "入口", "路径", "登录", "回写", "审核", "材料", "下载保存", "分别", "如何处理",
+    )
+    detailed = any(term in compact_question for term in detail_terms)
+    highlight_limit = 760 if detailed else 360
+    max_highlights = 6 if detailed else 5
+    known_focus_terms = (
+        "后道交付团队", "待遇申报", "劳动合同续签", "劳动合同", "电子劳动合同", "工单系统", "入职联系", "报岗集约录入",
+        "商保投保", "合同组", "微助手", "入口", "登录", "审核", "材料", "进度反馈", "短信链接", "电子签合同",
+    )
+    focus_terms = [term for term in known_focus_terms if term in compact_question]
+    for part in re.split(r"[，。？！、；：?\s]+", question or ""):
+        part = re.sub(r"(是什么|有哪些|分别|如何|怎么|多少|几号|哪两种|哪几种)$", "", part.strip())
+        if 2 <= len(part) <= 14 and part not in focus_terms:
+            focus_terms.append(part)
+
+    def best_snippet(content: str) -> str:
+        if len(content) <= highlight_limit:
+            return content
+        positions: list[int] = []
+        if any(term in compact_question for term in ("前四步", "前几步", "步骤", "流程")):
+            for marker in ("1.", "1．", "①", "第 1 页", "第1页"):
+                pos = content.find(marker)
+                if pos >= 0:
+                    positions.append(pos)
+        for term in sorted(focus_terms, key=len, reverse=True):
+            pos = content.find(term)
+            if pos >= 0:
+                positions.append(pos)
+        anchor = min(positions) if positions else 0
+        start = max(0, anchor - max(40, highlight_limit // 6))
+        end = min(len(content), start + highlight_limit)
+        if end - start < highlight_limit:
+            start = max(0, end - highlight_limit)
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if end < len(content) else ""
+        return f"{prefix}{content[start:end]}{suffix}"
+
     for context in contexts[:8]:
         title = context.get("document_title") or context.get("filename") or "未知文档"
         if title not in docs:
             docs.append(title)
-        content = " ".join(str(context.get("content") or "").split())
+        content = unicodedata.normalize("NFKC", " ".join(str(context.get("content") or "").split()))
         content = re.sub(r"(?:[A-Z]{1,3}\d+\s*[:：]\s*)", "", content)
         content = re.sub(r"\[数据结果\]", "", content).strip(" |")
         if content:
-            highlights.append(content[:220])
+            highlights.append(best_snippet(content))
 
     lines = [
         "## 本地兜底整理（模型暂不可用）",
@@ -118,7 +159,7 @@ def extractive_fallback_answer(question: str, contexts: List[dict], reason: str 
         "## 关键信息",
     ]
     if highlights:
-        lines.extend(f"- {item}" for item in highlights[:5])
+        lines.extend(f"- {item}" for item in highlights[:max_highlights])
     else:
         lines.append("- 当前命中内容较少，暂无法稳定提炼字段。")
 

@@ -166,7 +166,10 @@ PORTAL_QUERY_MARKERS = ("微助手", "外服云", "员工服务", "登录", "注
 PORTAL_CONTEXT_MARKERS = ("微助手", "外服云", "员工服务", "登录界面", "个人登录", "个人注册", "手机注册", "注册", "登录", "身份认证", "身份验证", "账号", "密码", "微信", "公众号")
 WORKORDER_QUERY_MARKERS = ("工单", "工单系统", "合同组", "入职场景", "离职场景", "离职", "离职证明", "离职联系", "劳动合同续签", "线下交付", "交付完成", "自动派", "派出", "报岗", "商保投保", "待遇申报", "业务员")
 WORKORDER_CONTEXT_MARKERS = ("工单系统", "工单", "合同组", "场景设定", "入职管理", "离职管理", "离职证明", "离职联系", "劳动合同签订", "入职联系", "劳动合同续签", "线下交付", "交付完成", "自动派", "派出", "报岗", "报岗集约录入", "商保投保", "待遇申报", "业务员", "任务分派")
-WORKORDER_SPECIFIC_EVIDENCE_MARKERS = ("劳动合同签订", "入职联系", "商保投保", "报岗集约录入", "离职联系", "小程序", "离职证明", "线下交付", "交付完成")
+WORKORDER_SPECIFIC_EVIDENCE_MARKERS = (
+    "劳动合同签订", "入职联系", "商保投保", "报岗集约录入", "离职联系", "小程序", "离职证明", "线下交付", "交付完成",
+    "待办工单", "信息表单", "材料附件", "回写", "权限登录", "导出办理",
+)
 EMPLOYEE_ESIGN_CONTEXT_MARKERS = (*ESIGN_SUBJECT_MARKERS, "电子签合同", "点击劳动合同", "点击签署", "签署完成", "实名认证", "支付宝", "下载保存", "短信链接")
 FORM_QUERY_MARKERS = ("入职人员信息表", "全职员工", "表格", "字段", "银行帐号", "银行账号", "开户行", "合同字段", "劳动合同起始日", "劳动合同到期日")
 
@@ -700,7 +703,7 @@ def sqlite_search_chunks(db: Session, query_vector: List[float], user: User, gro
 
 
 def keyword_terms_for_query(question: str) -> list[str]:
-    text = (question or "").lower().strip()
+    text = _normalize_match_text(question).lower().strip()
     terms = set(re.findall(r"[a-z0-9_\-]{2,}", text))
     cjk_chunks = re.findall(r"[\u4e00-\u9fff]{2,}", text)
     for chunk in cjk_chunks:
@@ -715,8 +718,8 @@ def keyword_terms_for_query(question: str) -> list[str]:
 def _keyword_score(question_terms: list[str], title_text: str, content_text: str) -> tuple[float, list[str]]:
     if not question_terms:
         return 0.0, []
-    title = (title_text or "").lower()
-    content = (content_text or "").lower()
+    title = _normalize_match_text(title_text).lower()
+    content = _normalize_match_text(content_text).lower()
     hits: list[str] = []
     score = 0.0
     for term in question_terms:
