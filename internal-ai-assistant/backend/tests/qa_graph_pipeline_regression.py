@@ -197,7 +197,7 @@ def test_natural_relationship_question_uses_graph_context_as_primary_answer_cont
         assert graph_meta.get("direct_answer") is True
         assert graph_meta.get("merged_into_contexts") is True
         assert contexts and all(item.get("retrieval_channel") == "graph" for item in contexts)
-        assert "requires" in joined
+        assert "关系：需要" in joined
         assert "202603青岛社保操作规则" in joined
         assert "202603青岛医保操作规则" in joined
         assert "202603青岛公积金操作规则" in joined
@@ -213,7 +213,7 @@ def test_graph_entity_without_accessible_relations_does_not_return_unrelated_rel
             db,
             doc_id="doc-nanjing-empty-graph",
             title="202603派单规则图谱",
-            chunk_text="南京派单规则已作为图谱实体出现，但当前没有已确认的社保、医保、公积金关系。",
+            chunk_text="南京派单规则已作为资料事项出现，但当前没有已确认的社保、医保、公积金关系。",
         )
 
         nanjing = get_or_create_entity(db, "南京派单规则", "city", 0.92)
@@ -251,8 +251,10 @@ def test_graph_entity_without_accessible_relations_does_not_return_unrelated_rel
         assert graph_meta.get("matched") is True
         assert graph_meta.get("direct_answer") is True
         assert contexts and all(item.get("retrieval_channel") == "graph" for item in contexts)
-        assert "南京派单规则 是图谱实体" in joined
-        assert "未找到它关联的已确认/自动关系" in joined
+        assert "已识别到“南京派单规则”" in joined
+        assert "未找到它关联的已确认关系记录" in joined
+        assert "图谱实体" not in joined
+        assert "自动关系" not in joined
         assert "上海派单规则" not in joined
         assert "202603上海社保截止时间" not in joined
     finally:

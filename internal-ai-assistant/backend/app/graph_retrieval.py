@@ -18,6 +18,21 @@ BUSINESS_TERMS = (
     "后道交付团队", "待办工单", "信息表单", "材料附件", "进度反馈", "权限登录", "导出办理", "回写",
 )
 
+RELATION_LABELS = {
+    "requires": "需要",
+    "requires_step": "需要执行",
+    "has_step": "包含步骤",
+    "triggers": "触发",
+    "handled_by": "由其处理",
+    "has_deadline": "关联截止时间",
+    "belongs_to": "属于",
+    "related_to": "相关",
+}
+
+
+def _relation_label(relation_type: str | None) -> str:
+    return RELATION_LABELS.get(str(relation_type or "").strip(), "相关")
+
 
 def _month_tokens(text: str) -> list[str]:
     tokens: list[str] = []
@@ -107,10 +122,10 @@ def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int =
                 {
                     "document_id": "",
                     "chunk_id": "",
-                    "document_title": "知识图谱",
+                    "document_title": "资料关系",
                     "filename": "",
                     "page_number": None,
-                    "content": f"{entity.name} 是图谱实体（类型：{entity.entity_type}）。当前可访问图谱中未找到它关联的已确认/自动关系。",
+                    "content": f"已识别到“{entity.name}”。当前可访问资料中未找到它关联的已确认关系记录。",
                     "source_type": "graph",
                     "retrieval_channel": "graph",
                     "score": entity.confidence,
@@ -148,7 +163,8 @@ def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int =
         source_name = row.source_entity.name if row.source_entity else ""
         target_name = row.target_entity.name if row.target_entity else ""
         evidence = row.evidence_text or row.description or ""
-        content = f"{source_name} --{row.relation_type}--> {target_name}。证据：{evidence}".strip()
+        relation_label = _relation_label(row.relation_type)
+        content = f"{source_name} 与 {target_name} 的关系：{relation_label}。证据：{evidence}".strip()
         contexts.append(
             {
                 "document_id": row.source_document_id,
