@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice
+from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, model_contexts_for_answer
 
 
 def test_source_quality_notice_summarizes_poor_and_blocked_sources() -> None:
@@ -61,6 +61,82 @@ def test_prompt_context_preview_matches_answer_context_shape() -> None:
     assert "[来源1] 文档：Policy A" in preview["text"]
     assert "类型：pdf" in preview["text"]
     assert preview["text"].endswith("…")
+
+
+def test_model_contexts_for_answer_filters_blocked_and_irrelevant_text() -> None:
+    contexts = [
+        {
+            "document_id": "blocked-doc",
+            "document_title": "Blocked",
+            "content": "irrelevant blocked text",
+            "retrieval_channel": "semantic",
+            "score": 0.99,
+            "source_quality": {"grade": "blocked"},
+        },
+        {
+            "document_id": "zero-doc",
+            "document_title": "Zero",
+            "content": "irrelevant zero score text",
+            "retrieval_channel": "semantic",
+            "score": 0.0,
+            "rerank_score": 0.0,
+            "intent_ranking": {"positive_signals": []},
+        },
+        {
+            "document_id": "good-doc",
+            "document_title": "Good",
+            "content": "relevant answer text",
+            "retrieval_channel": "semantic",
+            "score": 0.1,
+            "intent_ranking": {"positive_signals": ["relevant"]},
+        },
+        {
+            "document_id": "table-header",
+            "document_title": "Table Header",
+            "content": "city=city",
+            "retrieval_channel": "table",
+            "is_header": True,
+            "score": 0.45,
+        },
+        {
+            "document_id": "table-doc",
+            "document_title": "Table",
+            "content": "table answer",
+            "retrieval_channel": "table",
+            "is_header": False,
+            "score": 0.0,
+        },
+        {
+            "document_id": "graph-doc",
+            "document_title": "Graph",
+            "content": "graph answer",
+            "retrieval_channel": "graph",
+            "score": 0.0,
+        },
+    ]
+
+    selected = model_contexts_for_answer(contexts, summary_mode=False)
+    selected_ids = [item.get("document_id") for item in selected]
+
+    assert "blocked-doc" not in selected_ids
+    assert "zero-doc" not in selected_ids
+    assert "table-header" not in selected_ids
+    assert selected_ids == ["good-doc", "table-doc", "graph-doc"]
+
+
+def test_model_contexts_for_answer_returns_empty_when_no_evidence_passes_gate() -> None:
+    selected = model_contexts_for_answer([
+        {
+            "document_id": "zero-doc",
+            "content": "irrelevant zero score text",
+            "retrieval_channel": "semantic",
+            "score": 0.0,
+            "rerank_score": -0.2,
+            "intent_ranking": {"positive_signals": []},
+        }
+    ], summary_mode=False)
+
+    assert selected == []
 
 
 def test_retrieval_debug_summary_warns_on_low_confidence_and_quality() -> None:

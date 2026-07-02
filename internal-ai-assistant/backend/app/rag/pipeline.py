@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models import User
+from ..settings_service import get_embedding_config
 from .evidence_checker import check_evidence
 from .query_analyzer import analyze_query
 from .retrieval_router import select_route
@@ -76,6 +77,24 @@ def _should_use_graph_as_primary_context(question: str) -> bool:
     if not text:
         return False
     return any(term in text for term in GRAPH_PRIMARY_QUERY_TERMS)
+
+
+def _embedding_quality_meta(db: Session) -> dict[str, Any]:
+    cfg = get_embedding_config(db)
+    provider = str(cfg.get("provider") or "local").strip().lower()
+    model = str(cfg.get("model") or "local-hash").strip()
+    api_key_set = bool(cfg.get("api_key"))
+    remote_provider = provider in {"openai", "openai-compatible", "remote"}
+    using_local_hash = (not remote_provider) or (not api_key_set) or model.lower() == "local-hash"
+    warning = "当前使用 local-hash，本地可用但语义召回能力有限；配置远程 embedding 后建议重建向量库。" if using_local_hash else "已配置远程 embedding；如刚切换配置，请重建向量库避免新旧向量混用。"
+    return {
+        "provider": provider,
+        "model": model,
+        "api_key_set": api_key_set,
+        "using_local_hash": using_local_hash,
+        "ready": not using_local_hash,
+        "warning": warning,
+    }
 
 
 def _retrieve_by_route(db: Session, question: str, user: User, top_k: int, analysis, route) -> RetrievalResult:
@@ -173,6 +192,7 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
             "query_analysis": analysis.to_dict(),
             "retrieval_route": route_meta,
             "original_retrieval_route": original_route,
+            "embedding_quality": _embedding_quality_meta(db),
             "evidence_check": evidence.to_dict(),
             "graph_retrieval": {
                 "checked": graph_checked,

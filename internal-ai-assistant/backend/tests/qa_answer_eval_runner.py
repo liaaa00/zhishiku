@@ -48,6 +48,7 @@ from qa_retrieval_eval_runner import (  # noqa: E402
 )
 
 NO_CONTEXT_ANSWER = "未在知识库中找到依据：当前没有检索到你有权限访问且与问题相关的资料。"
+INSUFFICIENT_EVIDENCE_ANSWER = "未在知识库中找到充分依据：虽然检索到了一些候选片段，但没有达到可用于回答的证据门槛。"
 
 
 def seed_graph_fixture(database, payload: dict[str, Any]) -> None:
@@ -119,6 +120,8 @@ def compose_local_answer(question: str, contexts: list[dict], meta: dict[str, An
     from app.routers.chat_api import model_contexts_for_answer
 
     answer_contexts = model_contexts_for_answer(contexts, summary_mode=False)
+    if not answer_contexts:
+        return INSUFFICIENT_EVIDENCE_ANSWER, "insufficient_evidence"
     route_name = ((meta.get("retrieval_route") or {}).get("name") or "").strip()
     if route_name == "table":
         from app.table_query import build_table_answer
@@ -128,6 +131,29 @@ def compose_local_answer(question: str, contexts: list[dict], meta: dict[str, An
     from app.ai_client import extractive_fallback_answer
 
     return extractive_fallback_answer(question, answer_contexts, "answer_eval_local"), "extractive_local"
+
+
+def _nested_get(payload: dict[str, Any], path: str) -> Any:
+    current: Any = payload
+    for part in str(path or "").split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def validate_meta_expectations(case: dict[str, Any], meta: dict[str, Any], backend: str) -> list[str]:
+    expected = case.get("meta_expected") or {}
+    errors: list[str] = []
+    if not expected:
+        return errors
+    comparable = dict(meta or {})
+    comparable["backend"] = backend
+    for path, value in expected.items():
+        actual = _nested_get(comparable, path)
+        if actual != value:
+            errors.append(f"meta {path} expected {value!r}, got {actual!r}")
+    return errors
 
 
 def validate_answer(case: dict[str, Any], answer: str, composer: str) -> list[str]:
@@ -179,9 +205,10 @@ def run_answer_eval(payload: dict[str, Any], *, real_db: bool = False, skip_retr
             top_k = int(case.get("top_k") or defaults.get("top_k") or 8)
             contexts, backend, note, candidate_count, meta = adaptive_retrieve_contexts(db, str(case["question"]), user, top_k=top_k)
             retrieval_errors = [] if skip_retrieval_validation else validate_case(case, contexts, backend, meta)
+            meta_errors = validate_meta_expectations(case, meta, backend)
             answer, composer = compose_local_answer(str(case["question"]), contexts, meta)
             answer_errors = validate_answer(case, answer, composer)
-            errors = [*retrieval_errors, *answer_errors]
+            errors = [*retrieval_errors, *meta_errors, *answer_errors]
             failed = bool(errors)
             failures += 1 if failed else 0
             results.append(
@@ -198,6 +225,7 @@ def run_answer_eval(payload: dict[str, Any], *, real_db: bool = False, skip_retr
                     "answer_composer": composer,
                     "answer": answer,
                     "retrieval_errors": retrieval_errors,
+                    "meta_errors": meta_errors,
                     "answer_errors": answer_errors,
                     "errors": errors,
                     "meta": meta,

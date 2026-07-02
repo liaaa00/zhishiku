@@ -103,7 +103,9 @@ python tests/qa_answer_eval_runner.py --explain
 python tests/qa_answer_eval_runner.py --json
 ```
 
-当前固定覆盖：流程答案、表格精确答案、自然问法自动关系答案、派单规则关系答案、无关系诚实回答、无资料防幻觉。
+当前固定覆盖：流程答案、表格精确答案、自然问法自动关系答案、派单规则关系答案、无关系诚实回答、无资料防幻觉。答案评测还支持 `meta_expected`，可用点路径断言检索通道和内部诊断，例如 `retrieval_route.name`、`graph_retrieval.direct_answer`、`embedding_quality.using_local_hash`、`evidence_check.sufficient`。
+
+答案生成前会经过证据门禁：blocked 质量来源、零分且无正向信号的普通文本、表格表头行不会进入最终答案上下文；如果检索到候选但没有合格答案证据，系统会明确提示“未找到充分依据”，不再硬答。
 
 ## 六、运行真实知识库评测
 

@@ -203,6 +203,10 @@
         "must_not_include_docs": ["eval-doc-workorder-process"],
         "must_include_terms": ["微助手", "电子合同", "签署"]
       },
+      "meta_expected": {
+        "retrieval_route.name": "text",
+        "embedding_quality.using_local_hash": true
+      },
       "answer_expected": {
         "composer": "extractive_local",
         "must_include_terms": ["微助手", "电子合同", "签署"],
@@ -218,6 +222,10 @@
         "must_include_docs": ["eval-doc-dispatch-rules-202603"],
         "must_include_terms": ["上海", "2026-03-15"]
       },
+      "meta_expected": {
+        "backend": "table",
+        "retrieval_route.name": "table"
+      },
       "answer_expected": {
         "composer": "table_local",
         "must_include_terms": ["上海", "社保截止时间", "2026-03-15"],
@@ -232,6 +240,12 @@
         "backend": "graph",
         "must_include_terms": ["报岗集约录入", "后道交付团队"]
       },
+      "meta_expected": {
+        "backend": "graph",
+        "retrieval_route.name": "text",
+        "graph_retrieval.checked": true,
+        "graph_retrieval.direct_answer": true
+      },
       "answer_expected": {
         "composer": "extractive_local",
         "must_include_terms": ["报岗集约录入", "后道交付团队"],
@@ -245,6 +259,13 @@
       "expected": {
         "backend": "graph",
         "must_include_terms": ["202603青岛社保操作规则", "202603青岛医保操作规则", "202603青岛公积金操作规则"]
+      },
+      "meta_expected": {
+        "backend": "graph",
+        "retrieval_route.name": "text",
+        "original_retrieval_route.name": "table",
+        "graph_retrieval.checked": true,
+        "graph_retrieval.direct_answer": true
       },
       "answer_expected": {
         "composer": "extractive_local",
@@ -261,6 +282,12 @@
         "must_include_terms": ["南京派单规则", "未找到"],
         "must_not_include_terms": ["上海派单规则", "202603上海社保截止时间"]
       },
+      "meta_expected": {
+        "backend": "graph",
+        "retrieval_route.name": "text",
+        "graph_retrieval.checked": true,
+        "graph_retrieval.direct_answer": true
+      },
       "answer_expected": {
         "composer": "extractive_local",
         "must_include_terms": ["南京派单规则", "未找到", "已确认关系记录"],
@@ -274,6 +301,10 @@
       "expected": {
         "max_contexts": 0,
         "must_not_include_docs": ["eval-doc-employee-esign", "eval-doc-workorder-process", "eval-doc-dispatch-rules-202603"]
+      },
+      "meta_expected": {
+        "retrieval_route.name": "table",
+        "evidence_check.sufficient": false
       },
       "answer_expected": {
         "composer": "no_context",

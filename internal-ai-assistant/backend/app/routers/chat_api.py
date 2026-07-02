@@ -95,12 +95,20 @@ def summary_display_sources(contexts: list[dict], interaction_meta: dict, summar
 
 
 def _answer_context_is_relevant(context: dict) -> bool:
+    source_quality = context.get("source_quality") if isinstance(context.get("source_quality"), dict) else {}
+    if source_quality.get("grade") == "blocked":
+        return False
+
     channel = context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "")
+    if channel == "table" and context.get("is_header"):
+        return False
     if channel in {"table", "graph", "pageindex"}:
         return True
+
     ranking = context.get("intent_ranking") if isinstance(context.get("intent_ranking"), dict) else {}
     if ranking.get("positive_signals"):
         return True
+
     for key in ("rerank_score", "score"):
         if context.get(key) is None:
             continue
@@ -108,13 +116,12 @@ def _answer_context_is_relevant(context: dict) -> bool:
             return float(context.get(key) or 0) > 0
         except (TypeError, ValueError):
             return True
-    return True
+    return False
 
 
 def model_contexts_for_answer(contexts: list[dict], summary_mode: bool, max_contexts: int = 600, max_chars: int = 500000) -> list[dict]:
     if not summary_mode:
-        filtered = [context for context in contexts if _answer_context_is_relevant(context)]
-        return filtered or contexts[:1]
+        return [context for context in contexts if _answer_context_is_relevant(context)]
     selected: list[dict] = []
     used_chars = 0
     for context in contexts:
@@ -341,18 +348,24 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
     sources = summary_display_sources(contexts, interaction_meta, summary_mode)
     source_quality_notice = build_source_quality_notice(sources)
     answer_contexts = model_contexts_for_answer(contexts, summary_mode)
-    confidence = compute_grounding_confidence(contexts)
-    if summary_mode and contexts:
+    retrieval_meta["answer_context_count"] = len(answer_contexts)
+    retrieval_meta["answer_context_filtered_count"] = max(0, len(contexts) - len(answer_contexts))
+    confidence = compute_grounding_confidence(answer_contexts)
+    if summary_mode and answer_contexts:
         confidence = max(confidence, 0.72)
-    if recent_context_used and contexts:
+    if recent_context_used and answer_contexts:
         confidence = max(confidence, 0.62)
-    grounded = bool(contexts)
-    grounding_reason = grounding_reason_for_contexts(contexts, confidence)
+    grounded = bool(answer_contexts)
+    grounding_reason = grounding_reason_for_contexts(answer_contexts, confidence)
     suggestions = [] if conversation_only else build_interaction_suggestions(question, answer_contexts, summary_mode=summary_mode)
     structured_digest = build_structured_digest(question, answer_contexts, summary_mode) if should_use_structured_digest(question, answer_contexts, summary_mode) else ""
-    if not contexts:
+    if not contexts or (should_retrieve and not summary_mode and not answer_contexts):
         if should_retrieve:
-            answer = "未在知识库中找到依据：当前没有检索到你有权限访问且与问题相关的资料。请换一个更具体的问题，或让管理员确认文档上传、解析和授权状态。"
+            if contexts and not answer_contexts:
+                retrieval_note = f"{retrieval_note}; answer_evidence_filtered" if retrieval_note else "answer_evidence_filtered"
+                answer = "未在知识库中找到充分依据：虽然检索到了一些候选片段，但没有达到可用于回答的证据门槛。请换一个更具体的问题，或让管理员检查文档解析、授权和检索配置。"
+            else:
+                answer = "未在知识库中找到依据：当前没有检索到你有权限访问且与问题相关的资料。请换一个更具体的问题，或让管理员确认文档上传、解析和授权状态。"
         else:
             legacy_chat = _main_compat_callable("conversational_answer")
             if callable(legacy_chat):
@@ -498,16 +511,21 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
             sources = summary_display_sources(contexts, interaction_meta, summary_mode)
             source_quality_notice = build_source_quality_notice(sources)
             answer_contexts = model_contexts_for_answer(contexts, summary_mode)
-            confidence = compute_grounding_confidence(contexts)
-            if summary_mode and contexts:
+            retrieval_meta["answer_context_count"] = len(answer_contexts)
+            retrieval_meta["answer_context_filtered_count"] = max(0, len(contexts) - len(answer_contexts))
+            confidence = compute_grounding_confidence(answer_contexts)
+            if summary_mode and answer_contexts:
                 confidence = max(confidence, 0.72)
-            if recent_context_used and contexts:
+            if recent_context_used and answer_contexts:
                 confidence = max(confidence, 0.62)
-            grounded = bool(contexts)
-            grounding_reason = grounding_reason_for_contexts(contexts, confidence)
+            grounded = bool(answer_contexts)
+            grounding_reason = grounding_reason_for_contexts(answer_contexts, confidence)
             suggestions = [] if conversation_only else build_interaction_suggestions(question, answer_contexts, summary_mode=summary_mode)
             structured_digest = build_structured_digest(question, answer_contexts, summary_mode) if should_use_structured_digest(question, answer_contexts, summary_mode) else ""
-            mode = "knowledge" if contexts else "chat"
+            no_answer_evidence = bool(should_retrieve and contexts and not summary_mode and not answer_contexts)
+            if no_answer_evidence:
+                retrieval_note = f"{retrieval_note}; answer_evidence_filtered" if retrieval_note else "answer_evidence_filtered"
+            mode = "knowledge" if contexts and not no_answer_evidence else "chat"
             if not contexts:
                 retrieval_note = retrieval_note or ("no_relevant_knowledge_context" if should_retrieve else "conversation_only_intent")
             session_id = req.session_id or new_id()
@@ -543,7 +561,7 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                 "stream": True,
             }
             yield _sse_event("meta", meta)
-            if contexts:
+            if contexts and not no_answer_evidence:
                 yield _sse_event("status", {
                     "stage": "generating",
                     "message": f"已整理 {len(sources)} 个来源，正在调用模型生成回答…",
@@ -552,10 +570,13 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                 })
 
             answer_parts: list[str] = []
-            if not contexts:
+            if not contexts or no_answer_evidence:
                 retrieval_note = retrieval_note or ("no_relevant_knowledge_context" if should_retrieve else "conversation_only_intent")
                 if should_retrieve:
-                    answer_text = "未在知识库中找到依据：当前没有检索到你有权限访问且与问题相关的资料。请换一个更具体的问题，或让管理员确认文档上传、解析和授权状态。"
+                    if no_answer_evidence:
+                        answer_text = "未在知识库中找到充分依据：虽然检索到了一些候选片段，但没有达到可用于回答的证据门槛。请换一个更具体的问题，或让管理员检查文档解析、授权和检索配置。"
+                    else:
+                        answer_text = "未在知识库中找到依据：当前没有检索到你有权限访问且与问题相关的资料。请换一个更具体的问题，或让管理员确认文档上传、解析和授权状态。"
                     for piece in [answer_text[i : i + 24] for i in range(0, len(answer_text), 24)]:
                         answer_parts.append(piece)
                         yield _sse_event("delta", piece)
@@ -652,11 +673,14 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
     contexts, retrieval_backend, retrieval_note, candidate_count, retrieval_meta = retrieve_contexts(db, question, user, req.top_k)
     sources = serialize_sources(contexts)
     source_quality_notice = build_source_quality_notice(sources)
-    confidence = compute_grounding_confidence(contexts)
-    prompt_context_preview = build_prompt_context_preview(model_contexts_for_answer(contexts, False))
-    retrieval_debug_summary = build_retrieval_debug_summary(contexts, candidate_count, confidence, source_quality_notice)
+    answer_contexts = model_contexts_for_answer(contexts, False)
+    retrieval_meta["answer_context_count"] = len(answer_contexts)
+    retrieval_meta["answer_context_filtered_count"] = max(0, len(contexts) - len(answer_contexts))
+    confidence = compute_grounding_confidence(answer_contexts)
+    prompt_context_preview = build_prompt_context_preview(answer_contexts)
+    retrieval_debug_summary = build_retrieval_debug_summary(answer_contexts, candidate_count, confidence, source_quality_notice)
     if retrieval_meta.get("retrieval_route", {}).get("name") == "table":
-        retrieval_meta["table_structured_result"] = build_table_structured_result(question, model_contexts_for_answer(contexts, False))
+        retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
     source_diagnostics = []
     for index, context in enumerate(contexts, start=1):
         content = " ".join(str(context.get("content") or "").split())

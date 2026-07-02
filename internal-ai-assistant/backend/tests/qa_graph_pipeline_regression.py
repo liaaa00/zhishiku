@@ -83,6 +83,7 @@ def test_graph_context_is_checked_and_merged_for_text_question() -> None:
 
         graph_meta = meta.get("graph_retrieval") or {}
         assert meta["retrieval_route"]["name"] == "text"
+        assert "using_local_hash" in (meta.get("embedding_quality") or {})
         assert graph_meta.get("checked") is True
         assert graph_meta.get("matched") is True
         assert graph_meta.get("context_count", 0) >= 1
