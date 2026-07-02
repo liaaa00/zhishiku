@@ -97,10 +97,11 @@ def test_process_graph_participates_in_pipeline() -> None:
         assert graph_meta.get("checked") is True
         assert graph_meta.get("matched") is True
         assert graph_meta.get("merged_into_contexts") is True
+        assert graph_meta.get("direct_answer") is True
         assert any(item.get("retrieval_channel") == "graph" for item in contexts), contexts
         assert "待办工单" in "\n".join(item.get("content", "") for item in contexts)
-        assert backend in {"hybrid+graph", "graph"}
-        assert "graph_merged" in note
+        assert backend == "graph"
+        assert "graph_direct" in note
     finally:
         db.close()
 

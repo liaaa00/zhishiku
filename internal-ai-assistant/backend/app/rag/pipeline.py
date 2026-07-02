@@ -25,7 +25,12 @@ GRAPH_QUERY_TERMS = (
     "属于",
     "谁负责",
     "谁处理",
+    "由谁",
+    "哪个团队",
+    "哪个公司",
+    "哪家公司",
     "后道",
+    "后续",
     "流程",
     "步骤",
     "下一步",
@@ -39,9 +44,38 @@ GRAPH_QUERY_TERMS = (
 )
 
 
-def _is_explicit_graph_query(question: str) -> bool:
+GRAPH_PRIMARY_QUERY_TERMS = (
+    # 用户不需要知道“图谱”这个后台概念；这些自然问法也应自动使用关系证据作为主上下文。
+    "图谱",
+    "关系",
+    "关联",
+    "节点",
+    "派单规则",
+    "触发",
+    "对应",
+    "属于",
+    "谁负责",
+    "谁处理",
+    "由谁",
+    "哪个团队",
+    "哪个公司",
+    "哪家公司",
+    "后道",
+    "流程",
+    "步骤",
+    "下一步",
+    "传导",
+    "操作规则",
+    "包含哪些",
+    "有哪些",
+)
+
+
+def _should_use_graph_as_primary_context(question: str) -> bool:
     text = re.sub(r"\s+", "", question or "")
-    return any(term in text for term in ("图谱", "关系", "关联", "节点", "派单规则", "触发"))
+    if not text:
+        return False
+    return any(term in text for term in GRAPH_PRIMARY_QUERY_TERMS)
 
 
 def _retrieve_by_route(db: Session, question: str, user: User, top_k: int, analysis, route) -> RetrievalResult:
@@ -106,7 +140,7 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
 
     graph_checked = _should_check_graph(question, route.name)
     graph_contexts = _graph_contexts_for_question(db, question, user, top_k) if graph_checked else []
-    explicit_graph_query = _is_explicit_graph_query(question)
+    graph_primary_query = _should_use_graph_as_primary_context(question)
     original_route = route.to_dict()
     contexts = result.contexts
     backend = result.backend
@@ -114,11 +148,11 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
     route_meta = route.to_dict()
     if graph_checked:
         note_parts.append(f"graph_checked={len(graph_contexts)}")
-    if graph_contexts and explicit_graph_query:
-        # 显式询问图谱/关系/节点时，图谱证据就是主答案上下文；避免 table 路由把图谱问题改写成普通表格明细。
+    if graph_contexts and graph_primary_query:
+        # 关系/流程/派单规则等自然问法由系统内部自动使用图谱证据作为主答案上下文；用户不需要知道或说出“图谱”。
         contexts = graph_contexts
         backend = "graph"
-        route_meta = {"name": "text", "intent": "text_qa", "confidence": max(float(route.confidence or 0.0), 0.86), "reason": f"explicit_graph_query_overrode_{route.name}"}
+        route_meta = {"name": "text", "intent": "text_qa", "confidence": max(float(route.confidence or 0.0), 0.86), "reason": f"graph_primary_query_overrode_{route.name}"}
         note_parts.append("graph_direct")
     elif graph_contexts and route.name != "table":
         contexts = _merge_contexts(contexts, graph_contexts, max(top_k, len(contexts), 8))
@@ -144,8 +178,8 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
                 "checked": graph_checked,
                 "matched": bool(graph_contexts),
                 "context_count": len(graph_contexts),
-                "merged_into_contexts": bool(graph_contexts and (route.name != "table" or explicit_graph_query)),
-                "direct_answer": bool(graph_contexts and explicit_graph_query),
+                "merged_into_contexts": bool(graph_contexts and (route.name != "table" or graph_primary_query)),
+                "direct_answer": bool(graph_contexts and graph_primary_query),
             },
         }
     )

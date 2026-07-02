@@ -96,7 +96,57 @@ def test_graph_context_is_checked_and_merged_for_text_question() -> None:
         db.close()
 
 
-def test_explicit_graph_question_uses_graph_context_as_primary_answer_context() -> None:
+def test_plain_user_question_with_team_handler_uses_graph_without_graph_word() -> None:
+    Session = make_session()
+    db = Session()
+    try:
+        admin, doc, chunk = seed_admin_doc(
+            db,
+            doc_id="doc-handler-team",
+            title="工单系统处理团队",
+            chunk_text="报岗集约录入由后道交付团队处理。",
+        )
+
+        source = get_or_create_entity(db, "报岗集约录入", "process", 0.95)
+        target = get_or_create_entity(db, "后道交付团队", "team", 0.95)
+        assert source is not None and target is not None
+        relation = create_relation(
+            db,
+            source,
+            target,
+            "handled_by",
+            doc.id,
+            chunk.id,
+            1,
+            "报岗集约录入由后道交付团队处理。",
+            0.94,
+            "auto",
+        )
+        assert relation is not None
+        db.commit()
+        db.refresh(admin)
+
+        contexts, backend, note, _candidate_count, meta = retrieve_contexts(
+            db,
+            "报岗集约录入由哪个团队处理？",
+            admin,
+            top_k=5,
+        )
+
+        joined = "\n".join(item.get("content", "") for item in contexts)
+        graph_meta = meta.get("graph_retrieval") or {}
+        assert backend == "graph"
+        assert "graph_direct" in note
+        assert graph_meta.get("checked") is True
+        assert graph_meta.get("matched") is True
+        assert graph_meta.get("direct_answer") is True
+        assert contexts and all(item.get("retrieval_channel") == "graph" for item in contexts)
+        assert "后道交付团队" in joined
+    finally:
+        db.close()
+
+
+def test_natural_relationship_question_uses_graph_context_as_primary_answer_context() -> None:
     Session = make_session()
     db = Session()
     try:
@@ -131,7 +181,7 @@ def test_explicit_graph_question_uses_graph_context_as_primary_answer_context() 
 
         contexts, backend, note, _candidate_count, meta = retrieve_contexts(
             db,
-            "202603青岛派单规则关联哪些操作规则节点？",
+            "202603青岛派单规则需要哪些操作规则？",
             admin,
             top_k=5,
         )
@@ -141,7 +191,7 @@ def test_explicit_graph_question_uses_graph_context_as_primary_answer_context() 
         assert backend == "graph"
         assert "graph_direct" in note
         assert meta["retrieval_route"]["name"] == "text"
-        assert meta["retrieval_route"]["reason"].startswith("explicit_graph_query_overrode_")
+        assert meta["retrieval_route"]["reason"].startswith("graph_primary_query_overrode_")
         assert graph_meta.get("checked") is True
         assert graph_meta.get("matched") is True
         assert graph_meta.get("direct_answer") is True
@@ -211,6 +261,7 @@ def test_graph_entity_without_accessible_relations_does_not_return_unrelated_rel
 
 if __name__ == "__main__":
     test_graph_context_is_checked_and_merged_for_text_question()
-    test_explicit_graph_question_uses_graph_context_as_primary_answer_context()
+    test_plain_user_question_with_team_handler_uses_graph_without_graph_word()
+    test_natural_relationship_question_uses_graph_context_as_primary_answer_context()
     test_graph_entity_without_accessible_relations_does_not_return_unrelated_relations()
     print("Graph pipeline regression passed.")
