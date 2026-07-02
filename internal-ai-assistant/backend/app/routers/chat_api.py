@@ -25,6 +25,7 @@ from ..chat_interaction import (
     recent_source_contexts,
 )
 from ..database import SessionLocal, get_db
+from ..document_metadata import infer_document_kind
 from ..grounding import compute_grounding_confidence, filter_relevant_contexts, grounding_reason_for_contexts, serialize_sources
 from ..models import ChatMessage, ChatSession, Document, Feedback, User
 from ..retrieval import adaptive_retrieve_contexts
@@ -74,7 +75,17 @@ def upload_chat_attachment(file: UploadFile = File(...), db: Session = Depends(g
     doc_id, storage_path, filename = save_upload(file, "chat")
 
     source_type = "chat_image" if ext in IMAGE_EXTENSIONS else f"chat_{ext.lstrip('.')}"
-    doc = Document(id=doc_id, title=Path(filename).stem, filename=filename, storage_path=str(storage_path), source_type=source_type, created_by=user.id)
+    title = Path(filename).stem
+    doc = Document(
+        id=doc_id,
+        title=title,
+        filename=filename,
+        storage_path=str(storage_path),
+        source_type=source_type,
+        knowledge_scope="production",
+        document_kind=infer_document_kind(title, filename, source_type),
+        created_by=user.id,
+    )
     db.add(doc)
     db.flush()
     task = enqueue_document_task(db, doc, "chat_attachment_parse", user)
@@ -82,8 +93,8 @@ def upload_chat_attachment(file: UploadFile = File(...), db: Session = Depends(g
     return {"id": doc.id, "title": doc.title, "filename": filename, "kind": ext.lstrip("."), "searchable": False, "chunks": 0, "status": "queued", "task_id": task.id, "message": "附件已上传，正在后台解析/OCR。完成后会自动参与检索。"}
 
 
-def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5):
-    return adaptive_retrieve_contexts(db, question, user, top_k)
+def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, knowledge_scope: str = "production"):
+    return adaptive_retrieve_contexts(db, question, user, top_k, knowledge_scope=knowledge_scope)
 
 
 def summary_display_sources(contexts: list[dict], interaction_meta: dict, summary_mode: bool) -> list[dict]:
@@ -670,7 +681,7 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="请输入测试问题")
-    contexts, retrieval_backend, retrieval_note, candidate_count, retrieval_meta = retrieve_contexts(db, question, user, req.top_k)
+    contexts, retrieval_backend, retrieval_note, candidate_count, retrieval_meta = retrieve_contexts(db, question, user, req.top_k, knowledge_scope=req.knowledge_scope)
     sources = serialize_sources(contexts)
     source_quality_notice = build_source_quality_notice(sources)
     answer_contexts = model_contexts_for_answer(contexts, False)
@@ -693,6 +704,8 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
             "chunk_id": context.get("chunk_id") or "",
             "chunk_index": context.get("chunk_index"),
             "source_type": context.get("source_type") or "document",
+            "knowledge_scope": context.get("knowledge_scope") or retrieval_meta.get("knowledge_scope") or "production",
+            "document_kind": context.get("document_kind") or "general",
             "score": context.get("score"),
             "rerank_score": context.get("rerank_score"),
             "llm_rerank_score": context.get("llm_rerank_score"),

@@ -181,7 +181,16 @@ def add_fixture_doc(db, models, app_main, admin, group_by_id: dict[str, Any], do
     file_path = UPLOAD_DIR / f"qa_retrieval_eval_{filename}"
     file_path.write_text(content, encoding="utf-8")
 
-    doc = models.Document(id=doc_id, title=title, filename=filename, storage_path=str(file_path), source_type=source_type, created_by=admin.id)
+    doc = models.Document(
+        id=doc_id,
+        title=title,
+        filename=filename,
+        storage_path=str(file_path),
+        source_type=source_type,
+        knowledge_scope=str(doc_spec.get("knowledge_scope") or "production"),
+        document_kind=str(doc_spec.get("document_kind") or "general"),
+        created_by=admin.id,
+    )
     for group_id in doc_spec.get("groups") or []:
         group = group_by_id.get(str(group_id))
         if group:
@@ -272,6 +281,8 @@ def build_fixture(payload: dict[str, Any]):
 
 
 def load_real_database():
+    app_main = importlib.import_module("app.main")
+    app_main.ensure_runtime_schema()
     database = importlib.import_module("app.database")
     models = importlib.import_module("app.models")
     return database, models
@@ -419,7 +430,7 @@ def run_eval(payload: dict[str, Any], *, real_db: bool = False) -> tuple[int, li
         for case in payload.get("cases") or []:
             user = resolve_user(db, models, case, defaults, real_db=real_db)
             top_k = int(case.get("top_k") or defaults.get("top_k") or 8)
-            contexts, backend, note, candidate_count, meta = retrieval.adaptive_retrieve_contexts(db, str(case["question"]), user, top_k=top_k)
+            contexts, backend, note, candidate_count, meta = retrieval.adaptive_retrieve_contexts(db, str(case["question"]), user, top_k=top_k, knowledge_scope=str(case.get("knowledge_scope") or defaults.get("knowledge_scope") or "all"))
             errors = validate_case(case, contexts, backend, meta)
             failed = bool(errors)
             failures += 1 if failed else 0

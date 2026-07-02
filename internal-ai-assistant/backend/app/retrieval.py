@@ -7,6 +7,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .ai_client import embed_texts
+from .document_metadata import (
+    allowed_kinds_for_query_topic,
+    document_matches_scope,
+    enrich_context_metadata,
+    filter_contexts_by_allowed_kinds,
+    get_document_kind,
+    get_document_scope,
+    normalize_document_scope,
+)
 from .grounding import filter_relevant_contexts, relevance_terms
 from .models import Document, DocumentChunk, DocumentPageIndex, DocumentProcessingStatus, User, document_group_link
 from .pageindex_adapter import load_pageindex_payload
@@ -189,10 +198,12 @@ def user_group_ids(user: User) -> list[str]:
     return [g.id for g in user.groups]
 
 
-def has_document_access(db: Session, doc: Document, user: User, group_ids: list[str] | None = None) -> bool:
+def has_document_access(db: Session, doc: Document, user: User, group_ids: list[str] | None = None, knowledge_scope: str = "production") -> bool:
     source_type = str(doc.source_type or "")
     if source_type.startswith("chat_"):
-        return doc.created_by == user.id or bool(user.is_admin)
+        return document_matches_scope(doc, knowledge_scope) and (doc.created_by == user.id or bool(user.is_admin))
+    if not document_matches_scope(doc, knowledge_scope):
+        return False
     if user.is_admin:
         return True
     resolved_group_ids = group_ids if group_ids is not None else user_group_ids(user)
@@ -208,13 +219,15 @@ def has_document_access(db: Session, doc: Document, user: User, group_ids: list[
     )
 
 
-def accessible_document_ids(db: Session, user: User, group_ids: list[str]) -> set[str]:
-    # Personal attachment access is granted only to the owner.
-    personal_rows = db.execute(select(Document.id).where(Document.source_type.like("chat_%"), Document.created_by == user.id)).all()
+def accessible_document_ids(db: Session, user: User, group_ids: list[str], knowledge_scope: str = "production") -> set[str]:
+    # Personal attachment access is granted only to the owner, and still obeys knowledge_scope isolation.
+    scope = normalize_document_scope(knowledge_scope, "production")
+    scope_filter = [] if scope == "all" else [Document.knowledge_scope == scope]
+    personal_rows = db.execute(select(Document.id).where(Document.source_type.like("chat_%"), Document.created_by == user.id, *scope_filter)).all()
     ids = {row[0] for row in personal_rows}
 
     if user.is_admin:
-        managed_rows = db.execute(select(Document.id).where(~Document.source_type.like("chat_%"))).all()
+        managed_rows = db.execute(select(Document.id).where(~Document.source_type.like("chat_%"), *scope_filter)).all()
         ids.update(row[0] for row in managed_rows)
         return ids
 
@@ -222,7 +235,7 @@ def accessible_document_ids(db: Session, user: User, group_ids: list[str]) -> se
         managed_rows = db.execute(
             select(Document.id)
             .join(document_group_link, document_group_link.c.document_id == Document.id)
-            .where(~Document.source_type.like("chat_%"), document_group_link.c.group_id.in_(group_ids))
+            .where(~Document.source_type.like("chat_%"), document_group_link.c.group_id.in_(group_ids), *scope_filter)
             .distinct()
         ).all()
         ids.update(row[0] for row in managed_rows)
@@ -676,6 +689,8 @@ def _chunk_context(doc: Document, chunk: DocumentChunk, score: float = 0.35, mat
         "page_number": chunk.page_number,
         "chunk_index": chunk.chunk_index,
         "source_type": str(doc.source_type or ""),
+        "knowledge_scope": get_document_scope(doc),
+        "document_kind": get_document_kind(doc),
         "content": chunk.content,
         "score": score,
         "match_terms": [],
@@ -683,8 +698,8 @@ def _chunk_context(doc: Document, chunk: DocumentChunk, score: float = 0.35, mat
     }
 
 
-def sqlite_search_chunks(db: Session, query_vector: List[float], user: User, group_ids: list[str], limit: int) -> List[dict]:
-    doc_ids = accessible_document_ids(db, user, group_ids)
+def sqlite_search_chunks(db: Session, query_vector: List[float], user: User, group_ids: list[str], limit: int, knowledge_scope: str = "production") -> List[dict]:
+    doc_ids = accessible_document_ids(db, user, group_ids, knowledge_scope=knowledge_scope)
     if not doc_ids:
         return []
 
@@ -707,6 +722,8 @@ def sqlite_search_chunks(db: Session, query_vector: List[float], user: User, gro
                 "page_number": chunk.page_number,
                 "chunk_index": chunk.chunk_index,
                 "source_type": str(doc.source_type or ""),
+                "knowledge_scope": get_document_scope(doc),
+                "document_kind": get_document_kind(doc),
                 "content": chunk.content,
                 "score": cosine_similarity(query_vector, parse_embedding(chunk.embedding_json)),
             }
@@ -750,8 +767,8 @@ def _keyword_score(question_terms: list[str], title_text: str, content_text: str
     return min(score, 0.96), hits[:12]
 
 
-def keyword_search_chunks(db: Session, question: str, user: User, group_ids: list[str], limit: int) -> List[dict]:
-    doc_ids = accessible_document_ids(db, user, group_ids)
+def keyword_search_chunks(db: Session, question: str, user: User, group_ids: list[str], limit: int, knowledge_scope: str = "production") -> List[dict]:
+    doc_ids = accessible_document_ids(db, user, group_ids, knowledge_scope=knowledge_scope)
     if not doc_ids:
         return []
     terms = keyword_terms_for_query(question)
@@ -999,7 +1016,7 @@ def evaluate_agentic_evidence(question: str, contexts: list[dict], plan: dict | 
     }
 
 
-def retrieve_candidate_contexts(db: Session, question: str, user: User, top_k: int = 5, candidate_limit: int | None = None) -> Tuple[List[dict], str, str, int]:
+def retrieve_candidate_contexts(db: Session, question: str, user: User, top_k: int = 5, candidate_limit: int | None = None, knowledge_scope: str = "production") -> Tuple[List[dict], str, str, int]:
     if candidate_limit is None:
         limit = max(1, min(int(top_k or 5), 10))
         candidate_limit = max(limit * 3, limit)
@@ -1010,13 +1027,13 @@ def retrieve_candidate_contexts(db: Session, question: str, user: User, top_k: i
     retrieval_backend = "sqlite"
     retrieval_note = ""
     try:
-        candidate_contexts = search_chunks(query_vector, user.id, bool(user.is_admin), group_ids, candidate_limit)
+        candidate_contexts = search_chunks(query_vector, user.id, bool(user.is_admin), group_ids, candidate_limit, knowledge_scope=knowledge_scope)
         retrieval_backend = "qdrant"
         if not candidate_contexts:
             raise QdrantUnavailable("Qdrant returned no matches; falling back to SQLite")
     except QdrantUnavailable as exc:
         retrieval_note = str(exc)
-        candidate_contexts = sqlite_search_chunks(db, query_vector, user, group_ids, candidate_limit)
+        candidate_contexts = sqlite_search_chunks(db, query_vector, user, group_ids, candidate_limit, knowledge_scope=knowledge_scope)
     return candidate_contexts, retrieval_backend, retrieval_note, len(candidate_contexts)
 
 
@@ -1298,6 +1315,7 @@ def expand_contexts_with_adjacent_chunks(
     group_ids: list[str],
     window: int = 1,
     max_added: int = 8,
+    knowledge_scope: str = "production",
 ) -> tuple[list[dict], int]:
     if not contexts or window <= 0 or max_added <= 0:
         return contexts, 0
@@ -1329,7 +1347,7 @@ def expand_contexts_with_adjacent_chunks(
         for chunk, doc in rows:
             if added >= max_added:
                 break
-            if not has_document_access(db, doc, user, group_ids):
+            if not has_document_access(db, doc, user, group_ids, knowledge_scope=knowledge_scope):
                 continue
             neighbor_key = (doc.id, chunk.id)
             if neighbor_key in seen:
@@ -1450,6 +1468,8 @@ def _pageindex_context(doc: Document, node: dict, payload: dict, score: float, m
         "page_number": page_number,
         "chunk_index": f"pageindex:{node_id}",
         "source_type": str(doc.source_type or ""),
+        "knowledge_scope": get_document_scope(doc),
+        "document_kind": get_document_kind(doc),
         "content": content,
         "score": score,
         "match_terms": match_terms,
@@ -1468,11 +1488,12 @@ def retrieve_pageindex_contexts(
     group_ids: list[str],
     base_contexts: list[dict] | None = None,
     max_contexts: int = PAGEINDEX_SUPPLEMENT_MAX,
+    knowledge_scope: str = "production",
 ) -> list[dict]:
     question_terms = relevance_terms(question)
     if not question_terms or max_contexts <= 0:
         return []
-    accessible_ids = accessible_document_ids(db, user, group_ids)
+    accessible_ids = accessible_document_ids(db, user, group_ids, knowledge_scope=knowledge_scope)
     if not accessible_ids:
         return []
 
@@ -1522,15 +1543,15 @@ def retrieve_pageindex_contexts(
     return scored_contexts[:max_contexts]
 
 
-def adaptive_retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) -> Tuple[List[dict], str, str, int, dict]:
+def adaptive_retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, knowledge_scope: str = "production") -> Tuple[List[dict], str, str, int, dict]:
     # Phase-1 RAG router entrypoint. The original adaptive text retrieval logic is
     # kept below in _adaptive_text_retrieve_contexts and used by the text route.
     from .rag.pipeline import retrieve_contexts
 
-    return retrieve_contexts(db, question, user, top_k=top_k)
+    return retrieve_contexts(db, question, user, top_k=top_k, knowledge_scope=knowledge_scope)
 
 
-def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) -> Tuple[List[dict], str, str, int, dict]:
+def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, knowledge_scope: str = "production") -> Tuple[List[dict], str, str, int, dict]:
     plan = retrieval_plan_for_question(question, top_k)
     query_profile = build_query_profile(question)
     candidate_contexts, retrieval_backend, retrieval_note, candidate_count = retrieve_candidate_contexts(
@@ -1539,9 +1560,10 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
         user,
         top_k=top_k,
         candidate_limit=int(plan["candidate_limit"]),
+        knowledge_scope=knowledge_scope,
     )
     group_ids = user_group_ids(user)
-    keyword_contexts = keyword_search_chunks(db, question, user, group_ids, max(int(plan["candidate_limit"]) // 2, int(plan["target_contexts"])))
+    keyword_contexts = keyword_search_chunks(db, question, user, group_ids, max(int(plan["candidate_limit"]) // 2, int(plan["target_contexts"])), knowledge_scope=knowledge_scope)
     keyword_candidate_count = len(keyword_contexts)
     if keyword_contexts:
         candidate_contexts = _merge_unique_contexts(candidate_contexts, keyword_contexts, ADAPTIVE_CANDIDATE_MAX)
@@ -1576,9 +1598,10 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
                 user,
                 top_k=top_k,
                 candidate_limit=extra_limit,
+                knowledge_scope=knowledge_scope,
             )
             agentic_extra_candidate_count += extra_count
-            extra_keywords = keyword_search_chunks(db, rewrite_query, user, group_ids, max(extra_limit // 2, int(plan["target_contexts"])))
+            extra_keywords = keyword_search_chunks(db, rewrite_query, user, group_ids, max(extra_limit // 2, int(plan["target_contexts"])), knowledge_scope=knowledge_scope)
             if extra_keywords:
                 extra_contexts = _merge_unique_contexts(extra_contexts, extra_keywords, extra_limit)
             extra_filtered = filter_relevant_contexts(extra_contexts, rewrite_query, min_score=max(0.10, float(plan["min_score"]) - 0.04))
@@ -1619,6 +1642,7 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
         group_ids,
         window=int(plan["adjacent_window"]),
         max_added=int(plan["neighbor_budget"]),
+        knowledge_scope=knowledge_scope,
     ) if expand_allowed else (final_contexts, 0)
     expanded_contexts = _filter_process_contexts(question, expanded_contexts)
     pageindex_base_contexts = _filter_process_contexts(question, expanded_contexts or final_contexts or candidate_contexts)
@@ -1629,6 +1653,7 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
         group_ids,
         base_contexts=pageindex_base_contexts,
         max_contexts=PAGEINDEX_SUPPLEMENT_MAX,
+        knowledge_scope=knowledge_scope,
     )
     pageindex_added = len(pageindex_contexts)
     if pageindex_contexts:
@@ -1636,6 +1661,10 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
         # Vector/SQLite chunks are kept only as supplemental evidence after structural hits.
         expanded_contexts = _merge_unique_contexts(pageindex_contexts, expanded_contexts, ADAPTIVE_CONTEXT_MAX)
     expanded_contexts = _filter_process_contexts(question, expanded_contexts)
+    allowed_doc_kinds = allowed_kinds_for_query_topic(query_profile.get("topic"), "text")
+    filtered_by_kind, document_kind_dropped = filter_contexts_by_allowed_kinds(expanded_contexts, allowed_doc_kinds)
+    if filtered_by_kind:
+        expanded_contexts = filtered_by_kind
     expanded_contexts = expanded_contexts[:ADAPTIVE_CONTEXT_MAX]
     pre_rerank_count = len(expanded_contexts)
     final_limit = min(ADAPTIVE_FINAL_CONTEXT_MAX, max(ADAPTIVE_FINAL_CONTEXT_MIN, int(plan["target_contexts"])))
@@ -1650,6 +1679,9 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
         **plan,
         "candidate_count": candidate_count,
         "query_profile": query_profile,
+        "knowledge_scope": normalize_document_scope(knowledge_scope, "production"),
+        "allowed_document_kinds": sorted(allowed_doc_kinds),
+        "document_kind_filtered_count": document_kind_dropped,
         "keyword_candidate_count": keyword_candidate_count,
         "merged_candidate_count": len(candidate_contexts),
         "filtered_count": len(filtered),

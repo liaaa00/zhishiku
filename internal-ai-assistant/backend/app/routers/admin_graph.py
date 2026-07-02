@@ -22,6 +22,7 @@ class RelationStatusUpdate(BaseModel):
 class GraphSearchTestRequest(BaseModel):
     question: str
     top_k: int = 8
+    knowledge_scope: str = "all"
 
 
 def _status_to_dict(row: GraphExtractionStatus | None) -> dict:
@@ -177,5 +178,5 @@ def graph_search_test(req: GraphSearchTestRequest, db: Session = Depends(get_db)
     question = (req.question or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="问题不能为空")
-    contexts = retrieve_graph_contexts(db, question, user, top_k=max(1, min(req.top_k or 8, 20)))
-    return {"question": question, "count": len(contexts), "contexts": contexts}
+    contexts = retrieve_graph_contexts(db, question, user, top_k=max(1, min(req.top_k or 8, 20)), knowledge_scope=req.knowledge_scope)
+    return {"question": question, "knowledge_scope": req.knowledge_scope, "count": len(contexts), "contexts": contexts}

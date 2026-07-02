@@ -199,6 +199,27 @@
             <span>支持 PDF / Markdown / Word / Excel / PPT / CSV / TXT / 图片</span>
             <span>上传后显示解析和 PageIndex 状态。</span>
           </div>
+          <div class="admin-form-row admin-form-row-wrap">
+            <label class="admin-search-box">
+              <span>上传到</span>
+              <el-select v-model="uploadKnowledgeScope" class="admin-select-md">
+                <el-option label="正式库（默认问答使用）" value="production" />
+                <el-option label="测试库（仅诊断/评测使用）" value="test" />
+              </el-select>
+            </label>
+            <label class="admin-search-box">
+              <span>文档类型</span>
+              <el-select v-model="uploadDocumentKind" class="admin-select-md">
+                <el-option label="自动识别" value="auto" />
+                <el-option label="表格数据" value="table" />
+                <el-option label="员工指南" value="employee_guide" />
+                <el-option label="工单/内部流程" value="workorder" />
+                <el-option label="表单/信息表" value="form" />
+                <el-option label="制度/政策" value="policy" />
+                <el-option label="通用文档" value="general" />
+              </el-select>
+            </label>
+          </div>
           <div class="admin-index-note">高级索引：{{ pageIndexEngineText }} · {{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</div>
 
           <section v-if="lastUploadSummary" class="admin-upload-result-card">
@@ -307,6 +328,8 @@
                   <span>ID {{ doc.id }}</span>
                   <span>阶段：{{ docStageLabel(doc) }}</span>
                   <span>片段 {{ doc.chunks || 0 }} · {{ doc.searchable ? '可检索' : '未检索' }}</span>
+                  <span>知识库：{{ knowledgeScopeLabel(doc.knowledge_scope) }}</span>
+                  <span>文档类型：{{ documentKindLabel(doc.document_kind) }}</span>
                   <span>高级索引：{{ pageIndexStatusText(doc.page_index) }}</span>
                 </div>
               </div>
@@ -546,6 +569,11 @@
 
           <div class="admin-form-row admin-form-row-wrap">
             <el-input v-model="searchTestForm.question" clearable placeholder="输入一个要诊断的知识库问题" class="admin-input-search" @keyup.enter="runSearchTest" />
+            <el-select v-model="searchTestForm.knowledge_scope" class="admin-select-md">
+              <el-option label="正式库" value="production" />
+              <el-option label="测试库" value="test" />
+              <el-option label="全部" value="all" />
+            </el-select>
             <el-input-number v-model="searchTestForm.top_k" :min="1" :max="20" />
           </div>
 
@@ -667,6 +695,8 @@
                     <span>rerank {{ formatRetrievalScore(item.rerank_score) }}</span>
                     <span v-if="item.llm_rerank_score !== undefined && item.llm_rerank_score !== null">llm {{ formatRetrievalScore(item.llm_rerank_score) }}</span>
                     <span>{{ item.location || `chunk ${item.chunk_index ?? '-'}` }}</span>
+                    <span>知识库：{{ knowledgeScopeLabel(item.knowledge_scope) }}</span>
+                    <span>类型：{{ documentKindLabel(item.document_kind) }}</span>
                     <span v-if="sourceDiagnosticQualityLabel(item)">{{ sourceDiagnosticQualityLabel(item) }}</span>
                   </div>
                 </div>
@@ -1386,6 +1416,8 @@ const deletingDocId = ref<string | null>(null)
 const deletingGroupId = ref<string | null>(null)
 const rebuildingPageIndexDocId = ref<string | null>(null)
 const uploadingDoc = ref(false)
+const uploadKnowledgeScope = ref<'production' | 'test'>('production')
+const uploadDocumentKind = ref('auto')
 const lastUploadSummary = ref<UploadSummary | null>(null)
 const groupSearch = ref('')
 const userSearch = ref('')
@@ -1447,7 +1479,7 @@ const savingModel = ref(false)
 const testingModel = ref(false)
 const modelTestMessage = ref('')
 const modelTestStatus = ref<'idle' | 'ok' | 'failed'>('idle')
-const searchTestForm = reactive({ question: '', top_k: 8 })
+const searchTestForm = reactive({ question: '', top_k: 8, knowledge_scope: 'production' })
 const searchTesting = ref(false)
 const searchContextPreviewOpen = ref(false)
 const expandedSearchSources = ref<Record<string, boolean>>({})
@@ -1860,6 +1892,21 @@ function userRoleKind(item: any): UserRoleFilter {
 
 function userRoleLabel(item: any) {
   return ({ admin: '管理员', member: '成员', unassigned: '未分配', pending: '待审批', inactive: '停用' } as Record<string, string>)[userRoleKind(item)]
+}
+
+function knowledgeScopeLabel(value: any) {
+  return ({ production: '正式库', test: '测试库', all: '全部' } as Record<string, string>)[String(value || 'production')] || '正式库'
+}
+
+function documentKindLabel(value: any) {
+  return ({
+    table: '表格数据',
+    employee_guide: '员工指南',
+    workorder: '工单/内部流程',
+    form: '表单/信息表',
+    policy: '制度/政策',
+    general: '通用文档',
+  } as Record<string, string>)[String(value || 'general')] || '通用文档'
 }
 
 function isUserPending(item: any) {
@@ -2568,6 +2615,7 @@ async function runSearchTest() {
     const { data } = await http.post('/admin/search-test', {
       question,
       top_k: Number(searchTestForm.top_k) || 8,
+      knowledge_scope: searchTestForm.knowledge_scope || 'production',
     })
     searchTestResult.value = data || null
   } catch (err: any) {
@@ -2866,7 +2914,7 @@ async function runFeedbackCompareSearch() {
   feedbackCompareLoading.value = true
   feedbackCompareResult.value = null
   try {
-    const { data } = await http.post('/admin/search-test', { question, top_k: 8 })
+    const { data } = await http.post('/admin/search-test', { question, top_k: 8, knowledge_scope: 'all' })
     feedbackCompareResult.value = data || null
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || '反馈检索对照失败')
@@ -2985,6 +3033,8 @@ async function handleFile(file: any) {
   uploadingDoc.value = true
   const fd = new FormData()
   fd.append('file', rawFile)
+  fd.append('knowledge_scope', uploadKnowledgeScope.value)
+  fd.append('document_kind', uploadDocumentKind.value)
   try {
     const data = (await http.post('/admin/documents', fd, { headers: { 'Content-Type': 'multipart/form-data' } })).data || {}
     lastUploadSummary.value = {
@@ -3002,6 +3052,8 @@ async function handleFile(file: any) {
         title: data.title || rawFile.name,
         filename: rawFile.name,
         source_type: rawFile.name.split('.').pop() || 'file',
+        knowledge_scope: data.knowledge_scope || uploadKnowledgeScope.value,
+        document_kind: data.document_kind || uploadDocumentKind.value || 'general',
         groups: [],
         status: data.status || 'pending',
         stage: 'queued',

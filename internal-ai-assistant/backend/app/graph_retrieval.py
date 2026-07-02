@@ -4,6 +4,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .graph_store import normalize_entity_name, relation_to_dict, search_entities
+from .document_metadata import get_document_kind, get_document_scope
 from .models import GraphRelation, User
 from .retrieval import accessible_document_ids, user_group_ids
 
@@ -78,12 +79,12 @@ def _candidate_entities(db: Session, text: str, limit: int = 30):
     return entities
 
 
-def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int = 8) -> list[dict]:
+def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int = 8, knowledge_scope: str = "production") -> list[dict]:
     text = str(question or "").strip()
     if not text:
         return []
     group_ids = user_group_ids(user)
-    allowed_doc_ids = accessible_document_ids(db, user, group_ids)
+    allowed_doc_ids = accessible_document_ids(db, user, group_ids, knowledge_scope=knowledge_scope)
     if not allowed_doc_ids:
         return []
 
@@ -174,6 +175,8 @@ def retrieve_graph_contexts(db: Session, question: str, user: User, top_k: int =
                 "page_number": row.source_page_number,
                 "content": content,
                 "source_type": "graph",
+                "knowledge_scope": get_document_scope(doc) if doc else knowledge_scope,
+                "document_kind": get_document_kind(doc) if doc else "general",
                 "retrieval_channel": "graph",
                 "score": row.confidence,
                 "graph": relation_to_dict(row),

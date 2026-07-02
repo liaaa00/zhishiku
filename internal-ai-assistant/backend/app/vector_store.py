@@ -4,6 +4,7 @@ import urllib.request
 from typing import Any, Dict, Iterable, List, Optional
 
 from .config import EMBEDDING_DIM, QDRANT_API_KEY, QDRANT_COLLECTION, QDRANT_URL, VECTOR_BACKEND
+from .document_metadata import get_document_kind, get_document_scope, normalize_document_scope
 
 
 def qdrant_enabled() -> bool:
@@ -94,6 +95,8 @@ def document_payload(doc, chunk) -> dict:
         "chunk_index": chunk.chunk_index,
         "content": chunk.content,
         "source_type": source_type,
+        "knowledge_scope": get_document_scope(doc),
+        "document_kind": get_document_kind(doc),
         "created_by": doc.created_by or "",
         "visibility": visibility,
         "group_ids": [g.id for g in getattr(doc, "groups", [])],
@@ -134,18 +137,20 @@ def _condition(key: str, value: Any) -> dict:
     return {"key": key, "match": {"value": value}}
 
 
-def permission_filter(user_id: str, is_admin: bool, group_ids: List[str]) -> dict:
-    personal = {"must": [_condition("visibility", "personal"), _condition("created_by", user_id)]}
+def permission_filter(user_id: str, is_admin: bool, group_ids: List[str], knowledge_scope: str = "production") -> dict:
+    managed_scope = normalize_document_scope(knowledge_scope, "production")
+    managed_scope_filter = [] if managed_scope == "all" else [_condition("knowledge_scope", managed_scope)]
+    personal = {"must": [_condition("visibility", "personal"), _condition("created_by", user_id), *managed_scope_filter]}
     should = [personal]
     if is_admin:
-        should.append({"must": [_condition("visibility", "managed")]})
+        should.append({"must": [_condition("visibility", "managed"), *managed_scope_filter]})
     else:
         for group_id in group_ids:
-            should.append({"must": [_condition("visibility", "managed"), _condition("group_ids", group_id)]})
+            should.append({"must": [_condition("visibility", "managed"), _condition("group_ids", group_id), *managed_scope_filter]})
     return {"should": should}
 
 
-def search_chunks(query_vector: List[float], user_id: str, is_admin: bool, group_ids: List[str], limit: int) -> List[dict]:
+def search_chunks(query_vector: List[float], user_id: str, is_admin: bool, group_ids: List[str], limit: int, knowledge_scope: str = "production") -> List[dict]:
     if not qdrant_enabled():
         raise QdrantUnavailable("Qdrant backend is not enabled")
     ensure_collection(len(query_vector))
@@ -154,7 +159,7 @@ def search_chunks(query_vector: List[float], user_id: str, is_admin: bool, group
         "limit": limit,
         "with_payload": True,
         "with_vector": False,
-        "filter": permission_filter(user_id, is_admin, group_ids),
+        "filter": permission_filter(user_id, is_admin, group_ids, knowledge_scope),
     }
     data = _request("POST", f"/collections/{QDRANT_COLLECTION}/points/search", body, timeout=10.0)
     result = data.get("result") or []
@@ -170,6 +175,8 @@ def search_chunks(query_vector: List[float], user_id: str, is_admin: bool, group
                 "page_number": payload.get("page_number"),
                 "chunk_index": payload.get("chunk_index"),
                 "source_type": payload.get("source_type", ""),
+                "knowledge_scope": payload.get("knowledge_scope", "production"),
+                "document_kind": payload.get("document_kind", "general"),
                 "content": payload.get("content", ""),
                 "score": item.get("score", 0),
             }

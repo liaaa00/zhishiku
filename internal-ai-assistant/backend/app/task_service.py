@@ -12,6 +12,7 @@ from .ai_client import image_to_text
 from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME, GRAPH_EXTRACTION_ENABLED, PDF_OCR_MAX_PAGES, PDF_OCR_MIN_TEXT_CHARS, PDF_OCR_ZOOM
 from .database import SessionLocal, engine
 from .document_index import add_chunks
+from .document_metadata import infer_document_kind
 from .graph_extraction import extract_graph_for_document
 from .graph_store import set_extraction_status
 from .document_status import set_doc_status
@@ -173,6 +174,13 @@ def _maybe_build_pageindex(db: Session, doc: Document, pages: list[tuple[int | N
         db.commit()
 
 
+def _refresh_document_kind_from_pages(doc: Document, pages: list[tuple[int | None, str]]) -> None:
+    sample = "\n".join(str(text or "") for _page, text in (pages or [])[:3])[:4000]
+    inferred = infer_document_kind(doc.title, doc.filename, doc.source_type, sample)
+    if inferred and (not getattr(doc, "document_kind", "") or str(doc.document_kind or "") == "general"):
+        doc.document_kind = inferred
+
+
 def parse_document_to_chunks(db: Session, doc: Document) -> int:
     ext = Path(doc.filename).suffix.lower()
     source_type = str(doc.source_type or "")
@@ -186,6 +194,7 @@ def parse_document_to_chunks(db: Session, doc: Document) -> int:
         db.commit()
         text_content = image_to_text(str(storage_path), cfg["api_key"], cfg["base_url"], cfg["model"])
         pages = [(1, text_content)] if text_content else []
+        _refresh_document_kind_from_pages(doc, pages)
         chunks = add_chunks(db, doc.id, pages)
         db.commit()
         _maybe_build_pageindex(db, doc, pages)
@@ -208,6 +217,7 @@ def parse_document_to_chunks(db: Session, doc: Document) -> int:
             pages = extract_pdf_pages_with_ocr_fallback(db, doc, storage_path)
         else:
             pages = extract_supported_document(str(storage_path))
+        _refresh_document_kind_from_pages(doc, pages)
         chunks = add_chunks(db, doc.id, pages)
         db.commit()
         _maybe_build_pageindex(db, doc, pages)
@@ -325,6 +335,15 @@ def initialize_runtime_schema():
         add_column_if_missing(conn, "users", "approved_by_user_id", "approved_by_user_id TEXT")
         add_column_if_missing(conn, "users", "approved_by_username", "approved_by_username TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(conn, "users", "approved_at", "approved_at DATETIME")
+        # 旧库中已有文档默认视为测试资料，避免历史测试文档污染正式问答；新上传文档由上传接口显式写入作用域。
+        add_column_if_missing(conn, "documents", "knowledge_scope", "knowledge_scope TEXT NOT NULL DEFAULT 'test'")
+        add_column_if_missing(conn, "documents", "document_kind", "document_kind TEXT NOT NULL DEFAULT 'general'")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_documents_knowledge_scope ON documents(knowledge_scope)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_documents_document_kind ON documents(document_kind)")
+        conn.exec_driver_sql("UPDATE documents SET document_kind='form' WHERE COALESCE(document_kind, 'general')='general' AND (title LIKE '%入职人员信息表%' OR filename LIKE '%入职人员信息表%')")
+        conn.exec_driver_sql("UPDATE documents SET document_kind='workorder' WHERE COALESCE(document_kind, 'general')='general' AND (title LIKE '%工单%' OR filename LIKE '%工单%')")
+        conn.exec_driver_sql("UPDATE documents SET document_kind='employee_guide' WHERE COALESCE(document_kind, 'general')='general' AND (title LIKE '%微助手%' OR filename LIKE '%微助手%' OR title LIKE '%外服云%' OR filename LIKE '%外服云%' OR title LIKE '%员工%' OR filename LIKE '%员工%')")
+        conn.exec_driver_sql("UPDATE documents SET document_kind='table' WHERE COALESCE(document_kind, 'general')='general' AND (LOWER(filename) LIKE '%.xlsx' OR LOWER(filename) LIKE '%.xls' OR LOWER(filename) LIKE '%.csv')")
         add_column_if_missing(conn, "chat_messages", "sources_json", "sources_json TEXT NOT NULL DEFAULT '[]'")
         add_column_if_missing(conn, "chat_messages", "mode", "mode TEXT NOT NULL DEFAULT 'knowledge'")
         add_column_if_missing(conn, "feedback", "sources_json", "sources_json TEXT NOT NULL DEFAULT '[]'")

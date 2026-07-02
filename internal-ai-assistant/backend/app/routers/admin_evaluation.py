@@ -239,7 +239,7 @@ def run_evaluation_case(req: ChatRequest, db: Session = Depends(get_db), user: U
     if not question:
         raise HTTPException(status_code=400, detail="请输入评测问题")
     top_k = max(1, min(int(req.top_k or 8), 20))
-    contexts, retrieval_backend, retrieval_note, candidate_count, retrieval_meta = adaptive_retrieve_contexts(db, question, user, top_k)
+    contexts, retrieval_backend, retrieval_note, candidate_count, retrieval_meta = adaptive_retrieve_contexts(db, question, user, top_k, knowledge_scope=req.knowledge_scope)
     sources = serialize_sources(contexts)
     source_quality_notice = build_source_quality_notice(sources)
     answer_contexts = model_contexts_for_answer(contexts, False)
@@ -258,6 +258,8 @@ def run_evaluation_case(req: ChatRequest, db: Session = Depends(get_db), user: U
             "page_number": context.get("page_number"),
             "chunk_id": context.get("chunk_id") or "",
             "chunk_index": context.get("chunk_index"),
+            "knowledge_scope": context.get("knowledge_scope") or retrieval_meta.get("knowledge_scope") or "production",
+            "document_kind": context.get("document_kind") or "general",
             "score": context.get("score"),
             "rerank_score": context.get("rerank_score"),
             "retrieval_channel": context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "semantic"),
@@ -297,7 +299,7 @@ def run_evaluation_suite(limit: int = Query(20, ge=1, le=100), db: Session = Dep
         if not question:
             continue
         top_k = int(case.get("top_k") or 8)
-        contexts, backend, note, candidate_count, meta = adaptive_retrieve_contexts(db, question, user, top_k)
+        contexts, backend, note, candidate_count, meta = adaptive_retrieve_contexts(db, question, user, top_k, knowledge_scope="all")
         errors = _validate_case(case, contexts, backend, meta)
         ok = not errors
         failures += 0 if ok else 1

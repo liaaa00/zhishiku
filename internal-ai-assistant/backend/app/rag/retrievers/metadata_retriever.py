@@ -6,6 +6,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...document_metadata import get_document_kind, get_document_scope, normalize_document_scope
 from ...models import Document, User
 from ...retrieval import has_document_access, user_group_ids
 from ..schemas import QueryAnalysis, RetrievalResult
@@ -55,6 +56,8 @@ def _context_for_doc(doc: Document, score: float, hits: list[str]) -> dict:
             f"文档标题：{doc.title or ''}",
             f"文件名：{doc.filename or ''}",
             f"文件类型：{doc.source_type or ''}",
+            f"知识库：{get_document_scope(doc)}",
+            f"文档类型：{get_document_kind(doc)}",
             f"上传时间：{created_at}",
         ]
     )
@@ -66,6 +69,8 @@ def _context_for_doc(doc: Document, score: float, hits: list[str]) -> dict:
         "page_number": None,
         "chunk_index": f"metadata:{doc.id}",
         "source_type": str(doc.source_type or ""),
+        "knowledge_scope": get_document_scope(doc),
+        "document_kind": get_document_kind(doc),
         "content": content,
         "score": round(score, 4),
         "match_terms": hits,
@@ -77,10 +82,12 @@ def _context_for_doc(doc: Document, score: float, hits: list[str]) -> dict:
     }
 
 
-def search(db: Session, question: str, user: User, analysis: QueryAnalysis, top_k: int = 5) -> RetrievalResult:
+def search(db: Session, question: str, user: User, analysis: QueryAnalysis, top_k: int = 5, knowledge_scope: str = "production") -> RetrievalResult:
     group_ids = user_group_ids(user)
-    docs = db.execute(select(Document).order_by(Document.created_at.desc()).limit(MAX_METADATA_SCAN)).scalars().all()
-    accessible_docs = [doc for doc in docs if has_document_access(db, doc, user, group_ids)]
+    scope = normalize_document_scope(knowledge_scope, "production")
+    scope_filter = [] if scope == "all" else [Document.knowledge_scope == scope]
+    docs = db.execute(select(Document).where(*scope_filter).order_by(Document.created_at.desc()).limit(MAX_METADATA_SCAN)).scalars().all()
+    accessible_docs = [doc for doc in docs if has_document_access(db, doc, user, group_ids, knowledge_scope=scope)]
     terms = _terms(question, analysis)
     scored: list[tuple[float, Document, list[str]]] = []
     latest_bias = any(word in question for word in ("最新", "最近", "最近上传", "最新上传"))
@@ -99,6 +106,7 @@ def search(db: Session, question: str, user: User, analysis: QueryAnalysis, top_
         "unique_document_count": len({c.get("document_id") for c in contexts if c.get("document_id")}),
         "best_score": max((float(item.get("score") or 0.0) for item in contexts), default=0.0),
         "backend": "metadata",
+        "knowledge_scope": scope,
         "fallback_note": "metadata_query_mode",
         "query_analysis": analysis.to_dict(),
     }

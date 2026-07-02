@@ -52,6 +52,8 @@ class Document(Base):
     filename = Column(String(255), nullable=False)
     storage_path = Column(String(500), nullable=False)
     source_type = Column(String(20), nullable=False, default="pdf")
+    knowledge_scope = Column(String(30), nullable=False, default="production", index=True)  # production/test
+    document_kind = Column(String(50), nullable=False, default="general", index=True)  # table/employee_guide/workorder/form/policy/general
     created_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     groups = relationship("Group", secondary=document_group_link, back_populates="documents")

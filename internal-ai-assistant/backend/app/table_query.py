@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .document_metadata import document_matches_scope, get_document_kind, get_document_scope, normalize_document_scope
 from .models import Document, DocumentTableRow, User, document_group_link
 from .table_plan import AGGREGATE_OPERATION_LABELS, COLUMN_ALIASES, COLUMN_LABELS, QUERY_OPERATION_LABELS, clean as plan_clean, describe_table_query_plan, format_filter_condition, format_filter_groups, parse_table_query_plan, result_limit
 from .table_schema import infer_column_semantics, semantic_value
@@ -191,10 +192,12 @@ def _user_group_ids(user: User) -> list[str]:
     return [group.id for group in getattr(user, "groups", []) or []]
 
 
-def _has_document_access(db: Session, doc: Document, user: User, group_ids: list[str] | None = None) -> bool:
+def _has_document_access(db: Session, doc: Document, user: User, group_ids: list[str] | None = None, knowledge_scope: str = "production") -> bool:
     source_type = str(doc.source_type or "")
     if source_type.startswith("chat_"):
-        return doc.created_by == user.id or bool(getattr(user, "is_admin", False))
+        return document_matches_scope(doc, knowledge_scope) and (doc.created_by == user.id or bool(getattr(user, "is_admin", False)))
+    if not document_matches_scope(doc, knowledge_scope):
+        return False
     if getattr(user, "is_admin", False):
         return True
     resolved_group_ids = group_ids if group_ids is not None else _user_group_ids(user)
@@ -222,17 +225,20 @@ def _row_text(row: DocumentTableRow) -> str:
     return _clean(row.row_text or row.row_json or "")
 
 
-def accessible_table_documents(db: Session, user: User, document_ids: list[str] | None = None) -> list[Document]:
+def accessible_table_documents(db: Session, user: User, document_ids: list[str] | None = None, knowledge_scope: str = "production") -> list[Document]:
+    scope = normalize_document_scope(knowledge_scope, "production")
+    scope_filter = [] if scope == "all" else [Document.knowledge_scope == scope]
     query = (
         select(Document)
         .join(DocumentTableRow, DocumentTableRow.document_id == Document.id)
+        .where(*scope_filter)
         .distinct()
         .order_by(Document.created_at.desc())
     )
     if document_ids:
         query = query.where(Document.id.in_(document_ids))
     docs = db.execute(query).scalars().all()
-    return [doc for doc in docs if _has_document_access(db, doc, user)]
+    return [doc for doc in docs if _has_document_access(db, doc, user, knowledge_scope=scope)]
 
 
 def _sample_rows(db: Session, document_id: str, limit: int = 6) -> list[DocumentTableRow]:
@@ -312,8 +318,8 @@ def _document_has_matching_month_sheet(db: Session, document_id: str, month_toke
     return False
 
 
-def select_table_documents(db: Session, question: str, user: User, limit: int = 3, document_ids: list[str] | None = None) -> list[Document]:
-    docs = accessible_table_documents(db, user, document_ids=document_ids)
+def select_table_documents(db: Session, question: str, user: User, limit: int = 3, document_ids: list[str] | None = None, knowledge_scope: str = "production") -> list[Document]:
+    docs = accessible_table_documents(db, user, document_ids=document_ids, knowledge_scope=knowledge_scope)
     if not docs:
         return []
     scored: list[tuple[float, Document]] = []
@@ -599,6 +605,8 @@ def row_to_context(doc: Document, row: DocumentTableRow) -> dict:
         "chunk_index": f"table:{row.id}",
         "page_number": row.row_number,
         "source_type": doc.source_type or "xlsx",
+        "knowledge_scope": get_document_scope(doc),
+        "document_kind": get_document_kind(doc),
         "content": _row_text(row),
         "score": 0.82 if not row.is_header else 0.45,
         "match_terms": [],

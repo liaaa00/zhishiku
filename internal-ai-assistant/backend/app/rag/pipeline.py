@@ -5,6 +5,12 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..document_metadata import (
+    allowed_kinds_for_query_topic,
+    enrich_context_metadata,
+    filter_contexts_by_allowed_kinds,
+    normalize_document_scope,
+)
 from ..models import User
 from ..settings_service import get_embedding_config
 from .evidence_checker import check_evidence
@@ -97,14 +103,14 @@ def _embedding_quality_meta(db: Session) -> dict[str, Any]:
     }
 
 
-def _retrieve_by_route(db: Session, question: str, user: User, top_k: int, analysis, route) -> RetrievalResult:
+def _retrieve_by_route(db: Session, question: str, user: User, top_k: int, analysis, route, knowledge_scope: str) -> RetrievalResult:
     if route.name == "table":
-        return table_retriever.search(db, question, user, analysis, top_k=top_k)
+        return table_retriever.search(db, question, user, analysis, top_k=top_k, knowledge_scope=knowledge_scope)
     if route.name == "metadata":
-        return metadata_retriever.search(db, question, user, analysis, top_k=top_k)
+        return metadata_retriever.search(db, question, user, analysis, top_k=top_k, knowledge_scope=knowledge_scope)
     if route.name == "summary":
-        return summary_retriever.search(db, question, user, analysis, top_k=max(top_k, 10))
-    return text_retriever.search(db, question, user, analysis, top_k=top_k)
+        return summary_retriever.search(db, question, user, analysis, top_k=max(top_k, 10), knowledge_scope=knowledge_scope)
+    return text_retriever.search(db, question, user, analysis, top_k=top_k, knowledge_scope=knowledge_scope)
 
 
 def _should_check_graph(question: str, route_name: str) -> bool:
@@ -137,16 +143,16 @@ def _merge_contexts(primary: list[dict[str, Any]], extra: list[dict[str, Any]], 
     return merged
 
 
-def _graph_contexts_for_question(db: Session, question: str, user: User, top_k: int) -> list[dict[str, Any]]:
+def _graph_contexts_for_question(db: Session, question: str, user: User, top_k: int, knowledge_scope: str) -> list[dict[str, Any]]:
     try:
         from ..graph_retrieval import retrieve_graph_contexts
 
-        return retrieve_graph_contexts(db, question, user, top_k=max(3, min(top_k, 8)))
+        return retrieve_graph_contexts(db, question, user, top_k=max(3, min(top_k, 8)), knowledge_scope=knowledge_scope)
     except Exception:
         return []
 
 
-def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) -> tuple[list[dict], str, str, int, dict]:
+def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, knowledge_scope: str = "production") -> tuple[list[dict], str, str, int, dict]:
     """First-stage retrieval router entrypoint.
 
     Return shape intentionally matches legacy retrieval.adaptive_retrieve_contexts:
@@ -155,10 +161,11 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
 
     analysis = analyze_query(question)
     route = select_route(analysis)
-    result = _retrieve_by_route(db, question, user, top_k, analysis, route)
+    scope = normalize_document_scope(knowledge_scope, "production")
+    result = _retrieve_by_route(db, question, user, top_k, analysis, route, scope)
 
     graph_checked = _should_check_graph(question, route.name)
-    graph_contexts = _graph_contexts_for_question(db, question, user, top_k) if graph_checked else []
+    graph_contexts = _graph_contexts_for_question(db, question, user, top_k, scope) if graph_checked else []
     graph_primary_query = _should_use_graph_as_primary_context(question)
     original_route = route.to_dict()
     contexts = result.contexts
@@ -178,6 +185,14 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
         backend = "hybrid+graph" if backend else "graph"
         note_parts.append("graph_merged")
 
+    contexts = enrich_context_metadata(db, contexts)
+    route_name_for_filter = str(route_meta.get("name") or route.name)
+    query_profile = (result.meta or {}).get("query_profile") or {}
+    allowed_doc_kinds = allowed_kinds_for_query_topic(query_profile.get("topic"), route_name_for_filter)
+    filtered_contexts, document_kind_dropped = filter_contexts_by_allowed_kinds(contexts, allowed_doc_kinds)
+    if filtered_contexts:
+        contexts = filtered_contexts
+
     evidence_route_name = route_meta.get("name") or route.name
     if evidence_route_name != route.name:
         route.name = evidence_route_name
@@ -192,6 +207,9 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5) ->
             "query_analysis": analysis.to_dict(),
             "retrieval_route": route_meta,
             "original_retrieval_route": original_route,
+            "knowledge_scope": scope,
+            "allowed_document_kinds": sorted(allowed_doc_kinds),
+            "document_kind_filtered_count": document_kind_dropped,
             "embedding_quality": _embedding_quality_meta(db),
             "evidence_check": evidence.to_dict(),
             "graph_retrieval": {

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from ..ai_client import embed_texts, image_to_text
 from ..citation_utils import bounded_limit
 from ..database import get_db
 from ..document_access import cleanup_document_rows, ensure_admin_document
+from ..document_metadata import get_document_kind, get_document_scope, infer_document_kind, normalize_document_kind, normalize_document_scope
 from ..document_status import set_doc_status
 from ..document_utils import extract_supported_document
 from ..models import BackgroundTask, Document, DocumentChunk, DocumentPageIndex, DocumentProcessingStatus, User
@@ -55,6 +56,8 @@ def list_documents(
                 "title": d.title,
                 "filename": d.filename,
                 "source_type": d.source_type,
+                "knowledge_scope": get_document_scope(d),
+                "document_kind": get_document_kind(d),
                 "groups": [] if summary else [{"id": g.id, "name": g.name} for g in d.groups],
                 "groups_included": not summary,
                 "status": st.status if st else "pending",
@@ -70,17 +73,46 @@ def list_documents(
 
 
 @router.post("/api/admin/documents")
-def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(require_admin)):
+def upload_document(
+    file: UploadFile = File(...),
+    knowledge_scope: str = Form("production"),
+    document_kind: str = Form("auto"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_admin),
+):
     _, ext = validate_upload_file(file, KNOWLEDGE_FILE_EXTENSIONS, "后台知识库支持 PDF、Word(.docx)、PowerPoint(.pptx)、Excel(.xlsx)、CSV、TXT、Markdown、图片 PNG/JPG/JPEG/WEBP/GIF（自动 OCR）。旧版 .doc/.ppt/.xls 请先另存为 .docx/.pptx/.xlsx。")
     doc_id, storage_path, filename = save_upload(file, "admin")
+    source_type = ext.lstrip('.')
+    title = Path(filename).stem
+    resolved_scope = normalize_document_scope(knowledge_scope, "production")
+    inferred_kind = infer_document_kind(title, filename, source_type)
+    resolved_kind = inferred_kind if str(document_kind or "").strip().lower() in {"", "auto"} else normalize_document_kind(document_kind, inferred_kind)
 
     try:
-        doc = Document(id=doc_id, title=Path(filename).stem, filename=filename, storage_path=str(storage_path), source_type=ext.lstrip('.'), created_by=user.id)
+        doc = Document(
+            id=doc_id,
+            title=title,
+            filename=filename,
+            storage_path=str(storage_path),
+            source_type=source_type,
+            knowledge_scope=resolved_scope,
+            document_kind=resolved_kind,
+            created_by=user.id,
+        )
         db.add(doc)
         db.flush()
         task = enqueue_document_task(db, doc, "document_parse", user)
         db.commit()
-        return {"id": doc.id, "title": doc.title, "task_id": task.id, "status": "queued", "searchable": False, "message": "文档已上传，正在后台解析。"}
+        return {
+            "id": doc.id,
+            "title": doc.title,
+            "task_id": task.id,
+            "status": "queued",
+            "searchable": False,
+            "message": "文档已上传，正在后台解析。",
+            "knowledge_scope": resolved_scope,
+            "document_kind": resolved_kind,
+        }
     except Exception:
         db.rollback()
         storage_path.unlink(missing_ok=True)

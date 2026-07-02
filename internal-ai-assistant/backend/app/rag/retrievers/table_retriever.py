@@ -14,8 +14,8 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
-def search(db: Session, question: str, user: User, analysis: QueryAnalysis, top_k: int = 5) -> RetrievalResult:
-    contexts, table_meta = table_mode_contexts(db, question, user, top_k=top_k)
+def search(db: Session, question: str, user: User, analysis: QueryAnalysis, top_k: int = 5, knowledge_scope: str = "production") -> RetrievalResult:
+    contexts, table_meta = table_mode_contexts(db, question, user, top_k=top_k, knowledge_scope=knowledge_scope)
     meta = {
         "mode": "table",
         "intent": "table_query",

@@ -95,6 +95,7 @@ class ChatRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
     top_k: int = 5
+    knowledge_scope: str = "production"
 
 
 class FeedbackCreate(BaseModel):

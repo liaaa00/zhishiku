@@ -369,14 +369,15 @@ def _row_score(question: str, context: dict, doc_rank: int) -> float:
     return round(score, 4)
 
 
-def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10) -> tuple[list[dict], dict]:
-    docs = select_table_documents(db, question, user, limit=2)
+def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10, knowledge_scope: str = "production") -> tuple[list[dict], dict]:
+    docs = select_table_documents(db, question, user, limit=2, knowledge_scope=knowledge_scope)
     if not docs:
         return [], {
             "mode": "table",
             "matched_rows": 0,
             "matched_documents": 0,
             "enabled": True,
+            "knowledge_scope": knowledge_scope,
             "table_schema": {},
             "table_schema_suggestions": {},
         }
@@ -506,6 +507,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "matched_rows": 0,
             "matched_documents": len(docs),
             "enabled": True,
+            "knowledge_scope": knowledge_scope,
             "document_ids": [doc.id for doc in docs],
             "table_schema": table_schema_by_doc,
             "table_schema_suggestions": table_schema_suggestions_by_doc,
@@ -550,6 +552,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "matched_rows": len([item for item in selected if not item.get("is_header")]),
         "matched_documents": len(docs),
         "enabled": True,
+        "knowledge_scope": knowledge_scope,
         "document_ids": [doc.id for doc in docs],
         "table_schema": table_schema_by_doc,
         "table_schema_suggestions": table_schema_suggestions_by_doc,

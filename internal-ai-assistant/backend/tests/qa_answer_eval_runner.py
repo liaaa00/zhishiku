@@ -203,7 +203,7 @@ def run_answer_eval(payload: dict[str, Any], *, real_db: bool = False, skip_retr
         for case in payload.get("cases") or []:
             user = resolve_user(db, models, case, defaults, real_db=real_db)
             top_k = int(case.get("top_k") or defaults.get("top_k") or 8)
-            contexts, backend, note, candidate_count, meta = adaptive_retrieve_contexts(db, str(case["question"]), user, top_k=top_k)
+            contexts, backend, note, candidate_count, meta = adaptive_retrieve_contexts(db, str(case["question"]), user, top_k=top_k, knowledge_scope=str(case.get("knowledge_scope") or defaults.get("knowledge_scope") or "all"))
             retrieval_errors = [] if skip_retrieval_validation else validate_case(case, contexts, backend, meta)
             meta_errors = validate_meta_expectations(case, meta, backend)
             answer, composer = compose_local_answer(str(case["question"]), contexts, meta)
