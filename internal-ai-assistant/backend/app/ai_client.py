@@ -61,7 +61,8 @@ def _openai_client(api_key: Optional[str] = None, base_url: Optional[str] = None
     real_base_url = base_url or OPENAI_BASE_URL or "https://api.deepseek.com"
     if not real_key:
         raise ValueError("还没有配置模型 API Key。请先到后台的模型配置中填写。")
-    return OpenAI(api_key=real_key, base_url=real_base_url, timeout=120.0, max_retries=1)
+    # 交互式问答不应在外部模型慢响应时卡住太久；失败会由调用方走本地证据兜底。
+    return OpenAI(api_key=real_key, base_url=real_base_url, timeout=45.0, max_retries=0)
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
@@ -96,38 +97,30 @@ def extractive_fallback_answer(question: str, contexts: List[dict], reason: str 
     if not contexts:
         return "没有在授权知识库中找到相关内容，因此不能脱离资料泛答。"
 
-    structured = build_structured_digest(question, contexts, summary_mode=True)
-    if structured:
-        lines = [
-            "## 本地兜底整理（模型暂不可用）",
-            "当前没有拿到 AI 模型的最终回答，下面只是把命中证据做本地清洗和整理，供临时核验；不是原始切片直出，也不是完整 AI 分析结论。",
-            "",
-            structured,
-        ]
+    docs: list[str] = []
+    highlights: list[str] = []
+    for context in contexts[:8]:
+        title = context.get("document_title") or context.get("filename") or "未知文档"
+        if title not in docs:
+            docs.append(title)
+        content = " ".join(str(context.get("content") or "").split())
+        content = re.sub(r"(?:[A-Z]{1,3}\d+\s*[:：]\s*)", "", content)
+        content = re.sub(r"\[数据结果\]", "", content).strip(" |")
+        if content:
+            highlights.append(content[:220])
+
+    lines = [
+        "## 本地兜底整理（模型暂不可用）",
+        "模型暂时没有返回稳定结果，下面先基于命中证据给出简短整理；请结合来源面板核验。",
+        f"- 命中文档：{'、'.join(docs[:5]) or '未知文档'}",
+        f"- 命中片段数：{len(contexts)}",
+        "",
+        "## 关键信息",
+    ]
+    if highlights:
+        lines.extend(f"- {item}" for item in highlights[:5])
     else:
-        docs: list[str] = []
-        highlights: list[str] = []
-        for context in contexts[:8]:
-            title = context.get("document_title") or context.get("filename") or "未知文档"
-            if title not in docs:
-                docs.append(title)
-            content = " ".join(str(context.get("content") or "").split())
-            content = re.sub(r"(?:[A-Z]{1,3}\d+\s*[:：]\s*)", "", content)
-            content = re.sub(r"\[数据结果\]", "", content).strip(" |")
-            if content:
-                highlights.append(content[:180])
-        lines = [
-            "## 本地兜底整理（模型暂不可用）",
-            f"- 命中文档：{'、'.join(docs[:8]) or '未知文档'}",
-            f"- 命中片段数：{len(contexts)}",
-            "",
-            "## 关键信息",
-        ]
-        if highlights:
-            lines.extend(f"- {item}" for item in highlights[:6])
-        else:
-            lines.append("- 当前命中内容较少，暂无法稳定提炼字段。")
-        lines.extend(["", "## 建议追问", "- 让系统按字段、流程、风险点重新整理。", "- 指定某个文档或某条记录继续展开。"])
+        lines.append("- 当前命中内容较少，暂无法稳定提炼字段。")
 
     if reason:
         lines.append(f"\n> 说明：模型生成失败或未配置（{reason[:160]}），已避免把原始切分片段直接输出。")
@@ -356,8 +349,7 @@ def chat_answer_v2(
     try:
         client = _openai_client(api_key, base_url)
     except ValueError as exc:
-        fallback = structured_digest.strip() or extractive_fallback_answer(question, contexts, str(exc))
-        return fallback
+        return extractive_fallback_answer(question, contexts, str(exc))
     real_model = model or CHAT_MODEL or "deepseek-chat"
     try:
         response = client.chat.completions.create(
@@ -367,7 +359,7 @@ def chat_answer_v2(
         )
         return response.choices[0].message.content or "未生成回答。"
     except Exception as exc:
-        return structured_digest.strip() or extractive_fallback_answer(question, contexts, str(exc)[:200])
+        return extractive_fallback_answer(question, contexts, str(exc)[:200])
 
 
 def stream_chat_answer_v2(
@@ -382,7 +374,7 @@ def stream_chat_answer_v2(
     try:
         client = _openai_client(api_key, base_url)
     except ValueError as exc:
-        fallback = structured_digest.strip() or extractive_fallback_answer(question, contexts, str(exc))
+        fallback = extractive_fallback_answer(question, contexts, str(exc))
         for i in range(0, len(fallback), 80):
             yield fallback[i : i + 80]
         return
@@ -399,7 +391,7 @@ def stream_chat_answer_v2(
             if delta:
                 yield delta
     except Exception as exc:
-        fallback = structured_digest.strip() or extractive_fallback_answer(question, contexts, str(exc)[:200])
+        fallback = extractive_fallback_answer(question, contexts, str(exc)[:200])
         for i in range(0, len(fallback), 80):
             yield fallback[i : i + 80]
 

@@ -238,6 +238,42 @@ def _row_matches_filter_plan(context: dict, filters: list[dict[str, str]], logic
     return all(_row_matches_single_filter(context, item) for item in filters)
 
 
+def _required_column_groups(question: str, select_columns: list[str]) -> list[str]:
+    compact_question = _compact(question)
+    if any(term in compact_question for term in ("统计", "平均", "均值", "汇总", "合计", "按城市", "按省", "按公司", "分城市", "分省", "分公司分别")):
+        return []
+    # 展示字段不等于过滤条件；这里只收窄到用户明确要求必须存在的业务字段，避免统计类问题误删记录。
+    required: list[str] = []
+    if "银行账户" in compact_question:
+        required.append("bank_account")
+    if any(term in compact_question for term in ("社保公积金账户", "社保账户", "公积金账户")):
+        required.append("social_account")
+    if any(term in compact_question for term in ("公积金比例", "补充公积金比例")) or ("比例" in compact_question and "公积金" in compact_question):
+        required.append("fund_ratio")
+    if "备注" in compact_question:
+        required.append("remark")
+    return list(dict.fromkeys(column for column in required if column))
+
+
+def _row_has_alias_column_value(context: dict, alias_group: str) -> bool:
+    row = context.get("table_row") if isinstance(context.get("table_row"), dict) else {}
+    semantic_map = context.get("table_semantic_map") if isinstance(context.get("table_semantic_map"), dict) else {}
+    if not row:
+        return False
+    if semantic_map and alias_group in semantic_map:
+        raw_name = getattr(semantic_map[alias_group], "raw_name", "")
+        if raw_name in row and _clean(row.get(raw_name, "")):
+            return True
+    for key, value in row.items():
+        if _column_matches(str(key), alias_group) and _clean(value):
+            return True
+    return False
+
+
+def _row_has_required_columns(context: dict, required_columns: list[str]) -> bool:
+    return all(_row_has_alias_column_value(context, column) for column in required_columns)
+
+
 
 def _row_value_by_key_markers(row: dict, markers: tuple[str, ...]) -> str:
     for key, value in row.items():
@@ -370,6 +406,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
     time_grain = plan.time_grain
     time_value = plan.time_value
     query_op = plan.query_op
+    required_columns = _required_column_groups(question, select_columns)
     plan_meta = plan.to_dict()
     plan_explanation = describe_table_query_plan(plan)
     aliases_by_doc: dict[str, list] = {}
@@ -454,6 +491,13 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         branch_completion_matched_rows = len(branch_matched)
         scored_contexts = branch_matched
 
+    required_column_matched_rows = 0
+    if required_columns:
+        required_matched = [item for item in scored_contexts if _row_has_required_columns(item[3], required_columns)]
+        required_column_matched_rows = len(required_matched)
+        if required_matched:
+            scored_contexts = required_matched
+
     scored_contexts.sort(key=lambda item: (item[0], -item[1], -item[2]), reverse=True)
     selected = [item[3] for item in scored_contexts[:max_contexts]]
     if not selected:
@@ -479,6 +523,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
             "measure_column": measure_column,
             "metrics": metrics,
             "select_columns": select_columns,
+            "required_columns": required_columns,
+            "required_column_matched_rows": required_column_matched_rows,
             "sort_by": sort_by,
             "limit": result_limit,
             "time_grain": time_grain,
@@ -521,6 +567,8 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10)
         "measure_column": measure_column,
         "metrics": metrics,
         "select_columns": select_columns,
+        "required_columns": required_columns,
+        "required_column_matched_rows": required_column_matched_rows,
         "sort_by": sort_by,
         "limit": result_limit,
         "time_grain": time_grain,

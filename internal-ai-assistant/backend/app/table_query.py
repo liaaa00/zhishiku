@@ -32,6 +32,9 @@ TABLE_QUERY_VERBS = (
     "是否",
     "有没有",
     "有无",
+    "是什么",
+    "是多少",
+    "分别是",
     "开具完成",
     "开好",
     "完成了吗",
@@ -69,6 +72,9 @@ TABLE_BUSINESS_TERMS = (
     "社保公积金账户",
     "当前进度",
     "比例",
+    "补充公积金比例",
+    "备注",
+    "备注要求",
     "派单",
     "截止时间",
     "预计缴款时间",
@@ -98,6 +104,13 @@ NON_TABLE_PROCESS_TERMS = (
     "指南",
     "操作指南",
     "办理流程",
+    # 页面/模块类问题通常来自 PDF/网页操作说明；不能仅因“列出/哪些/列”进入表格路由。
+    "注册页",
+    "页面",
+    "模块",
+    "主要模块",
+    "个人注册",
+    "平台注册",
 )
 
 TABLE_TIME_TERMS = (
@@ -150,7 +163,9 @@ def is_table_query(question: str) -> bool:
     if any(term in compact for term in NON_TABLE_PROCESS_TERMS):
         return False
 
-    structure_hit = any(term in compact for term in TABLE_STRUCTURE_TERMS)
+    explicit_structure_terms = tuple(term for term in TABLE_STRUCTURE_TERMS if term not in {"行", "列"})
+    structure_hit = any(term in compact for term in explicit_structure_terms)
+    row_column_hit = any(term in compact for term in ("第几行", "哪一行", "哪几行", "第几列", "哪一列", "哪几列", "行号", "列名", "字段"))
     business_hit = any(term in compact for term in TABLE_BUSINESS_TERMS)
     verb_hit = any(word in compact for word in TABLE_QUERY_VERBS)
     month_hit = bool(re.search(r"20\d{2}年\d{1,2}月", text))
@@ -163,9 +178,9 @@ def is_table_query(question: str) -> bool:
         return True
     if time_business_hit:
         return True
-    if verb_hit and (structure_hit or business_hit):
+    if verb_hit and (structure_hit or row_column_hit or business_hit):
         return True
-    if structure_hit and business_hit:
+    if (structure_hit or row_column_hit) and business_hit:
         return True
     if any(key in compact for key in ("分公司", "公司名称", "开设公司")) and any(key in compact for key in ("哪些", "哪几个", "在哪", "列出", "名单", "范围")):
         return True
@@ -350,6 +365,46 @@ def _row_identity(context: dict) -> str:
     )
 
 
+def _required_answer_columns(question: str, plan_select_columns: list[str]) -> list[str]:
+    text = _compact(question)
+    if any(term in text for term in ("统计", "平均", "均值", "汇总", "合计", "按城市", "按省", "按公司", "分城市", "分省", "分公司分别")):
+        return []
+    # 展示字段不等于过滤条件；这里只对用户明确要求必须存在的业务字段做二次过滤。
+    required: list[str] = []
+    if "银行账户" in text:
+        required.append("bank_account")
+    if any(term in text for term in ("社保公积金账户", "社保账户", "公积金账户")):
+        required.append("social_account")
+    if any(term in text for term in ("公积金比例", "补充公积金比例")) or ("比例" in text and "公积金" in text):
+        required.append("fund_ratio")
+    if "备注" in text:
+        required.append("remark")
+    return list(dict.fromkeys(column for column in required if column))
+
+
+def _row_has_required_columns(context: dict, required_columns: list[str]) -> bool:
+    if not required_columns:
+        return True
+    row = context.get("table_row") if isinstance(context.get("table_row"), dict) else {}
+    semantic_map = context.get("table_semantic_map") if isinstance(context.get("table_semantic_map"), dict) else {}
+    if not row:
+        return False
+    for column in required_columns:
+        value = _first_alias_value(row, column, semantic_map)
+        if not value:
+            return False
+    return True
+
+
+def _filter_answer_rows(question: str, data_rows: list[dict]) -> list[dict]:
+    plan = parse_table_query_plan(question, include_quoted_company=False)
+    required_columns = _required_answer_columns(question, plan.select_columns)
+    if not required_columns:
+        return data_rows
+    filtered = [item for item in data_rows if _row_has_required_columns(item, required_columns)]
+    return filtered or data_rows
+
+
 def _numeric_value(value: Any) -> float | None:
     text = plan_clean(value)
     if not text:
@@ -417,7 +472,87 @@ PREFERRED_TABLE_PREVIEW_COLUMNS = (
     "截止时间-公积金",
     "预计缴款时间-社保",
     "预计缴款时间-公积金",
+    "后道对接人",
+    "备注",
 )
+
+IDENTITY_TABLE_COLUMNS = (
+    "省份",
+    "城市",
+    "单位名称",
+    "开设公司名称",
+    "公司名称",
+)
+
+
+def _question_subject_markers(compact_question: str) -> tuple[str, ...]:
+    markers: list[str] = []
+    if "社保" in compact_question:
+        markers.append("社保")
+    if "医保" in compact_question:
+        markers.append("医保")
+    if "公积金" in compact_question:
+        markers.append("公积金")
+    return tuple(markers)
+
+
+def _focus_key_markers(compact_question: str) -> tuple[str, ...]:
+    markers: list[str] = []
+    if any(term in compact_question for term in ("操作规则", "规则", "办理")):
+        markers.append("操作规则")
+    if any(term in compact_question for term in ("截止时间", "派单截止", "哪天", "几号", "什么时候")):
+        markers.append("截止时间")
+    if any(term in compact_question for term in ("预计缴款", "缴款时间")):
+        markers.append("预计缴款时间")
+    if "备注" in compact_question or "注意事项" in compact_question:
+        markers.append("备注")
+    if any(term in compact_question for term in ("同城转入", "谁来操作", "谁操作", "谁", "哪位", "操作人", "办理人", "经办人", "对接人", "后道")):
+        markers.extend(["备注", "后道对接人", "对接人", "操作人", "办理人", "经办人"])
+    if "银行账户" in compact_question:
+        markers.append("银行账户")
+    if any(term in compact_question for term in ("社保公积金账户", "社保账户", "公积金账户")):
+        markers.append("社保公积金账户")
+    if "比例" in compact_question:
+        markers.append("公积金比例")
+    return tuple(dict.fromkeys(markers))
+
+
+def _key_matches_focus(key: str, focus_markers: tuple[str, ...], subject_markers: tuple[str, ...]) -> bool:
+    if not focus_markers:
+        return False
+    key_text = str(key or "")
+    if not any(marker in key_text for marker in focus_markers):
+        return False
+    timed_or_rule = any(marker in key_text for marker in ("操作规则", "截止时间", "预计缴款时间"))
+    if timed_or_rule and subject_markers:
+        return any(subject in key_text for subject in subject_markers)
+    return True
+
+
+def _focused_preview_columns(row: dict[str, Any], compact_question: str, select_columns: list[str], semantic_map: dict | None = None) -> list[str]:
+    columns: list[str] = []
+    for key in IDENTITY_TABLE_COLUMNS:
+        if key in row and _clean(row.get(key, "")):
+            columns.append(key)
+
+    focus_markers = _focus_key_markers(compact_question)
+    subject_markers = _question_subject_markers(compact_question)
+    if focus_markers:
+        for key in row:
+            if _key_matches_focus(str(key), focus_markers, subject_markers):
+                columns.append(str(key))
+
+    for column in select_columns:
+        mapped = semantic_map.get(column).raw_name if semantic_map and column in semantic_map else ""
+        if mapped and mapped in row:
+            columns.append(mapped)
+        for key in row:
+            if _column_matches(str(key), column):
+                columns.append(str(key))
+
+    if not columns:
+        columns.extend(key for key in PREFERRED_TABLE_PREVIEW_COLUMNS if key in row)
+    return list(dict.fromkeys(columns))
 
 
 @dataclass(slots=True)
@@ -487,7 +622,7 @@ class TableAnswerComposer:
                 continue
             seen_rows.add(identity)
             data_rows.append(item)
-        return data_rows
+        return _filter_answer_rows(self.question, data_rows)
 
 
 def build_table_answer(question: str, contexts: list[dict]) -> str:
@@ -625,6 +760,80 @@ def _build_table_structured_result(question: str, data_rows: list[dict]) -> dict
     return base
 
 
+def _sheet_month_label(item: dict) -> str:
+    sheet = _clean(item.get("sheet_name") or "")
+    match = re.search(r"(20\d{2})(\d{2})", sheet)
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}"
+    match = re.search(r"(20\d{2})[-/](\d{1,2})", sheet)
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}"
+    return sheet or "未标明月份"
+
+
+def _comparison_key_values(item: dict, compact_question: str, select_columns: list[str]) -> dict[str, str]:
+    row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
+    semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
+    values: dict[str, str] = {}
+    for key in _focused_preview_columns(row, compact_question, select_columns, semantic_map):
+        if key in IDENTITY_TABLE_COLUMNS:
+            continue
+        value = _clean(row.get(key, ""))
+        if value:
+            values[str(key)] = value
+    if not values:
+        for key in PREFERRED_TABLE_PREVIEW_COLUMNS:
+            if key in IDENTITY_TABLE_COLUMNS:
+                continue
+            value = _clean(row.get(key, ""))
+            if value:
+                values[str(key)] = value
+    return values
+
+
+def _render_month_comparison(question: str, data_rows: list[dict], plan, select_columns: list[str]) -> list[str] | None:
+    compact_question = _compact(question)
+    if not data_rows or "," not in (plan.time_value or ""):
+        return None
+    if not any(term in compact_question for term in ("变化", "对比", "比较", "分别", "差异")):
+        return None
+    by_month: dict[str, dict] = {}
+    for item in data_rows:
+        label = _sheet_month_label(item)
+        by_month.setdefault(label, item)
+    if len(by_month) < 2:
+        return None
+
+    lines = [f"结论：已按月份对比 {len(by_month)} 条记录。"]
+    if plan.filters:
+        filter_text = format_filter_groups(plan.filter_groups, plan.filter_logic) or "；".join(format_filter_condition(item) for item in plan.filters)
+        if filter_text:
+            lines.append(f"条件：{filter_text}。")
+    lines.extend(["", "### 对比结果"])
+    month_values: dict[str, dict[str, str]] = {}
+    for month, item in sorted(by_month.items()):
+        values = _comparison_key_values(item, compact_question, select_columns)
+        month_values[month] = values
+        detail = " | ".join(f"{key}={value}" for key, value in values.items()) or "未找到可对比字段"
+        lines.append(f"- {month}：{detail}")
+
+    all_keys = list(dict.fromkeys(key for values in month_values.values() for key in values))
+    changed: list[str] = []
+    unchanged: list[str] = []
+    for key in all_keys:
+        observed = {values.get(key, "") for values in month_values.values()}
+        observed.discard("")
+        if len(observed) > 1:
+            changed.append(key)
+        elif observed:
+            unchanged.append(key)
+    if changed:
+        lines.append("变化字段：" + "、".join(changed) + "。")
+    elif unchanged:
+        lines.append("变化字段：未发现上述字段变化。")
+    return lines
+
+
 def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     compact_question = re.sub(r"\s+", "", question or "")
     plan = parse_table_query_plan(question, include_quoted_company=False)
@@ -640,6 +849,10 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     sort_by = plan.sort_by or "desc"
     explicit_limit = result_limit(question, default=0)
     count_unit = "家" if any(term in compact_question for term in ("公司", "分公司", "开设公司", "多少家")) else "条"
+    comparison_lines = _render_month_comparison(question, data_rows, plan, select_columns)
+    if comparison_lines:
+        return "\n".join(comparison_lines).strip()
+
     answer_data = _build_table_answer_data(
         data_rows,
         distinct_by=distinct_by,
@@ -665,13 +878,14 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
                 value = _first_alias_value(row, column, semantic_map)
                 if value:
                     parts.append(f"{COLUMN_LABELS.get(column, column)}={value}")
-        for key in PREFERRED_TABLE_PREVIEW_COLUMNS:
+        for key in _focused_preview_columns(row, compact_question, select_columns, semantic_map):
             value = _clean(row.get(key, ""))
             if value:
                 parts.append(f"{key}={value}")
         if not parts:
             parts = [f"{k}={_clean(v)}" for k, v in list(row.items())[:8] if _clean(v)]
-        return list(dict.fromkeys(parts))[:12]
+        limit = 18 if _focus_key_markers(compact_question) else 12
+        return list(dict.fromkeys(parts))[:limit]
 
     lines = []
     measure_label = COLUMN_LABELS.get(measure_column, measure_column or "指标")

@@ -7,6 +7,8 @@ from typing import Any
 CITY_TERMS = (
     "北京",
     "上海",
+    "广州",
+    "深圳",
     "成都",
     "宁波",
     "北仑",
@@ -17,6 +19,28 @@ CITY_TERMS = (
     "西安",
     "郑州",
     "石家庄",
+    "南京",
+    "苏州",
+    "武汉",
+    "天津",
+    "合肥",
+    "南昌",
+    "厦门",
+    "福州",
+    "青岛",
+    "济南",
+    "太原",
+    "沈阳",
+    "大连",
+    "长春",
+    "哈尔滨",
+    "昆明",
+    "贵阳",
+    "海口",
+    "三亚",
+    "兰州",
+    "乌鲁木齐",
+    "呼和浩特",
 )
 
 CITY_EQUIVALENTS: dict[str, tuple[str, ...]] = {
@@ -30,9 +54,19 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "city": ("城市", "所在城市", "地市", "地区", "省市"),
     "province": ("省份", "省", "所在省份"),
     "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称"),
-    "bank_account": ("银行账户",),
-    "social_account": ("社保公积金账户", "社保账户", "公积金账户"),
-    "fund_ratio": ("公积金比例", "比例"),
+    "bank_account": ("银行账户", "银行账户是否开具完成", "开户状态"),
+    "social_account": ("社保公积金账户", "社保账户", "公积金账户", "社保公积金账户是否开具完成"),
+    "fund_ratio": ("公积金比例", "补充公积金比例", "缴存比例", "比例"),
+    "remark": ("备注", "备注要求", "说明", "注意事项"),
+    "backend_contact": ("后道对接人", "对接人", "操作人", "办理人", "经办人"),
+    "social_rule": ("操作规则-社保", "社保操作规则", "社保规则"),
+    "medical_rule": ("操作规则-医保", "医保操作规则", "医保规则"),
+    "fund_rule": ("操作规则-公积金", "公积金操作规则", "公积金规则"),
+    "social_deadline": ("截止时间-社保", "社保截止时间", "社保截止", "社保派单截止"),
+    "medical_deadline": ("截止时间-医保", "医保截止时间", "医保截止", "医保派单截止"),
+    "fund_deadline": ("截止时间-公积金", "公积金截止时间", "公积金截止", "公积金派单截止"),
+    "social_payment_time": ("预计缴款时间-社保", "社保预计缴款时间", "社保缴款时间"),
+    "fund_payment_time": ("预计缴款时间-公积金", "公积金预计缴款时间", "公积金缴款时间"),
     "amount": ("缴费金额", "金额", "费用", "应缴金额", "实缴金额", "付款金额", "缴款金额"),
     "status": ("当前进度", "状态", "是否完成", "完成情况", "网点状态"),
 }
@@ -43,7 +77,17 @@ QUESTION_COLUMN_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("company", ("公司名称", "开设公司名称", "单位名称", "分公司", "网点")),
     ("bank_account", ("银行账户",)),
     ("social_account", ("社保公积金账户", "社保账户", "公积金账户")),
-    ("fund_ratio", ("公积金比例", "比例")),
+    ("fund_ratio", ("公积金比例", "补充公积金比例", "比例")),
+    ("remark", ("备注", "备注要求", "说明", "注意事项")),
+    ("backend_contact", ("后道对接人", "对接人", "操作人", "办理人", "经办人")),
+    ("social_rule", ("社保操作规则", "操作规则-社保")),
+    ("medical_rule", ("医保操作规则", "操作规则-医保")),
+    ("fund_rule", ("公积金操作规则", "操作规则-公积金")),
+    ("social_deadline", ("社保截止时间", "截止时间-社保")),
+    ("medical_deadline", ("医保截止时间", "截止时间-医保")),
+    ("fund_deadline", ("公积金截止时间", "截止时间-公积金")),
+    ("social_payment_time", ("社保预计缴款时间", "预计缴款时间-社保")),
+    ("fund_payment_time", ("公积金预计缴款时间", "预计缴款时间-公积金")),
     ("amount", ("缴费金额", "金额", "费用", "应缴金额", "实缴金额", "付款金额", "缴款金额")),
     ("status", ("当前进度", "状态", "是否完成", "完成情况", "网点状态")),
 )
@@ -55,6 +99,16 @@ COLUMN_LABELS = {
     "bank_account": "银行账户",
     "social_account": "社保公积金账户",
     "fund_ratio": "公积金比例",
+    "remark": "备注",
+    "backend_contact": "后道对接人",
+    "social_rule": "社保操作规则",
+    "medical_rule": "医保操作规则",
+    "fund_rule": "公积金操作规则",
+    "social_deadline": "社保截止时间",
+    "medical_deadline": "医保截止时间",
+    "fund_deadline": "公积金截止时间",
+    "social_payment_time": "社保预计缴款时间",
+    "fund_payment_time": "公积金预计缴款时间",
     "amount": "金额",
     "status": "状态",
 }
@@ -210,6 +264,10 @@ def is_branch_completion_query(question: str) -> bool:
     social_hit = any(term in text for term in ("社保公积金账户", "社保公积金", "社保账户", "公积金账户"))
     ratio_hit = any(term in text for term in ("公积金比例", "比例"))
     complete_hit = any(term in text for term in ("全部", "全都", "都", "完成", "开设完成", "开具完成"))
+    global_intent = any(term in text for term in ("多少", "几家", "几个", "哪些", "哪几", "列出", "名单", "清单", "统计", "全部分公司", "所有分公司", "各分公司"))
+    concrete_city_hit = any(city in text for city in CITY_TERMS)
+    if concrete_city_hit and not global_intent:
+        return False
     return branch_hit and bank_hit and social_hit and ratio_hit and complete_hit
 
 
@@ -224,6 +282,8 @@ _QUESTION_VALUE_WORDS = (
     "是多少？",
     "是什么",
     "是什么？",
+    "什么",
+    "什么？",
     "哪天",
     "哪天？",
     "几号",
@@ -243,12 +303,20 @@ def _is_question_value(value: str) -> bool:
     text = clean(value).strip(" ？?")
     if not text:
         return True
-    return text in {item.strip(" ？?") for item in _QUESTION_VALUE_WORDS}
+    normalized_words = {item.strip(" ？?") for item in _QUESTION_VALUE_WORDS}
+    if text in normalized_words:
+        return True
+    # “状态是什么？公积金比例...”这类疑问句里，“是/为”不是过滤操作符。
+    if text.startswith(("什么", "多少", "哪", "谁", "几", "是否", "是不是", "有没有", "有无")):
+        return True
+    if any(mark in text for mark in ("?", "？")) and any(word in text for word in normalized_words):
+        return True
+    return False
 
 
 def _normalize_filter(column: str, value: str = "", operator: str = "contains") -> dict[str, str]:
     normalized = {"column": column, "operator": operator}
-    cleaned_value = clean(value)
+    cleaned_value = clean(value).strip(" \t\r\n'\"‘’“”《》")
     if operator not in {"is_empty", "is_not_empty"}:
         normalized["value"] = cleaned_value
     return normalized
@@ -479,8 +547,6 @@ def metric_specs(question: str, aggregate_op: str = "", measure: str = "") -> li
 
 def query_operation(question: str, group_by: str = "", distinct_by: str = "", aggregate_op: str = "", metrics: list[dict[str, str]] | None = None, select_cols: list[str] | None = None) -> str:
     text = compact(question)
-    if select_cols and any(term in text for term in ("多少", "是什么", "是多少", "哪天", "几号", "什么时候", "谁", "哪位")):
-        return "retrieve"
     if group_by and metrics and len(metrics) > 1:
         return "multi_metric_group"
     if aggregate_op:
@@ -489,6 +555,8 @@ def query_operation(question: str, group_by: str = "", distinct_by: str = "", ag
         return "group_count"
     if distinct_by:
         return "distinct_count" if any(term in text for term in ("多少", "几个", "几家")) else "distinct_list"
+    if select_cols and any(term in text for term in ("多少", "是什么", "是多少", "哪天", "几号", "什么时候", "谁", "哪位")):
+        return "retrieve"
     if any(term in text for term in ("列出", "清单", "名单", "明细", "有哪些", "哪些")):
         return "list"
     if any(term in text for term in ("多少", "几个", "几家", "统计", "汇总", "总数", "数量")):
@@ -522,27 +590,50 @@ def result_limit(question: str, default: int = 20) -> int:
 
 def time_dimension(question: str) -> tuple[str, str, list[str]]:
     text = clean(question)
-    matches = re.findall(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", text)
-    matches.extend(re.findall(r"(20\d{2})\s*[-/]\s*(\d{1,2})", text))
     compact_text = compact(text)
-    for token in re.findall(r"(20\d{2})(\d{2})", compact_text):
-        matches.append(token)
+    matches: list[tuple[str, str]] = []
+
+    def add_match(year: str, month: str) -> None:
+        try:
+            month_no = int(month)
+        except ValueError:
+            return
+        if 1 <= month_no <= 12 and (year, str(month_no)) not in matches:
+            matches.append((year, str(month_no)))
+
+    for year, month in re.findall(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", text):
+        add_match(year, month)
+    for year, month in re.findall(r"(20\d{2})\s*[-/]\s*(\d{1,2})", text):
+        add_match(year, month)
+    for year, month in re.findall(r"(20\d{2})(\d{2})", compact_text):
+        add_match(year, month)
+
+    # 支持“2025年10月和11月”“2025年10、11月”这类省略年份的多月份对比问法。
+    anchor_year = matches[0][0] if matches else ""
+    if anchor_year:
+        explicit_months = {int(month) for _year, month in matches}
+        for month in re.findall(r"(?<!\d)(\d{1,2})\s*月", text):
+            month_no = int(month)
+            if 1 <= month_no <= 12 and month_no not in explicit_months:
+                add_match(anchor_year, str(month_no))
+                explicit_months.add(month_no)
+        for month in re.findall(r"(?:和|与|、|,|，)(\d{1,2})(?=月|的|和|与|、|,|，)", text):
+            month_no = int(month)
+            if 1 <= month_no <= 12 and month_no not in explicit_months:
+                add_match(anchor_year, str(month_no))
+                explicit_months.add(month_no)
+
     if not matches:
         return "", "", []
-    year, month = matches[0]
-    month_no = int(month)
-    value = f"{year}-{month_no:02d}"
-    tokens = list(
-        dict.fromkeys(
-            [
-                f"{year}{month_no:02d}",
-                value,
-                f"{year}年{month_no}月",
-                f"{year}年{month_no:02d}月",
-            ]
-        )
-    )
-    return "month", value, tokens
+
+    values: list[str] = []
+    tokens: list[str] = []
+    for year, month in matches:
+        month_no = int(month)
+        value = f"{year}-{month_no:02d}"
+        values.append(value)
+        tokens.extend([f"{year}{month_no:02d}", value, f"{year}年{month_no}月", f"{year}年{month_no:02d}月"])
+    return "month", ",".join(dict.fromkeys(values)), list(dict.fromkeys(tokens))
 
 
 def format_filter_condition(item: dict[str, Any]) -> str:

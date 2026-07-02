@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from ..table_query import is_table_query
 from .schemas import QueryAnalysis
 
 TABLE_STAT_TERMS = (
@@ -24,6 +25,9 @@ TABLE_STAT_TERMS = (
     "是否",
     "有没有",
     "有无",
+    "是什么",
+    "是多少",
+    "分别是",
     "开具完成",
     "开好",
     "完成了吗",
@@ -56,6 +60,9 @@ TABLE_OBJECT_TERMS = (
     "社保公积金账户",
     "当前进度",
     "比例",
+    "补充公积金比例",
+    "备注",
+    "备注要求",
     "派单",
     "截止时间",
     "时间表",
@@ -118,6 +125,13 @@ NON_TABLE_PROCESS_TERMS = (
     "劳动合同",
     "合同流程",
     "操作指南",
+    # 页面/模块/注册指南类问题应走文本检索，不应被“列出/哪些/列”误判为表格。
+    "注册页",
+    "页面",
+    "模块",
+    "主要模块",
+    "个人注册",
+    "平台注册",
 )
 
 
@@ -204,7 +218,8 @@ def analyze_query(query: str) -> QueryAnalysis:
     # Table questions require both an operation signal and a table/business object
     # signal. This prevents standalone editing prompts such as “把内容整理成表格”
     # from entering knowledge retrieval; chat_api already filters those earlier.
-    if table_object_hits and (table_stat_hits or time_filters) and not non_table_process_hits:
+    table_query_fallback = is_table_query(text)
+    if table_object_hits and (table_stat_hits or time_filters or table_query_fallback) and not non_table_process_hits:
         reasons.append(f"table_terms:{','.join((table_object_hits + table_stat_hits)[:6])}")
         return QueryAnalysis(
             query=text,
