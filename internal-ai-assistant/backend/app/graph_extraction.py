@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from typing import Any
 
 from openai import OpenAI
@@ -148,6 +149,142 @@ def extract_graph_from_table_text(document_title: str, chunk_text: str) -> dict:
     return {"entities": entities, "relations": relations}
 
 
+def _merge_graph_payloads(*payloads: dict) -> dict:
+    entities: list[dict] = []
+    relations: list[dict] = []
+    seen_entities: set[tuple[str, str]] = set()
+    seen_relations: set[tuple[str, str, str, str]] = set()
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for item in payload.get("entities") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            entity_type = normalize_entity_type(item.get("type") or item.get("entity_type"))
+            key = (name, entity_type)
+            if not name or key in seen_entities:
+                continue
+            seen_entities.add(key)
+            merged = dict(item)
+            merged["type"] = entity_type
+            entities.append(merged)
+        for item in payload.get("relations") or []:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or item.get("source_entity") or "").strip()
+            target = str(item.get("target") or item.get("target_entity") or "").strip()
+            relation_type = normalize_relation_type(item.get("relation_type") or item.get("type"))
+            evidence = str(item.get("evidence") or item.get("evidence_text") or "").strip()
+            key = (source, target, relation_type, evidence[:120])
+            if not source or not target or source == target or key in seen_relations:
+                continue
+            seen_relations.add(key)
+            merged = dict(item)
+            merged["source"] = source
+            merged["target"] = target
+            merged["relation_type"] = relation_type
+            relations.append(merged)
+    return {"entities": entities, "relations": relations}
+
+
+def extract_graph_from_process_text(document_title: str, chunk_text: str) -> dict:
+    """Deterministic graph extraction for common process/work-order text.
+
+    PDF OCR often uses compatibility characters such as ⼯/⼊, and local installs may
+    not have a graph LLM key configured. These conservative rules only extract
+    explicit workflow relations already present in the text, then the LLM payload
+    can still be merged on top when configured.
+    """
+    text = unicodedata.normalize("NFKC", " ".join(str(chunk_text or "").split()))
+    entities: list[dict] = []
+    relations: list[dict] = []
+    seen_entities: set[tuple[str, str]] = set()
+    seen_relations: set[tuple[str, str, str]] = set()
+
+    def add_entity(name: str, entity_type: str, description: str = "") -> None:
+        clean = str(name or "").strip()
+        normalized_type = normalize_entity_type(entity_type)
+        if not clean:
+            return
+        key = (clean, normalized_type)
+        if key in seen_entities:
+            return
+        seen_entities.add(key)
+        entities.append({"name": clean, "type": normalized_type, "description": description, "confidence": 0.92})
+
+    def add_relation(source: str, target: str, relation_type: str, evidence: str, description: str = "") -> None:
+        clean_source = str(source or "").strip()
+        clean_target = str(target or "").strip()
+        normalized_type = normalize_relation_type(relation_type)
+        if not clean_source or not clean_target or clean_source == clean_target:
+            return
+        key = (clean_source, clean_target, normalized_type)
+        if key in seen_relations:
+            return
+        seen_relations.add(key)
+        relations.append({
+            "source": clean_source,
+            "target": clean_target,
+            "relation_type": normalized_type,
+            "evidence": evidence[:1200],
+            "confidence": 0.9,
+            "description": description,
+        })
+
+    def snippet(*markers: str) -> str:
+        positions = [text.find(marker) for marker in markers if marker and text.find(marker) >= 0]
+        if not positions:
+            return text[:1200]
+        start = max(0, min(positions) - 80)
+        return text[start : start + 1200]
+
+    add_entity("工单系统", "system", document_title)
+
+    if "后道交付团队" in text and ("待办工单" in text or "材料附件" in text or "回写" in text):
+        evidence = snippet("后道交付团队", "待办工单", "材料附件", "回写")
+        add_entity("后道交付团队", "role", "可查询、导出并回写工单交付结果")
+        for target, entity_type, desc in [
+            ("待办工单", "task", "后道交付团队可查询的待办任务"),
+            ("信息表单", "form", "办理所需的对应信息表单"),
+            ("材料附件", "document", "办理所需的相关材料附件"),
+            ("进度反馈", "action", "交付结果回写至系统进行进度反馈"),
+        ]:
+            add_entity(target, entity_type, desc)
+        add_relation("后道交付团队", "工单系统", "uses_system", evidence, "后道交付团队登录工单系统办理业务")
+        add_relation("后道交付团队", "待办工单", "requires", evidence, "后道交付团队查询待办工单")
+        add_relation("后道交付团队", "信息表单", "requires", evidence, "后道交付团队导出办理所需信息表单")
+        add_relation("后道交付团队", "材料附件", "requires", evidence, "后道交付团队导出办理所需材料附件")
+        add_relation("后道交付团队", "进度反馈", "has_step", evidence, "交付结果回写至系统进行进度反馈")
+
+    if "入职" in text and "分别派出" in text and "报岗集约录入" in text:
+        evidence = snippet("分别派出", "报岗集约录入")
+        add_entity("入职管理", "process", "入职场景工单流程")
+        add_entity("后道交付团队", "role", "接收入职相关工单的后道职能模块")
+        for task in ("劳动合同签订", "入职联系", "商保投保", "报岗集约录入"):
+            add_entity(task, "task", "入职场景派出的工单")
+            add_relation("入职管理", task, "has_step", evidence, f"入职管理派出{task}工单")
+            add_relation("工单系统", task, "triggers", evidence, f"工单系统派出{task}工单")
+            add_relation(task, "后道交付团队", "handled_by", evidence, f"{task}传导至后道交付团队职能模块")
+
+    if "劳动合同续签" in text and "合同组" in text:
+        evidence = snippet("劳动合同续签", "合同组", "进度反馈")
+        add_entity("劳动合同续签", "process", "在职管理中的劳动合同续签流程")
+        add_entity("合同组", "role", "接收续签数据并线下交付")
+        add_entity("进度反馈", "action", "交付完成后反馈进度")
+        add_relation("劳动合同续签", "合同组", "handled_by", evidence, "续签数据传导至合同组")
+        add_relation("合同组", "进度反馈", "has_step", evidence, "合同组完成交付后反馈进度")
+
+    if "待遇申报" in text and ("退回业务员" in text or "用印申请" in text):
+        evidence = snippet("待遇申报", "退回业务员", "用印申请")
+        add_entity("待遇申报", "process", "在职管理中的待遇申报流程")
+        for action in ("退回业务员修改补充", "材料用印申请", "进度反馈"):
+            add_entity(action, "action", "待遇申报流程动作")
+            add_relation("待遇申报", action, "has_step", evidence, f"待遇申报包含{action}")
+
+    return {"entities": entities, "relations": relations}
+
+
 def _looks_like_table_chunk(text: str) -> bool:
     value = str(text or "")
     return "表格行 |" in value and ("截止时间-" in value or "操作规则-" in value or "工作表=" in value)
@@ -249,7 +386,13 @@ def extract_graph_for_document(db: Session, document_id: str) -> dict:
             if _looks_like_table_chunk(text):
                 payload = extract_graph_from_table_text(doc.title, text)
             else:
-                payload = extract_graph_from_text(doc.title, text, cfg)
+                deterministic_payload = extract_graph_from_process_text(doc.title, text)
+                if cfg.get("api_key"):
+                    payload = _merge_graph_payloads(deterministic_payload, extract_graph_from_text(doc.title, text, cfg))
+                else:
+                    payload = deterministic_payload
+                    if not payload.get("entities") and not payload.get("relations"):
+                        raise ValueError("未配置模型 API Key，且该切片没有命中确定性图谱抽取规则")
             e_count, r_count, p_count = _save_chunk_graph(db, doc, chunk, payload)
             total_entities += e_count
             total_relations += r_count
