@@ -297,15 +297,35 @@ def _score_document(question: str, doc: Document, sample_rows: list[DocumentTabl
     return round(min(score, 1.0), 4)
 
 
+def _document_has_matching_month_sheet(db: Session, document_id: str, month_tokens: list[str]) -> bool:
+    if not month_tokens:
+        return False
+    sheet_names = db.execute(
+        select(DocumentTableRow.sheet_name)
+        .where(DocumentTableRow.document_id == document_id)
+        .distinct()
+    ).scalars().all()
+    for sheet_name in sheet_names:
+        sheet = _clean(sheet_name)
+        if sheet and any(token == sheet or token in sheet or sheet in token for token in month_tokens):
+            return True
+    return False
+
+
 def select_table_documents(db: Session, question: str, user: User, limit: int = 3, document_ids: list[str] | None = None) -> list[Document]:
     docs = accessible_table_documents(db, user, document_ids=document_ids)
     if not docs:
         return []
     scored: list[tuple[float, Document]] = []
+    month_tokens = _month_tokens(question)
     for doc in docs:
         sample_rows = _sample_rows(db, doc.id, limit=6)
         score = _score_document(question, doc, sample_rows)
-        scored.append((score, doc))
+        # Multi-sheet Excel files may contain the requested month in a later sheet;
+        # don't let a small leading-row sample discard the whole document before row-level filtering.
+        if _document_has_matching_month_sheet(db, str(doc.id), month_tokens):
+            score += 0.5
+        scored.append((min(score, 1.0), doc))
     scored.sort(key=lambda item: (item[0], item[1].created_at), reverse=True)
     min_score = 0.45
     selected = [doc for score, doc in scored if score >= min_score][: max(1, min(limit, 5))]

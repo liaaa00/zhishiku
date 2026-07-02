@@ -88,6 +88,14 @@ def main() -> None:
         db.add_all([user, dispatch_doc, progress_doc, text_doc])
         db.add_all(
             [
+                # Keep several earlier-sheet rows before the target 202512 row. This guards against
+                # document prefiltering that only samples leading rows and misses later month sheets.
+                _row("doc-dispatch", "early-202510-1", "202510", 1, {"省份": "浙江", "城市": "杭州", "单位名称": "杭州分公司", "截止时间-社保": "20号"}),
+                _row("doc-dispatch", "early-202510-2", "202510", 2, {"省份": "浙江", "城市": "宁波", "单位名称": "宁波分公司", "截止时间-社保": "20号"}),
+                _row("doc-dispatch", "early-202510-3", "202510", 3, {"省份": "广东", "城市": "深圳", "单位名称": "深圳分公司", "截止时间-社保": "20号"}),
+                _row("doc-dispatch", "early-202510-4", "202510", 4, {"省份": "上海", "城市": "上海", "单位名称": "上海分公司", "截止时间-社保": "20号"}),
+                _row("doc-dispatch", "early-202510-5", "202510", 5, {"省份": "四川", "城市": "成都", "单位名称": "成都分公司", "截止时间-社保": "20号"}),
+                _row("doc-dispatch", "early-202510-6", "202510", 6, {"省份": "河南", "城市": "郑州", "单位名称": "郑州分公司", "截止时间-社保": "20号"}),
                 _row("doc-dispatch", "bj-202512", "202512", 7, {
                     "省份": "北京",
                     "城市": "北京",
