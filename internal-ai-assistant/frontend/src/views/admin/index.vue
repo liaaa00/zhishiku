@@ -935,21 +935,35 @@
           <section class="admin-graph-visual-card">
             <div class="admin-graph-visual-head">
               <div>
-                <h4>图谱关系视图</h4>
-                <p>展示已生成的实体关系，便于确认图谱是否真的构建成功。</p>
+                <h4>图谱关系鸟瞰</h4>
+                <p>借鉴力导向图展示方式：节点大小表示连接数，颜色表示实体类型；点击节点可查看关联证据。</p>
               </div>
-              <span>{{ graphPreviewRelations.length }} 条样例关系</span>
+              <span>{{ graphNetworkData.nodes.length }} 个实体 · {{ graphNetworkData.links.length }} 条关系</span>
             </div>
-            <div v-if="graphPreviewRelations.length" class="admin-graph-edge-list">
-              <article v-for="relation in graphPreviewRelations.slice(0, 24)" :key="relation.id" class="admin-graph-edge-card">
-                <div class="admin-graph-edge-line">
-                  <span class="admin-graph-node source">{{ relation.source_entity_name }}</span>
-                  <span class="admin-graph-relation">{{ relation.relation_type }}</span>
-                  <span class="admin-graph-node target">{{ relation.target_entity_name }}</span>
+            <div v-if="graphVisibleRelations.length" class="admin-graph-network-layout">
+              <div class="admin-graph-network-wrap">
+                <div ref="graphChartRef" class="admin-graph-network" aria-label="知识图谱关系网络"></div>
+                <div class="admin-graph-network-help">可滚轮缩放、拖拽画布和节点；悬浮关系线查看来源文档与置信度。</div>
+              </div>
+              <aside class="admin-graph-inspector">
+                <div class="admin-graph-inspector-head">
+                  <span>{{ graphSelectedNodeName ? '节点证据' : '近期关系证据' }}</span>
+                  <button v-if="graphSelectedNodeName" type="button" @click="graphSelectedNode = ''">清除选择</button>
                 </div>
-                <p>{{ relation.evidence_text || relation.description || '暂无证据文本' }}</p>
-                <small>{{ relation.source_document_title || relation.source_document_filename || '未知文档' }} · {{ graphRelationStatusLabel(relation.status) }} · 置信度 {{ formatRetrievalScore(relation.confidence) }}</small>
-              </article>
+                <strong>{{ graphSelectedNodeName || '未选择节点' }}</strong>
+                <p>{{ graphSelectedNodeName ? '以下是该实体直接关联的来源证据。' : '点击左侧节点后，这里会聚焦展示该实体的来源证据。' }}</p>
+                <div class="admin-graph-inspector-list">
+                  <article v-for="relation in graphSelectedRelations" :key="relation.id" class="admin-graph-inspector-item">
+                    <div>
+                      <span>{{ relation.source_entity_name }}</span>
+                      <em>{{ relation.relation_type }}</em>
+                      <span>{{ relation.target_entity_name }}</span>
+                    </div>
+                    <p>{{ relation.evidence_text || relation.description || '暂无证据文本' }}</p>
+                    <small>{{ relation.source_document_title || relation.source_document_filename || '未知文档' }} · {{ graphRelationStatusLabel(relation.status) }} · 置信度 {{ formatRetrievalScore(relation.confidence) }}</small>
+                  </article>
+                </div>
+              </aside>
             </div>
             <div v-else-if="!loadingGraph" class="admin-dialog-empty">还没有可展示的图谱关系。请先选择文档重建图谱，完成后这里会显示实体关系。</div>
           </section>
@@ -1285,9 +1299,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import * as echarts from 'echarts/core'
+import { GraphChart } from 'echarts/charts'
+import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import type { ECharts, EChartsOption } from 'echarts/core'
 import http from '../../api'
+
+echarts.use([GraphChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 
 
 const groups = ref<any[]>([])
@@ -1311,6 +1332,8 @@ const graphOverview = ref<any | null>(null)
 const graphDocuments = ref<any[]>([])
 const graphRelations = ref<any[]>([])
 const graphPreviewRelations = ref<any[]>([])
+const graphChartRef = ref<HTMLDivElement | null>(null)
+const graphSelectedNode = ref<string>('')
 const graphSearchResult = ref<any | null>(null)
 const documentQualityMap = ref<Record<string, any>>({})
 const docGroupMap = reactive<Record<string, string[]>>({})
@@ -1392,6 +1415,8 @@ const taskPolling = ref(false)
 const taskLastRefreshAt = ref<Date | null>(null)
 let statusPollTimer: number | null = null
 let taskPollTimer: number | null = null
+let graphChart: ECharts | null = null
+let graphResizeObserver: ResizeObserver | null = null
 let statusPollDeadline = 0
 const STATUS_POLL_INTERVAL_MS = 3000
 const STATUS_POLL_TIMEOUT_MS = 5 * 60 * 1000
@@ -1453,6 +1478,80 @@ const feedbackCompareSummary = computed(() => {
 const evaluationCases = computed(() => Array.isArray(evaluationOverview.value?.cases) ? evaluationOverview.value.cases : [])
 const evaluationCaseSources = computed(() => Array.isArray(evaluationCaseResult.value?.source_diagnostics) ? evaluationCaseResult.value.source_diagnostics : [])
 const graphSearchContexts = computed(() => Array.isArray(graphSearchResult.value?.contexts) ? graphSearchResult.value.contexts : [])
+const graphVisibleRelations = computed(() => graphPreviewRelations.value.filter((item: any) => item?.status !== 'ignored'))
+const graphTypePalette = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#dc2626', '#0891b2', '#4f46e5', '#65a30d']
+const graphEntityTypeCategories = computed(() => {
+  const seen: Record<string, boolean> = {}
+  const categories: Array<{ name: string; itemStyle: { color: string } }> = []
+  graphVisibleRelations.value.forEach((relation: any) => {
+    ;[relation?.source_entity_type, relation?.target_entity_type].forEach((rawType: any) => {
+      const name = graphEntityTypeLabel(rawType)
+      if (seen[name]) return
+      seen[name] = true
+      categories.push({ name, itemStyle: { color: graphTypePalette[(categories.length) % graphTypePalette.length] } })
+    })
+  })
+  return categories.length ? categories : [{ name: '实体', itemStyle: { color: graphTypePalette[0] } }]
+})
+const graphNetworkData = computed(() => {
+  const degree: Record<string, number> = {}
+  graphVisibleRelations.value.forEach((relation: any) => {
+    const source = graphEntityKey(relation, 'source')
+    const target = graphEntityKey(relation, 'target')
+    if (!source || !target) return
+    degree[source] = (degree[source] || 0) + 1
+    degree[target] = (degree[target] || 0) + 1
+  })
+
+  const nodeMap: Record<string, any> = {}
+  const links: any[] = []
+  graphVisibleRelations.value.forEach((relation: any) => {
+    const source = graphEntityKey(relation, 'source')
+    const target = graphEntityKey(relation, 'target')
+    if (!source || !target) return
+    const sourceName = String(relation?.source_entity_name || '未命名实体')
+    const targetName = String(relation?.target_entity_name || '未命名实体')
+    const sourceType = graphEntityTypeLabel(relation?.source_entity_type)
+    const targetType = graphEntityTypeLabel(relation?.target_entity_type)
+    nodeMap[source] = nodeMap[source] || {
+      id: source,
+      name: sourceName,
+      category: sourceType,
+      value: degree[source] || 1,
+      symbolSize: graphNodeSize(degree[source] || 1),
+      draggable: true,
+    }
+    nodeMap[target] = nodeMap[target] || {
+      id: target,
+      name: targetName,
+      category: targetType,
+      value: degree[target] || 1,
+      symbolSize: graphNodeSize(degree[target] || 1),
+      draggable: true,
+    }
+    links.push({
+      id: String(relation?.id || `${source}-${target}-${links.length}`),
+      source,
+      target,
+      name: relation?.relation_type || '关联',
+      value: relation?.confidence || 0,
+      relation,
+      lineStyle: { width: graphRelationWidth(relation?.confidence), opacity: relation?.status === 'pending' ? 0.48 : 0.72 },
+    })
+  })
+  return { nodes: Object.values(nodeMap), links }
+})
+const graphSelectedRelations = computed(() => {
+  const selected = graphSelectedNode.value
+  if (!selected) return graphVisibleRelations.value.slice(0, 6)
+  return graphVisibleRelations.value.filter((relation: any) => graphEntityKey(relation, 'source') === selected || graphEntityKey(relation, 'target') === selected).slice(0, 8)
+})
+const graphSelectedNodeName = computed(() => {
+  const selected = graphSelectedNode.value
+  if (!selected) return ''
+  const node = graphNetworkData.value.nodes.find((item: any) => item.id === selected)
+  return node?.name || ''
+})
 const graphRecentTaskByDoc = computed(() => {
   const result: Record<string, any> = {}
   tasks.value.forEach((task: any) => {
@@ -1944,6 +2043,43 @@ function taskTypeLabel(type?: string) {
   return ({ document_parse: '文档解析', document_reparse: '重新解析', chat_attachment_parse: '聊天附件解析', page_index: '高级索引', page_index_rebuild: '重建高级索引', graph_extract: '图谱抽取', graph_rebuild: '重建图谱', ocr: 'OCR 识别' } as Record<string, string>)[String(type || '')] || type || '后台任务'
 }
 
+function graphEntityKey(relation: any, role: 'source' | 'target') {
+  const id = relation?.[`${role}_entity_id`]
+  const name = relation?.[`${role}_entity_name`]
+  return String(id || name || '').trim()
+}
+
+function graphEntityTypeLabel(type?: string) {
+  const value = normalizeText(type || 'entity')
+  return ({
+    person: '人员',
+    user: '人员',
+    employee: '员工',
+    department: '部门',
+    group: '岗位组',
+    role: '角色',
+    document: '文档',
+    policy: '制度',
+    process: '流程',
+    task: '任务',
+    system: '系统',
+    entity: '实体',
+  } as Record<string, string>)[value] || type || '实体'
+}
+
+function graphNodeSize(degree: number) {
+  return Math.max(24, Math.min(62, 22 + Math.sqrt(Math.max(degree, 1)) * 9))
+}
+
+function graphRelationWidth(confidence?: number) {
+  const value = Number(confidence || 0)
+  return Math.max(1, Math.min(4, 1 + value * 3))
+}
+
+function escapeHtml(value: any) {
+  return String(value || '').replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as Record<string, string>)[char] || char)
+}
+
 function graphStatusKind(status?: string): TaskStatusFilter {
   const value = normalizeText(status || 'not_started')
   if (value === 'processing') return 'running'
@@ -2206,7 +2342,16 @@ async function pollTasks() {
 
 function jumpToTab(name: string) {
   adminTabIndex.value = name
+  if (name === 'graph') renderGraphChart()
 }
+
+watch(adminTabIndex, (name) => {
+  if (name === 'graph') renderGraphChart()
+})
+
+watch(graphVisibleRelations, () => {
+  if (adminTabIndex.value === 'graph') renderGraphChart()
+})
 
 async function loadPageIndexStatus() {
   try {
@@ -2458,6 +2603,103 @@ async function loadEvaluationOverview(showMessage = true) {
   }
 }
 
+function initGraphChart() {
+  if (!graphChartRef.value) return null
+  if (!graphChart) {
+    graphChart = echarts.init(graphChartRef.value)
+    graphChart.on('click', (params: any) => {
+      if (params?.dataType === 'node' && params?.data?.id) {
+        graphSelectedNode.value = graphSelectedNode.value === params.data.id ? '' : params.data.id
+      }
+    })
+    graphResizeObserver = new ResizeObserver(() => graphChart?.resize())
+    graphResizeObserver.observe(graphChartRef.value)
+  }
+  return graphChart
+}
+
+function renderGraphChart() {
+  nextTick(() => {
+    if (adminTabIndex.value !== 'graph' || !graphVisibleRelations.value.length) return
+    const chart = initGraphChart()
+    if (!chart) return
+    const data = graphNetworkData.value
+    const option: EChartsOption = {
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'item',
+        confine: true,
+        formatter: (params: any) => {
+          if (params.dataType === 'edge') {
+            const relation = params.data?.relation || {}
+            return `<div class="admin-graph-tooltip"><strong>${escapeHtml(relation.relation_type || '关联')}</strong><br/>${escapeHtml(relation.source_entity_name)} → ${escapeHtml(relation.target_entity_name)}<br/><small>${escapeHtml(relation.source_document_title || relation.source_document_filename || '未知文档')} · ${escapeHtml(graphRelationStatusLabel(relation.status))} · 置信度 ${escapeHtml(formatRetrievalScore(relation.confidence))}</small></div>`
+          }
+          return `<div class="admin-graph-tooltip"><strong>${escapeHtml(params.data?.name || '实体')}</strong><br/><small>${escapeHtml(params.data?.category || '实体')} · 连接 ${escapeHtml(params.data?.value || 0)}</small></div>`
+        },
+      },
+      legend: [{
+        top: 0,
+        left: 0,
+        itemWidth: 10,
+        itemHeight: 10,
+        textStyle: { color: '#475569', fontSize: 11 },
+        data: graphEntityTypeCategories.value.map((item) => item.name),
+      }],
+      series: [{
+        type: 'graph',
+        layout: 'force',
+        roam: true,
+        draggable: true,
+        top: 34,
+        bottom: 12,
+        left: 8,
+        right: 8,
+        data: data.nodes,
+        links: data.links,
+        categories: graphEntityTypeCategories.value,
+        edgeSymbol: ['none', 'arrow'],
+        edgeSymbolSize: 7,
+        label: {
+          show: true,
+          position: 'right',
+          formatter: '{b}',
+          color: '#1f2937',
+          fontSize: 11,
+        },
+        edgeLabel: {
+          show: true,
+          formatter: '{b}',
+          color: '#64748b',
+          fontSize: 10,
+        },
+        force: {
+          repulsion: 180,
+          edgeLength: [70, 150],
+          gravity: 0.08,
+          friction: 0.35,
+        },
+        emphasis: {
+          focus: 'adjacency',
+          lineStyle: { width: 4 },
+        },
+        lineStyle: {
+          color: '#94a3b8',
+          curveness: 0.18,
+        },
+      }],
+    }
+    chart.setOption(option, true)
+    graphChart?.resize()
+  })
+}
+
+function disposeGraphChart() {
+  graphResizeObserver?.disconnect()
+  graphResizeObserver = null
+  graphChart?.dispose()
+  graphChart = null
+}
+
 async function loadGraphData(showMessage = true) {
   loadingGraph.value = true
   try {
@@ -2471,6 +2713,8 @@ async function loadGraphData(showMessage = true) {
     graphDocuments.value = docsResp.data || []
     graphRelations.value = pendingRelationsResp.data || []
     graphPreviewRelations.value = (previewRelationsResp.data || []).filter((item: any) => item?.status !== 'ignored')
+    if (!graphVisibleRelations.value.length) graphSelectedNode.value = ''
+    renderGraphChart()
     if (showMessage) ElMessage.success('图谱数据已刷新')
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || '加载图谱数据失败')
@@ -3060,6 +3304,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopStatusPolling()
   stopTaskPolling()
+  disposeGraphChart()
   document.documentElement.classList.remove('admin-scroll-page')
   document.body.classList.remove('admin-scroll-page')
 })
