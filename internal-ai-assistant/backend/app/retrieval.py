@@ -430,7 +430,7 @@ def score_context_for_query_profile(profile: dict, context: dict) -> dict:
             topic_penalty += 0.20
             negative.append("topic_mismatch:employee_esign")
         if _is_form_like_context(context):
-            topic_penalty += 0.18
+            topic_penalty += 0.34
             negative.append("topic_mismatch:form")
     elif topic == "workorder":
         positive.extend((title_workorder_hits or workorder_specific_hits or workorder_hits)[:6])
@@ -460,19 +460,32 @@ def score_context_for_query_profile(profile: dict, context: dict) -> dict:
             topic_penalty += 0.42
             negative.append("topic_mismatch:workorder")
         if _is_form_like_context(context):
-            topic_penalty += 0.18
+            topic_penalty += 0.34
             negative.append("topic_mismatch:form")
     elif topic == "form_fields":
-        positive.extend((title_form_hits or form_hits)[:5])
+        form_like = _is_form_like_context(context)
+        weak_form_hits = {"字段", "表格"}
+        strong_form_hits = [hit for hit in form_hits if hit not in weak_form_hits]
+        has_strong_form_evidence = bool(title_form_hits or strong_form_hits)
+        workorder_mismatch_hits = workorder_hits or title_workorder_hits
+        employee_esign_mismatch_hits = employee_esign_hits or title_esign_hits
+        # “字段/表格”在需求文档里也很常见，只能作为弱命中；不能抵消明显的工单/电子签主题不匹配。
+        structural_form_evidence = form_like and not workorder_mismatch_hits and not employee_esign_mismatch_hits
+        positive.extend((title_form_hits or strong_form_hits or form_hits)[:5])
         if title_form_hits:
-            intent_score += 0.20
-        if form_hits or _is_form_like_context(context):
-            evidence_score += 0.14
-        if workorder_hits and not (form_hits or _is_form_like_context(context)):
-            topic_penalty += 0.28
+            intent_score += 0.28
+        if strong_form_hits:
+            evidence_score += min(0.24, len(strong_form_hits) * 0.06)
+        elif form_hits:
+            evidence_score += 0.04
+        if form_like and (has_strong_form_evidence or structural_form_evidence):
+            intent_score += 0.14
+            evidence_score += 0.20
+        if workorder_mismatch_hits and not has_strong_form_evidence:
+            topic_penalty += 0.72
             negative.append("topic_mismatch:workorder")
-        if employee_esign_hits and not (form_hits or _is_form_like_context(context)):
-            topic_penalty += 0.28
+        if employee_esign_mismatch_hits and not has_strong_form_evidence:
+            topic_penalty += 0.34
             negative.append("topic_mismatch:employee_esign")
 
     if profile.get("actor") == "internal":
@@ -533,7 +546,7 @@ def score_context_for_query_profile(profile: dict, context: dict) -> dict:
         "evidence_score": round(min(evidence_score, 0.36), 4),
         "conflict_penalty": round(min(conflict_penalty, 0.58), 4),
         "wrong_source_penalty": round(min(wrong_source_penalty, 0.42), 4),
-        "topic_penalty": round(min(topic_penalty, 0.5), 4),
+        "topic_penalty": round(min(topic_penalty, 0.85), 4),
         "topic": str(profile.get("topic") or "general"),
         "positive_signals": list(dict.fromkeys(positive))[:8],
         "negative_signals": list(dict.fromkeys(negative))[:8],
@@ -1108,6 +1121,7 @@ def rerank_contexts(question: str, contexts: list[dict], limit: int, profile: di
     per_doc_count: dict[str, int] = {}
     seen: set[tuple[str, str]] = set()
     pageindex_selected = 0
+    strict_topic = str(profile.get("topic") or "") in {"form_fields", "employee_portal", "employee_esign"}
     # First pass: keep diversity and prefer at most a few contexts from the same document.
     # Do not let very weak topic-mismatch items enter early just to satisfy diversity;
     # they may be used only as last-resort filler below.
@@ -1117,7 +1131,7 @@ def rerank_contexts(question: str, contexts: list[dict], limit: int, profile: di
         if not doc_id or key in seen:
             continue
         ranking = context.get("intent_ranking") or {}
-        if _safe_float(ranking.get("topic_penalty"), 0.0) >= 0.28 and score < 0.45:
+        if _safe_float(ranking.get("topic_penalty"), 0.0) >= 0.28 and (score < 0.45 or strict_topic):
             continue
         if per_doc_count.get(doc_id, 0) >= 3:
             continue
@@ -1132,10 +1146,16 @@ def rerank_contexts(question: str, contexts: list[dict], limit: int, profile: di
             break
 
     # Second pass: if diversity filtering made the result too small, fill with next best items.
-    if len(selected) < min(ADAPTIVE_FINAL_CONTEXT_MIN, limit):
+    # For strong topic queries, do not re-introduce severe topic-mismatch noise merely to pad Top-N.
+    min_fill = min(ADAPTIVE_FINAL_CONTEXT_MIN, limit)
+    enough_strict_evidence = strict_topic and len(selected) >= 3
+    if len(selected) < min_fill:
         for score, _idx, context in scored:
             key = _context_key(context)
             if not key[0] or key in seen:
+                continue
+            ranking = context.get("intent_ranking") or {}
+            if enough_strict_evidence and _safe_float(ranking.get("topic_penalty"), 0.0) >= 0.28:
                 continue
             context = dict(context)
             context["rerank_score"] = round(score, 4)
@@ -1143,7 +1163,7 @@ def rerank_contexts(question: str, contexts: list[dict], limit: int, profile: di
             seen.add(key)
             if context.get("pageindex_source"):
                 pageindex_selected += 1
-            if len(selected) >= min(ADAPTIVE_FINAL_CONTEXT_MIN, limit):
+            if len(selected) >= min_fill:
                 break
     return selected[:limit], pageindex_selected
 

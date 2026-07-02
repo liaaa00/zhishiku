@@ -156,6 +156,9 @@
         "top_n_must_match_titles": [
           "微助手"
         ],
+        "top_n_must_not_match_titles": [
+          "入职人员信息表"
+        ],
         "must_match_contexts": [
           [
             "身份认证"
@@ -277,6 +280,9 @@
         "top_n": 5,
         "top_n_must_match_titles": [
           "入职人员信息表"
+        ],
+        "top_n_must_not_match_titles": [
+          "工单系统"
         ],
         "must_match_contexts": [
           [
