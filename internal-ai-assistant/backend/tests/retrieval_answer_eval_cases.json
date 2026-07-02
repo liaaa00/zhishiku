@@ -1,0 +1,285 @@
+{
+  "version": 1,
+  "description": "固定答案评测集：同时检查检索证据、检索通道和本地可重复答案。默认使用隔离 fixture 数据库，不调用外部模型。",
+  "defaults": {
+    "top_k": 8,
+    "user_id": "eval-user"
+  },
+  "fixture": {
+    "admin": {
+      "id": "eval-admin",
+      "username": "eval_admin",
+      "password": "eval_admin_password"
+    },
+    "users": [
+      {
+        "id": "eval-user",
+        "username": "eval_user",
+        "password": "eval_user_password",
+        "groups": ["eval-group"]
+      }
+    ],
+    "groups": [
+      {
+        "id": "eval-group",
+        "name": "Eval Group"
+      }
+    ],
+    "documents": [
+      {
+        "id": "eval-doc-employee-esign",
+        "title": "员工服务操作说明2026",
+        "filename": "eval_employee_service_guide.txt",
+        "source_type": "txt",
+        "groups": ["eval-group"],
+        "chunks": [
+          "员工收到短信后，登录外服云或微助手进入员工服务入口，打开电子合同页面，核对劳动合同信息后点击签署。签署完成后系统提示完成。"
+        ]
+      },
+      {
+        "id": "eval-doc-micro-assistant",
+        "title": "外服云微助手注册登录流程",
+        "filename": "eval_micro_assistant_login.txt",
+        "source_type": "txt",
+        "groups": ["eval-group"],
+        "chunks": [
+          "微助手注册流程：员工先关注微助手，完成手机号验证和身份绑定，再进入员工服务入口办理劳动合同签署等事项。"
+        ]
+      },
+      {
+        "id": "eval-doc-workorder-process",
+        "title": "工单系统入职处理流程",
+        "filename": "eval_workorder_process.txt",
+        "source_type": "txt",
+        "groups": ["eval-group"],
+        "chunks": [
+          "工单系统在入职场景会派出劳动合同签订、入职联系、商保投保和报岗集约录入等工单。报岗集约录入由后道交付团队处理，处理完成后进行进度反馈。"
+        ]
+      },
+      {
+        "id": "eval-doc-dispatch-rules-202603",
+        "title": "202603派单规则截止时间表",
+        "filename": "eval_dispatch_rules_202603.xlsx",
+        "source_type": "xlsx",
+        "groups": ["eval-group"],
+        "chunks": [
+          "202603派单规则截止时间表：上海社保截止时间为2026-03-15，青岛派单规则需要青岛社保操作规则、青岛医保操作规则和青岛公积金操作规则。"
+        ],
+        "table_rows": [
+          {
+            "id": "eval-dispatch-header",
+            "sheet_name": "202603",
+            "row_number": 1,
+            "row_key": "header",
+            "row_json": {
+              "城市": "城市",
+              "社保截止时间": "社保截止时间",
+              "医保截止时间": "医保截止时间",
+              "公积金截止时间": "公积金截止时间",
+              "操作规则-社保": "操作规则-社保"
+            },
+            "is_header": true
+          },
+          {
+            "id": "eval-dispatch-shanghai-202603",
+            "sheet_name": "202603",
+            "row_number": 2,
+            "row_key": "上海",
+            "row_json": {
+              "城市": "上海",
+              "社保截止时间": "2026-03-15",
+              "医保截止时间": "2026-03-16",
+              "公积金截止时间": "2026-03-20",
+              "操作规则-社保": "当月15日前"
+            },
+            "is_header": false
+          },
+          {
+            "id": "eval-dispatch-qingdao-202603",
+            "sheet_name": "202603",
+            "row_number": 3,
+            "row_key": "青岛",
+            "row_json": {
+              "城市": "青岛",
+              "社保截止时间": "2026-03-12",
+              "医保截止时间": "2026-03-13",
+              "公积金截止时间": "2026-03-18",
+              "操作规则-社保": "按青岛社保操作规则办理"
+            },
+            "is_header": false
+          }
+        ]
+      },
+      {
+        "id": "eval-doc-nanjing-dispatch-placeholder",
+        "title": "南京派单规则资料占位",
+        "filename": "eval_nanjing_dispatch_placeholder.txt",
+        "source_type": "txt",
+        "groups": ["eval-group"],
+        "chunks": [
+          "南京派单规则已作为资料事项出现，但当前没有已确认的社保、医保、公积金关系记录。"
+        ]
+      }
+    ],
+    "graph": {
+      "entities": [
+        {"name": "报岗集约录入", "type": "process", "confidence": 0.95},
+        {"name": "后道交付团队", "type": "team", "confidence": 0.95},
+        {"name": "202603青岛派单规则", "type": "rule", "confidence": 0.96},
+        {"name": "202603青岛社保操作规则", "type": "rule", "confidence": 0.95},
+        {"name": "202603青岛医保操作规则", "type": "rule", "confidence": 0.95},
+        {"name": "202603青岛公积金操作规则", "type": "rule", "confidence": 0.95},
+        {"name": "南京派单规则", "type": "city", "confidence": 0.92},
+        {"name": "上海派单规则", "type": "rule", "confidence": 0.95},
+        {"name": "202603上海社保截止时间", "type": "deadline", "confidence": 0.95}
+      ],
+      "relations": [
+        {
+          "source": "报岗集约录入",
+          "target": "后道交付团队",
+          "type": "handled_by",
+          "document_id": "eval-doc-workorder-process",
+          "chunk_id": "eval-doc-workorder-process-chunk-0",
+          "page_number": 1,
+          "evidence": "报岗集约录入由后道交付团队处理。",
+          "confidence": 0.94,
+          "status": "auto"
+        },
+        {
+          "source": "202603青岛派单规则",
+          "target": "202603青岛社保操作规则",
+          "type": "requires",
+          "document_id": "eval-doc-dispatch-rules-202603",
+          "chunk_id": "eval-doc-dispatch-rules-202603-chunk-0",
+          "page_number": 1,
+          "evidence": "202603青岛派单规则需要青岛社保操作规则。",
+          "confidence": 0.94,
+          "status": "auto"
+        },
+        {
+          "source": "202603青岛派单规则",
+          "target": "202603青岛医保操作规则",
+          "type": "requires",
+          "document_id": "eval-doc-dispatch-rules-202603",
+          "chunk_id": "eval-doc-dispatch-rules-202603-chunk-0",
+          "page_number": 1,
+          "evidence": "202603青岛派单规则需要青岛医保操作规则。",
+          "confidence": 0.94,
+          "status": "auto"
+        },
+        {
+          "source": "202603青岛派单规则",
+          "target": "202603青岛公积金操作规则",
+          "type": "requires",
+          "document_id": "eval-doc-dispatch-rules-202603",
+          "chunk_id": "eval-doc-dispatch-rules-202603-chunk-0",
+          "page_number": 1,
+          "evidence": "202603青岛派单规则需要青岛公积金操作规则。",
+          "confidence": 0.94,
+          "status": "auto"
+        },
+        {
+          "source": "上海派单规则",
+          "target": "202603上海社保截止时间",
+          "type": "has_deadline",
+          "document_id": "eval-doc-dispatch-rules-202603",
+          "chunk_id": "eval-doc-dispatch-rules-202603-chunk-0",
+          "page_number": 1,
+          "evidence": "上海派单规则关联202603上海社保截止时间。",
+          "confidence": 0.95,
+          "status": "auto"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "answer_employee_esign_process",
+      "category": "流程答案",
+      "question": "员工怎么签署电子劳动合同？",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_include_docs": ["eval-doc-employee-esign"],
+        "must_not_include_docs": ["eval-doc-workorder-process"],
+        "must_include_terms": ["微助手", "电子合同", "签署"]
+      },
+      "answer_expected": {
+        "composer": "extractive_local",
+        "must_include_terms": ["微助手", "电子合同", "签署"],
+        "must_not_include_terms": ["工单系统", "南京派单规则", "社保、医保、公积金关系记录"]
+      }
+    },
+    {
+      "id": "answer_table_shanghai_social_deadline",
+      "category": "表格精确答案",
+      "question": "202603上海社保截止时间是什么？",
+      "expected": {
+        "backend": "table",
+        "must_include_docs": ["eval-doc-dispatch-rules-202603"],
+        "must_include_terms": ["上海", "2026-03-15"]
+      },
+      "answer_expected": {
+        "composer": "table_local",
+        "must_include_terms": ["上海", "社保截止时间", "2026-03-15"],
+        "must_not_include_terms": ["青岛"]
+      }
+    },
+    {
+      "id": "answer_plain_team_handler_uses_graph",
+      "category": "自然问法自动关系答案",
+      "question": "报岗集约录入由哪个团队处理？",
+      "expected": {
+        "backend": "graph",
+        "must_include_terms": ["报岗集约录入", "后道交付团队"]
+      },
+      "answer_expected": {
+        "composer": "extractive_local",
+        "must_include_terms": ["报岗集约录入", "后道交付团队"],
+        "must_not_include_terms": ["图谱实体", "自动关系"]
+      }
+    },
+    {
+      "id": "answer_qingdao_operation_rules_uses_graph",
+      "category": "派单规则关系答案",
+      "question": "202603青岛派单规则需要哪些操作规则？",
+      "expected": {
+        "backend": "graph",
+        "must_include_terms": ["202603青岛社保操作规则", "202603青岛医保操作规则", "202603青岛公积金操作规则"]
+      },
+      "answer_expected": {
+        "composer": "extractive_local",
+        "must_include_terms": ["202603青岛社保操作规则", "202603青岛医保操作规则", "202603青岛公积金操作规则"],
+        "must_not_include_terms": ["requires", "图谱实体", "自动关系"]
+      }
+    },
+    {
+      "id": "answer_graph_entity_without_relations_is_honest",
+      "category": "无关系不乱答",
+      "question": "南京派单规则是否有关联的社保医保公积金关系？",
+      "expected": {
+        "backend": "graph",
+        "must_include_terms": ["南京派单规则", "未找到"],
+        "must_not_include_terms": ["上海派单规则", "202603上海社保截止时间"]
+      },
+      "answer_expected": {
+        "composer": "extractive_local",
+        "must_include_terms": ["南京派单规则", "未找到", "已确认关系记录"],
+        "must_not_include_terms": ["上海派单规则", "202603上海社保截止时间", "图谱实体", "自动关系"]
+      }
+    },
+    {
+      "id": "answer_no_evidence_guardrail",
+      "category": "无资料防幻觉",
+      "question": "深圳2027医保缴费规则是什么？",
+      "expected": {
+        "max_contexts": 0,
+        "must_not_include_docs": ["eval-doc-employee-esign", "eval-doc-workorder-process", "eval-doc-dispatch-rules-202603"]
+      },
+      "answer_expected": {
+        "composer": "no_context",
+        "must_include_terms": ["未在知识库中找到依据"],
+        "must_not_include_terms": ["2026-03-15", "后道交付团队", "微助手"]
+      }
+    }
+  ]
+}

@@ -94,9 +94,27 @@ def summary_display_sources(contexts: list[dict], interaction_meta: dict, summar
     return serialize_sources(contexts)
 
 
+def _answer_context_is_relevant(context: dict) -> bool:
+    channel = context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "")
+    if channel in {"table", "graph", "pageindex"}:
+        return True
+    ranking = context.get("intent_ranking") if isinstance(context.get("intent_ranking"), dict) else {}
+    if ranking.get("positive_signals"):
+        return True
+    for key in ("rerank_score", "score"):
+        if context.get(key) is None:
+            continue
+        try:
+            return float(context.get(key) or 0) > 0
+        except (TypeError, ValueError):
+            return True
+    return True
+
+
 def model_contexts_for_answer(contexts: list[dict], summary_mode: bool, max_contexts: int = 600, max_chars: int = 500000) -> list[dict]:
     if not summary_mode:
-        return contexts
+        filtered = [context for context in contexts if _answer_context_is_relevant(context)]
+        return filtered or contexts[:1]
     selected: list[dict] = []
     used_chars = 0
     for context in contexts:

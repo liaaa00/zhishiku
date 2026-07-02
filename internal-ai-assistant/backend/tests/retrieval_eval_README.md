@@ -2,9 +2,11 @@
 
 这个目录包含两类检索评测：
 
-- `retrieval_eval_cases.json`：fixture 评测。脚本会创建临时 SQLite 和模拟文档，用于稳定回归。
-- `retrieval_eval_real_cases.json`：真实库评测模板。直接读取当前 `backend/data/app.db`，用于检查真实知识库效果。
-- `qa_retrieval_eval_runner.py`：评测 runner。
+- `retrieval_eval_cases.json`：fixture 检索评测。脚本会创建临时 SQLite 和模拟文档，用于稳定回归。
+- `retrieval_eval_real_cases.json`：真实库检索评测模板。直接读取当前 `backend/data/app.db`，用于检查真实知识库效果。
+- `retrieval_answer_eval_cases.json`：fixture 答案评测。固定检查证据、通道和本地可重复答案，避免“修 A 坏 B”。
+- `qa_retrieval_eval_runner.py`：检索评测 runner。
+- `qa_answer_eval_runner.py`：答案评测 runner，不调用外部模型。
 
 ## 一、生产 embedding 切换流程
 
@@ -81,7 +83,29 @@ python tests/qa_retrieval_eval_runner.py --json
 python tests/qa_retrieval_eval_runner.py --keep-db
 ```
 
-## 五、运行真实知识库评测
+## 五、运行固定答案评测
+
+答案评测会先跑同一套检索，再用本地可重复答案生成器校验最终答案关键内容；默认不调用外部模型，适合每次修改后固定执行。fixture 评测 runner 会使用临时 SQLite，建议顺序执行，不要并行跑两个 fixture runner。
+
+```bash
+python tests/qa_answer_eval_runner.py
+```
+
+查看每题答案和 Top 证据：
+
+```bash
+python tests/qa_answer_eval_runner.py --explain
+```
+
+输出机器可读 JSON：
+
+```bash
+python tests/qa_answer_eval_runner.py --json
+```
+
+当前固定覆盖：流程答案、表格精确答案、自然问法自动关系答案、派单规则关系答案、无关系诚实回答、无资料防幻觉。
+
+## 六、运行真实知识库评测
 
 ```bash
 python tests/qa_retrieval_eval_runner.py --real-db
@@ -114,7 +138,7 @@ python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_
 - `positive_signals` / `negative_signals`。
 - 命中片段摘要。
 
-## 六、真实评测 case 写法
+## 七、真实评测 case 写法
 
 示例：
 
@@ -133,7 +157,7 @@ python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_
 }
 ```
 
-## 七、常用 expected 字段
+## 八、常用 expected 字段
 
 - `backend`：期望检索后端，例如 `table`。
 - `top_doc`：第一名必须是某个文档 ID。
@@ -165,7 +189,7 @@ python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_
 
 表示某个结果标题要同时包含“电子”和“合同”；另一个结果标题要包含“微助手”。
 
-## 八、维护建议
+## 九、维护建议
 
 1. 每发现一次真实检索错误，就把它变成一个 case。
 2. case 里一定写清楚：为什么这个问题重要、应该命中什么、不应该命中什么。
