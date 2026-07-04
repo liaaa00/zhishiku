@@ -66,6 +66,8 @@ def normalize_document_kind(value: Any, default: str = DOC_KIND_GENERAL) -> str:
     raw = alias.get(raw, raw)
     if raw in DOC_KIND_VALUES:
         return raw
+    if re.fullmatch(r"[a-z0-9_][a-z0-9_-]{1,48}", raw):
+        return raw
     return default
 
 

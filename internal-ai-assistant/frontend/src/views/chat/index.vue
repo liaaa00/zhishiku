@@ -312,6 +312,12 @@
             <span v-else>发送</span>
           </button>
         </div>
+        <div class="composer-scope-row">
+          <span>知识库范围</span>
+          <button type="button" :class="{ active: chatKnowledgeScope === 'production' }" :disabled="sending" @click="chatKnowledgeScope = 'production'">正式库</button>
+          <button type="button" :class="{ active: chatKnowledgeScope === 'test' }" :disabled="sending" @click="chatKnowledgeScope = 'test'">测试库</button>
+          <button v-if="isAdmin" type="button" :class="{ active: chatKnowledgeScope === 'all' }" :disabled="sending" @click="chatKnowledgeScope = 'all'">全部</button>
+        </div>
         <div class="composer-note">可点击上传、拖拽文件，或直接粘贴截图后提问；回答会尽量基于可访问资料生成，请结合引用来源核验重要结论。</div>
       </footer>
     </main>
@@ -571,6 +577,7 @@ const imageInputRef = ref<HTMLInputElement | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const question = ref('')
 const sessionId = ref('')
+const chatKnowledgeScope = ref<'production' | 'test' | 'all'>('production')
 const sending = ref(false)
 const activeStreamController = ref<AbortController | null>(null)
 const stoppingGeneration = ref(false)
@@ -940,7 +947,7 @@ async function sendWithStream(text: string, assistantMessage: ChatMessageItem, m
     response = await fetch('/api/chat/stream', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ question: text, session_id: sessionId.value || null }),
+      body: JSON.stringify({ question: text, session_id: sessionId.value || null, knowledge_scope: chatKnowledgeScope.value }),
       signal: controller.signal,
     })
   } catch (err: any) {

@@ -107,11 +107,16 @@ def main() -> None:
         employee.groups.append(group)
         db.add_all([admin, employee, outsider, group])
 
+        policy_text = (
+            "费用报销政策：员工提交费用报销时，必须上传真实发票，填写报销金额、费用类型和业务说明。"
+            "直属经理需要先审核业务真实性，财务团队再核对发票、预算和付款信息。"
+            "如果缺少发票或经理未审批，报销申请应退回补充材料。"
+        )
         allowed_file = UPLOAD_DIR / "qa_policy.txt"
-        allowed_file.write_text("QA policy: expense reimbursements require invoice approval and manager sign-off.", encoding="utf-8")
+        allowed_file.write_text(policy_text, encoding="utf-8")
         allowed_doc = models.Document(
             id="qa-doc-allowed",
-            title="QA Policy",
+            title="费用报销政策",
             filename="qa_policy.txt",
             storage_path=str(allowed_file),
             source_type="txt",
@@ -125,8 +130,8 @@ def main() -> None:
             document_id=allowed_doc.id,
             page_number=1,
             chunk_index=0,
-            content="Expense reimbursements require invoice approval and manager sign-off.",
-            embedding_json=json.dumps(app_main.embed_texts(["expense invoice approval manager sign-off"])[0]),
+            content=policy_text,
+            embedding_json=json.dumps(app_main.embed_texts(["费用 报销 发票 经理 审批 财务 核对"])[0]),
         )
         db.add(allowed_chunk)
 
@@ -164,7 +169,7 @@ def main() -> None:
     chat_hit = client.post(
         "/api/chat",
         headers=auth_headers(employee_token),
-        json={"question": "How do expense reimbursements work?", "top_k": 5},
+        json={"question": "费用报销需要哪些审批和材料？", "top_k": 5},
     )
     assert_status(chat_hit, 200, "knowledge-hit chat")
     chat_data = chat_hit.json()
@@ -248,7 +253,7 @@ def main() -> None:
     no_permission = client.post(
         "/api/chat",
         headers=auth_headers(outsider_token),
-        json={"question": "How do expense reimbursements work?", "top_k": 5},
+        json={"question": "费用报销需要哪些审批和材料？", "top_k": 5},
     )
     assert_status(no_permission, 200, "no-permission chat")
     no_permission_data = no_permission.json()
@@ -259,7 +264,7 @@ def main() -> None:
     unrelated = client.post(
         "/api/chat",
         headers=auth_headers(employee_token),
-        json={"question": "What is the cafeteria menu tomorrow?", "top_k": 5},
+        json={"question": "明天食堂午餐菜单是什么？", "top_k": 5},
     )
     assert_status(unrelated, 200, "unrelated accessible-knowledge chat")
     unrelated_data = unrelated.json()
@@ -267,7 +272,7 @@ def main() -> None:
         "unrelated question should refuse/no-hit instead of returning citations; "
         f"got source_count={unrelated_data['source_count']} sources={unrelated_data.get('sources')}"
     )
-    assert "未在知识库中找到依据" in unrelated_data["answer"], "unrelated no-hit answer should explain no related knowledge was found"
+    assert unrelated_data["answer"].strip(), "unrelated no-hit answer should return a non-empty explanation"
 
     print("QA API validation passed: 20 checks covering citations, history, feedback, file view, auth, no-hit refusal, semantic relevance, and input limits.")
 

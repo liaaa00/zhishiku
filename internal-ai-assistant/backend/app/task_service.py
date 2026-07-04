@@ -13,6 +13,7 @@ from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME, GRAPH_EXTRAC
 from .database import SessionLocal, engine
 from .document_index import add_chunks
 from .document_metadata import infer_document_kind
+from .document_routing_config import ensure_default_document_routing_config, infer_document_kind_from_config
 from .graph_extraction import extract_graph_for_document
 from .graph_store import set_extraction_status
 from .document_status import set_doc_status
@@ -174,11 +175,18 @@ def _maybe_build_pageindex(db: Session, doc: Document, pages: list[tuple[int | N
         db.commit()
 
 
-def _refresh_document_kind_from_pages(doc: Document, pages: list[tuple[int | None, str]]) -> None:
+def _refresh_document_kind_from_pages(db: Session, doc: Document, pages: list[tuple[int | None, str]]) -> None:
     sample = "\n".join(str(text or "") for _page, text in (pages or [])[:3])[:4000]
-    inferred = infer_document_kind(doc.title, doc.filename, doc.source_type, sample)
-    if inferred and (not getattr(doc, "document_kind", "") or str(doc.document_kind or "") == "general"):
+    result = infer_document_kind_from_config(db, doc.title, doc.filename, doc.source_type, sample)
+    inferred = str(result.get("kind") or "general")
+    current_kind = str(getattr(doc, "document_kind", "") or "")
+    current_status = str(getattr(doc, "document_kind_status", "") or "").lower()
+    if inferred and (not current_kind or current_kind == "general" or current_status in {"auto", "needs_review"}):
         doc.document_kind = inferred
+        doc.document_kind_confidence = float(result.get("confidence") or 0.0)
+        doc.document_kind_reason = "; ".join(str(item) for item in result.get("reasons") or [])[:1000]
+        threshold = float(ensure_default_document_routing_config(db).get("classification", {}).get("low_confidence_threshold", 0.55) or 0.55)
+        doc.document_kind_status = "needs_review" if doc.document_kind_confidence < threshold else "auto"
 
 
 def parse_document_to_chunks(db: Session, doc: Document) -> int:
@@ -194,7 +202,7 @@ def parse_document_to_chunks(db: Session, doc: Document) -> int:
         db.commit()
         text_content = image_to_text(str(storage_path), cfg["api_key"], cfg["base_url"], cfg["model"])
         pages = [(1, text_content)] if text_content else []
-        _refresh_document_kind_from_pages(doc, pages)
+        _refresh_document_kind_from_pages(db, doc, pages)
         chunks = add_chunks(db, doc.id, pages)
         db.commit()
         _maybe_build_pageindex(db, doc, pages)
@@ -217,7 +225,7 @@ def parse_document_to_chunks(db: Session, doc: Document) -> int:
             pages = extract_pdf_pages_with_ocr_fallback(db, doc, storage_path)
         else:
             pages = extract_supported_document(str(storage_path))
-        _refresh_document_kind_from_pages(doc, pages)
+        _refresh_document_kind_from_pages(db, doc, pages)
         chunks = add_chunks(db, doc.id, pages)
         db.commit()
         _maybe_build_pageindex(db, doc, pages)
@@ -338,8 +346,12 @@ def initialize_runtime_schema():
         # 旧库中已有文档默认视为测试资料，避免历史测试文档污染正式问答；新上传文档由上传接口显式写入作用域。
         add_column_if_missing(conn, "documents", "knowledge_scope", "knowledge_scope TEXT NOT NULL DEFAULT 'test'")
         add_column_if_missing(conn, "documents", "document_kind", "document_kind TEXT NOT NULL DEFAULT 'general'")
+        add_column_if_missing(conn, "documents", "document_kind_confidence", "document_kind_confidence REAL NOT NULL DEFAULT 1.0")
+        add_column_if_missing(conn, "documents", "document_kind_reason", "document_kind_reason TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(conn, "documents", "document_kind_status", "document_kind_status TEXT NOT NULL DEFAULT 'confirmed'")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_documents_knowledge_scope ON documents(knowledge_scope)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_documents_document_kind ON documents(document_kind)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_documents_document_kind_status ON documents(document_kind_status)")
         conn.exec_driver_sql("UPDATE documents SET document_kind='form' WHERE COALESCE(document_kind, 'general')='general' AND (title LIKE '%入职人员信息表%' OR filename LIKE '%入职人员信息表%')")
         conn.exec_driver_sql("UPDATE documents SET document_kind='workorder' WHERE COALESCE(document_kind, 'general')='general' AND (title LIKE '%工单%' OR filename LIKE '%工单%')")
         conn.exec_driver_sql("UPDATE documents SET document_kind='employee_guide' WHERE COALESCE(document_kind, 'general')='general' AND (title LIKE '%微助手%' OR filename LIKE '%微助手%' OR title LIKE '%外服云%' OR filename LIKE '%外服云%' OR title LIKE '%员工%' OR filename LIKE '%员工%')")
@@ -502,6 +514,7 @@ def bootstrap_default_admin():
             db.add(Setting(key="deepseek_base_url", value="https://api.deepseek.com"))
         if not db.get(Setting, "deepseek_model"):
             db.add(Setting(key="deepseek_model", value="deepseek-chat"))
+        ensure_default_document_routing_config(db)
         db.query(BackgroundTask).filter(BackgroundTask.status == "running").update({"status": "pending", "last_error": "服务重启后自动恢复队列"})
         db.commit()
     finally:

@@ -34,12 +34,24 @@ def require_status(response, expected: int, label: str) -> None:
 
 
 def assert_user_payload_minimal(payload: dict) -> None:
-    allowed = {"id", "username", "is_admin", "is_active", "groups"}
+    allowed = {
+        "id",
+        "username",
+        "is_admin",
+        "is_active",
+        "approval_status",
+        "approval_note",
+        "approved_by_username",
+        "approved_at",
+        "groups",
+    }
     leaked = set(payload) - allowed
     if leaked:
         raise AssertionError(f"user payload leaked unsupported metadata fields: {sorted(leaked)}; payload={payload}")
     if not isinstance(payload.get("groups"), list):
         raise AssertionError(f"user payload should expose groups as list only, got {payload}")
+    if "approval_status" in payload and payload["approval_status"] not in {"pending", "approved", "rejected"}:
+        raise AssertionError(f"user payload exposed invalid approval_status: {payload}")
 
 
 def assert_openapi_response_schema(openapi: dict, method: str, path: str) -> None:

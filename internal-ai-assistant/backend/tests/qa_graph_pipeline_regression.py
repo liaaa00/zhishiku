@@ -147,7 +147,7 @@ def test_plain_user_question_with_team_handler_uses_graph_without_graph_word() -
         db.close()
 
 
-def test_natural_relationship_question_uses_graph_context_as_primary_answer_context() -> None:
+def test_natural_relationship_question_uses_table_when_table_route_is_primary() -> None:
     Session = make_session()
     db = Session()
     try:
@@ -187,26 +187,20 @@ def test_natural_relationship_question_uses_graph_context_as_primary_answer_cont
             top_k=5,
         )
 
-        joined = "\n".join(item.get("content", "") for item in contexts)
         graph_meta = meta.get("graph_retrieval") or {}
-        assert backend == "graph"
-        assert "graph_direct" in note
-        assert meta["retrieval_route"]["name"] == "text"
-        assert meta["retrieval_route"]["reason"].startswith("graph_primary_query_overrode_")
+        assert backend == "table"
+        assert "route=table" in note
+        assert meta["retrieval_route"]["name"] == "table"
+        assert meta["original_retrieval_route"]["name"] == "table"
         assert graph_meta.get("checked") is True
         assert graph_meta.get("matched") is True
-        assert graph_meta.get("direct_answer") is True
-        assert graph_meta.get("merged_into_contexts") is True
-        assert contexts and all(item.get("retrieval_channel") == "graph" for item in contexts)
-        assert "关系：需要" in joined
-        assert "202603青岛社保操作规则" in joined
-        assert "202603青岛医保操作规则" in joined
-        assert "202603青岛公积金操作规则" in joined
+        assert graph_meta.get("direct_answer") is False
+        assert graph_meta.get("merged_into_contexts") is False
+        assert all(item.get("retrieval_channel") != "graph" for item in contexts)
     finally:
         db.close()
 
-
-def test_graph_entity_without_accessible_relations_does_not_return_unrelated_relations() -> None:
+def test_graph_entity_without_accessible_relations_does_not_override_table_no_data() -> None:
     Session = make_session()
     db = Session()
     try:
@@ -214,7 +208,7 @@ def test_graph_entity_without_accessible_relations_does_not_return_unrelated_rel
             db,
             doc_id="doc-nanjing-empty-graph",
             title="202603派单规则图谱",
-            chunk_text="南京派单规则已作为资料事项出现，但当前没有已确认的社保、医保、公积金关系。",
+            chunk_text="南京派单规则已作为资料事项出现，但当前没有已确认的社保、医保、公积金关系记录。",
         )
 
         nanjing = get_or_create_entity(db, "南京派单规则", "city", 0.92)
@@ -239,32 +233,27 @@ def test_graph_entity_without_accessible_relations_does_not_return_unrelated_rel
 
         contexts, backend, note, _candidate_count, meta = retrieve_contexts(
             db,
-            "南京派单规则在当前图谱里是否有关联的社保医保公积金关系？",
+            "南京派单规则是否有关联的社保医保公积金关系？",
             admin,
             top_k=5,
         )
 
-        joined = "\n".join(item.get("content", "") for item in contexts)
         graph_meta = meta.get("graph_retrieval") or {}
-        assert backend == "graph"
-        assert "graph_direct" in note
+        assert backend == "table"
+        assert "route=table" in note
+        assert contexts == []
+        assert meta["retrieval_route"]["name"] == "table"
         assert graph_meta.get("checked") is True
         assert graph_meta.get("matched") is True
-        assert graph_meta.get("direct_answer") is True
-        assert contexts and all(item.get("retrieval_channel") == "graph" for item in contexts)
-        assert "已识别到“南京派单规则”" in joined
-        assert "未找到它关联的已确认关系记录" in joined
-        assert "图谱实体" not in joined
-        assert "自动关系" not in joined
-        assert "上海派单规则" not in joined
-        assert "202603上海社保截止时间" not in joined
+        assert graph_meta.get("direct_answer") is False
+        assert graph_meta.get("merged_into_contexts") is False
+        assert (meta.get("evidence_check") or {}).get("sufficient") is False
     finally:
         db.close()
-
 
 if __name__ == "__main__":
     test_graph_context_is_checked_and_merged_for_text_question()
     test_plain_user_question_with_team_handler_uses_graph_without_graph_word()
-    test_natural_relationship_question_uses_graph_context_as_primary_answer_context()
-    test_graph_entity_without_accessible_relations_does_not_return_unrelated_relations()
+    test_natural_relationship_question_uses_table_when_table_route_is_primary()
+    test_graph_entity_without_accessible_relations_does_not_override_table_no_data()
     print("Graph pipeline regression passed.")

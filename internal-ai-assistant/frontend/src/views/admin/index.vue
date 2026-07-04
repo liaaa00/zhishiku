@@ -51,9 +51,11 @@
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'groups' }]" @click="jumpToTab('groups')">岗位组</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'users' }]" @click="jumpToTab('users')">员工</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'docs' }]" @click="jumpToTab('docs')">文档与权限</button>
+        <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'routing' }]" @click="jumpToTab('routing')">文档分类</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'model' }]" @click="jumpToTab('model')">模型配置</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'feedback' }]" @click="jumpToTab('feedback')">反馈管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'evaluation' }]" @click="jumpToTab('evaluation')">评测面板</button>
+        <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'operations' }]" @click="jumpToTab('operations')">运营中心</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'graph' }]" @click="jumpToTab('graph')">图谱管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'tasks' }]" @click="jumpToTab('tasks')">任务中心</button>
       </div>
@@ -190,8 +192,8 @@
               <h3>文档与权限</h3>
               <p>上传知识文档，查看解析进度，并配置岗位组可见范围。</p>
             </div>
-            <el-upload :auto-upload="false" :show-file-list="false" :on-change="handleFile" :disabled="uploadingDoc">
-              <el-button type="primary" :loading="uploadingDoc">选择文件上传</el-button>
+            <el-upload multiple :auto-upload="false" :show-file-list="false" :on-change="handleFile" :disabled="uploadingDoc">
+              <el-button type="primary" :loading="uploadingDoc">{{ uploadingDoc ? '上传中…' : '选择文件上传（可多选）' }}</el-button>
             </el-upload>
           </header>
 
@@ -208,17 +210,13 @@
               </el-select>
             </label>
             <label class="admin-search-box">
-              <span>文档类型</span>
+              <span>上传分类</span>
               <el-select v-model="uploadDocumentKind" class="admin-select-md">
-                <el-option label="自动识别" value="auto" />
-                <el-option label="表格数据" value="table" />
-                <el-option label="员工指南" value="employee_guide" />
-                <el-option label="工单/内部流程" value="workorder" />
-                <el-option label="表单/信息表" value="form" />
-                <el-option label="制度/政策" value="policy" />
-                <el-option label="通用文档" value="general" />
+                <el-option label="自动识别（推荐）" value="auto" />
+                <el-option v-for="item in routingDocumentKindOptions" :key="item.value" :label="item.label" :value="item.value" />
               </el-select>
             </label>
+            <span class="admin-model-helper">不确定分类就选“自动识别”；一次可选择多个文件，系统会按队列上传。</span>
           </div>
           <div class="admin-index-note">高级索引：{{ pageIndexEngineText }} · {{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</div>
 
@@ -330,6 +328,9 @@
                   <span>片段 {{ doc.chunks || 0 }} · {{ doc.searchable ? '可检索' : '未检索' }}</span>
                   <span>知识库：{{ knowledgeScopeLabel(doc.knowledge_scope) }}</span>
                   <span>文档类型：{{ documentKindLabel(doc.document_kind) }}</span>
+                  <span :class="['admin-doc-kind-review', documentKindReviewClass(doc)]">分类：{{ documentKindStatusLabel(doc) }}</span>
+                  <span>分类置信度：{{ formatPercent(doc.document_kind_confidence ?? 0) }}</span>
+                  <span v-if="doc.document_kind_reason">分类原因：{{ doc.document_kind_reason }}</span>
                   <span>高级索引：{{ pageIndexStatusText(doc.page_index) }}</span>
                 </div>
               </div>
@@ -346,12 +347,19 @@
                     <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
                   </el-select>
                 </label>
+                <label class="admin-doc-permission-box">
+                  <span>确认文档类型</span>
+                  <el-select :model-value="doc.document_kind || 'general'" class="admin-full-select" @change="(value) => updateDocumentClassification(doc, value)">
+                    <el-option v-for="item in routingDocumentKindOptions" :key="item.value" :label="item.label" :value="item.value" />
+                  </el-select>
+                </label>
                 <div class="admin-row-actions admin-doc-card-actions">
                   <el-button link type="primary" :disabled="openingDocId === doc.id" @click="openAdminDocument(doc)">
                     {{ openingDocId === doc.id ? '打开中…' : '打开原文' }}
                   </el-button>
                   <el-button link type="primary" @click="openDocumentPageIndex(doc)">查看结构树</el-button>
                   <el-button link type="primary" @click="openDocumentQuality(doc)">文件体检</el-button>
+                  <el-button link type="primary" @click="openDocumentDiagnostics(doc)">诊断详情</el-button>
                   <el-button link @click="openChunkEditor(doc)">修改索引片段</el-button>
                   <el-button link :disabled="deletingDocId === doc.id || rebuildingPageIndexDocId === doc.id || reparsingDocId === doc.id" @click="reparseDocument(doc)">
                     {{ reparsingDocId === doc.id ? '解析中…' : '重新解析' }}
@@ -366,6 +374,179 @@
               </aside>
             </article>
           </div>
+        </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="文档分类" name="routing">
+        <section class="admin-panel-card admin-routing-panel">
+          <header class="admin-section-header">
+            <div>
+              <h3>文档分类规则</h3>
+              <p>这个页面只做一件事：告诉系统“哪些文档算一类”。上传或重分类时，系统会按关键词自动判断文档类型。</p>
+            </div>
+            <div class="admin-row-actions">
+              <el-button :disabled="savingRoutingRules" @click="loadRoutingConfig">刷新规则</el-button>
+              <el-button type="primary" :disabled="savingRoutingRules" @click="saveRoutingConfig">{{ savingRoutingRules ? '保存中…' : '保存规则' }}</el-button>
+            </div>
+          </header>
+
+          <section class="admin-routing-steps" aria-label="文档分类使用步骤">
+            <article>
+              <strong>1. 维护类型</strong>
+              <p>例如：财务制度、合同模板、员工指南。</p>
+            </article>
+            <article>
+              <strong>2. 填关键词</strong>
+              <p>例如：报销、发票、付款审批。命中越准，自动分类越准。</p>
+            </article>
+            <article>
+              <strong>3. 重新分类</strong>
+              <p>上传一批文档后点“一键重分类”，再去检索诊断测试。</p>
+            </article>
+          </section>
+
+          <section class="admin-routing-editor-card">
+            <header class="admin-routing-editor-head">
+              <div>
+                <h4>文档类型和识别关键词</h4>
+                <p>业务人员主要维护这里。关键词可用逗号、顿号或换行分隔；不用填写系统标识。</p>
+              </div>
+              <el-button type="primary" plain @click="addRoutingKind">新增文档类型</el-button>
+            </header>
+            <el-table :data="routingKindRows" class="admin-table admin-routing-table">
+              <el-table-column label="文档类型名称" min-width="200">
+                <template #default="scope">
+                  <el-input v-model="scope.row.label" placeholder="例如：财务制度" @input="syncRoutingConfigTextFromForm" />
+                </template>
+              </el-table-column>
+              <el-table-column label="自动识别关键词" min-width="420">
+                <template #default="scope">
+                  <el-input v-model="scope.row.markersText" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" placeholder="例如：报销、发票、付款审批" @input="syncRoutingConfigTextFromForm" />
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="120">
+                <template #default="scope">
+                  <el-tag :type="scope.row.disabled ? 'info' : 'success'">{{ scope.row.disabled ? '已停用' : '启用中' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="190">
+                <template #default="scope">
+                  <el-button link type="primary" :disabled="scope.row.value === 'general'" @click="toggleRoutingKind(scope.$index)">{{ scope.row.disabled ? '启用' : '停用' }}</el-button>
+                  <el-button link type="danger" :disabled="scope.row.builtin" @click="removeRoutingKind(scope.$index)">{{ scope.row.builtin ? '内置' : '删除' }}</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
+
+          <div class="admin-model-grid admin-routing-bottom-grid">
+            <section class="admin-model-form-card">
+              <span>保存规则</span>
+              <strong>改完类型或关键词后，先保存规则</strong>
+              <p>保存后，新上传文档会按新规则自动分类；已有文档需要点右侧“一键重分类”。</p>
+              <div class="admin-model-actions">
+                <el-button type="primary" :disabled="savingRoutingRules" @click="saveRoutingConfig">保存规则</el-button>
+                <el-button :disabled="savingRoutingRules" @click="resetRoutingConfig">恢复默认</el-button>
+              </div>
+            </section>
+
+            <aside class="admin-model-info-card">
+              <span>一键重分类</span>
+              <strong>{{ routingDocumentKindOptions.length }} 类文档类型</strong>
+              <p>按当前规则重新识别已有后台文档；不会删除文档，也不会重建索引。</p>
+              <label class="admin-model-field">
+                <span>处理范围</span>
+                <el-select v-model="reclassifyScope" class="admin-full-select">
+                  <el-option label="全部后台文档" value="all" />
+                  <el-option label="正式库" value="production" />
+                  <el-option label="测试库" value="test" />
+                </el-select>
+              </label>
+              <el-checkbox v-model="reclassifyOnlyLowConfidence">只处理自动/待复核文档</el-checkbox>
+              <div class="admin-model-actions">
+                <el-button type="warning" :disabled="reclassifyingDocuments" @click="reclassifyDocuments">{{ reclassifyingDocuments ? '重分类中…' : '一键重分类' }}</el-button>
+              </div>
+              <div v-if="routingReclassifyResult" class="admin-model-test-result" :class="routingReclassifyResult.needs_review ? 'failed' : 'ok'">
+                已处理 {{ routingReclassifyResult.total || 0 }} 份，变更 {{ routingReclassifyResult.changed || 0 }} 份，待复核 {{ routingReclassifyResult.needs_review || 0 }} 份。
+              </div>
+            </aside>
+          </div>
+
+          <section class="admin-routing-editor-card">
+            <div class="admin-routing-advanced-head">
+              <div>
+                <h4>高级设置</h4>
+                <p>一般不用打开。这里是问题路由、文件后缀和 JSON 配置，留给技术人员或 AI 维护。</p>
+              </div>
+              <el-switch v-model="showRoutingAdvancedJson" active-text="显示" inactive-text="隐藏" />
+            </div>
+
+            <div v-if="showRoutingAdvancedJson" class="admin-routing-advanced-body">
+              <section>
+                <header class="admin-routing-editor-head compact">
+                  <div>
+                    <h4>文件后缀识别</h4>
+                    <p>可选项，例如 Excel/CSV 默认识别为表格数据。</p>
+                  </div>
+                </header>
+                <el-table :data="routingKindRows" class="admin-table admin-routing-table">
+                  <el-table-column label="文档类型" min-width="180">
+                    <template #default="scope">{{ scope.row.label }}</template>
+                  </el-table-column>
+                  <el-table-column label="文件后缀" min-width="260">
+                    <template #default="scope">
+                      <el-input v-model="scope.row.extensionsText" placeholder="例如：xlsx, csv" @input="syncRoutingConfigTextFromForm" />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="系统标识" min-width="220">
+                    <template #default="scope">{{ scope.row.value }}</template>
+                  </el-table-column>
+                </el-table>
+              </section>
+
+              <section>
+                <header class="admin-routing-editor-head compact">
+                  <div>
+                    <h4>问题路由规则</h4>
+                    <p>用于限制某类问题只能命中指定文档类型，通常由技术人员维护。</p>
+                  </div>
+                  <el-button type="primary" plain @click="addRoutingRule">新增规则</el-button>
+                </header>
+                <el-table :data="routingRuleRows" class="admin-table admin-routing-table">
+                  <el-table-column label="问题类型" min-width="220">
+                    <template #default="scope">
+                      <el-select v-model="scope.row.topic" clearable filterable placeholder="通用/不限" class="admin-full-select" @change="syncRoutingConfigTextFromForm">
+                        <el-option v-for="item in routingTopicOptions" :key="item.value" :label="item.label" :value="item.value" />
+                      </el-select>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="检索通道" min-width="160">
+                    <template #default="scope">
+                      <el-select v-model="scope.row.route" clearable placeholder="不限" class="admin-full-select" @change="syncRoutingConfigTextFromForm">
+                        <el-option v-for="item in routingRouteOptions" :key="item.value" :label="item.label" :value="item.value" />
+                      </el-select>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="允许命中的文档类型" min-width="320">
+                    <template #default="scope">
+                      <el-select v-model="scope.row.allowed_kinds" multiple filterable placeholder="选择文档类型" class="admin-full-select" @change="syncRoutingConfigTextFromForm">
+                        <el-option v-for="item in routingDocumentKindOptions" :key="item.value" :label="item.label" :value="item.value" />
+                      </el-select>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="100">
+                    <template #default="scope">
+                      <el-button link type="danger" @click="removeRoutingRule(scope.$index)">删除</el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </section>
+
+              <label class="admin-model-field">
+                <span>高级 JSON</span>
+                <el-input v-model="routingConfigText" type="textarea" :autosize="{ minRows: 8, maxRows: 18 }" placeholder="高级配置 JSON" />
+              </label>
+            </div>
+          </section>
         </section>
       </el-tab-pane>
 
@@ -640,6 +821,12 @@
                 <p>{{ routerEvidence.reason || '-' }}</p>
                 <p>来源 {{ routerEvidence.source_count ?? 0 }} · 文档 {{ routerEvidence.document_count ?? 0 }}</p>
               </article>
+              <article class="admin-router-diagnostic-card" :class="promptTemplateDiagnostic.count ? '' : 'is-muted'">
+                <span>Prompt Template</span>
+                <strong>{{ promptTemplateDiagnostic.count ? '已匹配' : '未匹配' }}</strong>
+                <p>模板：{{ formatDiagnosticList(promptTemplateDiagnostic.labels) || '-' }}</p>
+                <p>已应用到回答：{{ promptTemplateDiagnostic.applied_to_answer === false ? '否' : '是' }}</p>
+              </article>
               <article class="admin-router-diagnostic-card" :class="tableQueryDiagnostics.hasTableSignals ? '' : 'is-muted'">
                 <span>Table Query</span>
                 <strong>{{ tableQueryDiagnostics.summary }}</strong>
@@ -838,6 +1025,23 @@
             <el-button type="primary" :loading="evaluationCaseRunning" @click="runEvaluationCase">运行单题评测</el-button>
           </div>
 
+          <section class="admin-routing-editor-card">
+            <header class="admin-routing-editor-head compact">
+              <div>
+                <h4>新增评测用例</h4>
+                <p>把真实用户问题、无来源问题或反馈问题沉淀为回归用例，后续一键运行评测。</p>
+              </div>
+              <el-button type="primary" :loading="savingEvaluationCase" @click="createEvaluationCase">保存为用例</el-button>
+            </header>
+            <div class="admin-form-row admin-form-row-wrap">
+              <el-input v-model="evaluationNewCase.id" clearable placeholder="用例 ID（可选，留空自动生成）" class="admin-input-sm" />
+              <el-input v-model="evaluationNewCase.category" clearable placeholder="分类，如 财务/制度/反馈沉淀" class="admin-input-sm" />
+              <el-input-number v-model="evaluationNewCase.top_k" :min="1" :max="20" />
+            </div>
+            <el-input v-model="evaluationNewCase.question" clearable placeholder="评测问题" class="admin-input-search" />
+            <el-input v-model="evaluationNewCase.why" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" maxlength="1000" show-word-limit placeholder="为什么加入这个用例，例如：用户反馈命中错误 / 高频无答案 / 关键业务问题" />
+          </section>
+
           <div v-if="evaluationSuiteResult" class="admin-upload-result-card">
             <div class="admin-upload-result-head">
               <div>
@@ -871,6 +1075,7 @@
               <span>Confidence: <strong>{{ formatRetrievalScore(evaluationCaseResult.confidence) }}</strong></span>
               <span>来源 {{ evaluationCaseResult.source_count || 0 }}</span>
             </div>
+            <p v-if="evaluationCasePromptTemplate.labels?.length" class="admin-model-helper">Prompt 模板：{{ formatDiagnosticList(evaluationCasePromptTemplate.labels) }} · 应用到回答：{{ evaluationCasePromptTemplate.applied_to_answer === false ? '否' : '是' }}</p>
             <p v-if="evaluationCaseResult.retrieval_note" class="admin-model-helper">{{ evaluationCaseResult.retrieval_note }}</p>
             <div v-if="evaluationCaseSources.length" class="admin-search-source-list">
               <article v-for="item in evaluationCaseSources.slice(0, 8)" :key="`${item.rank}-${item.document_id}-${item.chunk_id || item.chunk_index}`" class="admin-search-source-card">
@@ -894,7 +1099,7 @@
               <div class="admin-feedback-card-main">
                 <div class="admin-feedback-head">
                   <strong>{{ item.category || '未分类' }} · {{ item.id }}</strong>
-                  <span class="admin-feedback-status reviewed">真实用例</span>
+                  <span class="admin-feedback-status reviewed">{{ item.source === 'custom' ? '后台用例' : '文件用例' }}</span>
                 </div>
                 <p class="admin-feedback-content">{{ item.question }}</p>
                 <p class="admin-model-helper">{{ item.why }}</p>
@@ -902,10 +1107,350 @@
               <aside class="admin-feedback-card-side">
                 <button type="button" @click="fillEvaluationQuestion(item)">填入问题</button>
                 <button type="button" @click="runEvaluationCaseFromResult(item)">运行</button>
+                <button v-if="item.source === 'custom'" type="button" @click="deleteEvaluationCase(item)">删除</button>
               </aside>
             </article>
           </div>
           <div v-else-if="!loadingEvaluation" class="admin-dialog-empty">暂无真实评测用例。请先维护评测用例，再运行评测。</div>
+        </section>
+      </el-tab-pane>
+
+      <el-tab-pane label="运营中心" name="operations">
+        <section class="admin-panel-card admin-operations-panel">
+          <header class="admin-section-header">
+            <div>
+              <h3>知识库运营中心</h3>
+              <p>集中查看文档健康、分类待复核、无来源问题、用户反馈和 Prompt 模板，让知识库可以持续运营。</p>
+            </div>
+            <div class="admin-row-actions">
+              <el-button :disabled="loadingOperations" @click="loadOperationsOverview">
+                {{ loadingOperations ? '刷新中…' : '刷新运营数据' }}
+              </el-button>
+              <el-button :disabled="loadingOperations" @click="loadPromptTemplates">刷新模板</el-button>
+            </div>
+          </header>
+
+          <section class="admin-stat-grid" aria-label="运营总览">
+            <article class="admin-stat-card">
+              <span>文档总数</span>
+              <strong>{{ operationsOverview?.documents?.total || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card">
+              <span>可检索文档</span>
+              <strong>{{ operationsOverview?.documents?.searchable || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (operationsOverview?.documents?.failed || 0) > 0 }">
+              <span>解析失败</span>
+              <strong>{{ operationsOverview?.documents?.failed || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (operationsOverview?.documents?.needs_review_classification || 0) > 0 }">
+              <span>分类待复核</span>
+              <strong>{{ operationsOverview?.documents?.needs_review_classification || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (operationsOverview?.feedback?.unresolved || 0) > 0 }">
+              <span>待处理反馈</span>
+              <strong>{{ operationsOverview?.feedback?.unresolved || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card wide" :class="{ 'admin-stat-card-warning': (operationsOverview?.risk_signals || []).length }">
+              <span>运营风险</span>
+              <strong>{{ (operationsOverview?.risk_signals || []).length ? `${(operationsOverview?.risk_signals || []).length} 条需关注` : '暂无明显风险' }}</strong>
+              <small>{{ (operationsOverview?.recommendations || [])[0] || '建议定期运行评测并处理新增反馈。' }}</small>
+            </article>
+          </section>
+
+          <div class="admin-model-grid admin-routing-bottom-grid">
+            <section class="admin-model-form-card">
+              <h4>风险信号与建议动作</h4>
+              <div v-if="operationsOverview?.risk_signals?.length" class="admin-feedback-list compact">
+                <article v-for="item in operationsOverview.risk_signals" :key="item" class="admin-feedback-card new">
+                  <div class="admin-feedback-card-main"><p class="admin-feedback-content">{{ item }}</p></div>
+                </article>
+              </div>
+              <div v-else class="admin-dialog-empty">暂无明显风险。可以继续运行评测套件观察效果。</div>
+              <h4>建议动作</h4>
+              <div class="admin-quality-tags semantic">
+                <span v-for="item in operationsOverview?.recommendations || []" :key="item">{{ item }}</span>
+              </div>
+            </section>
+
+            <aside class="admin-model-info-card">
+              <strong>分类与质量分布</strong>
+              <div class="admin-search-test-meta-grid">
+                <div v-for="item in operationsOverview?.documents?.by_kind || []" :key="item.kind">
+                  <span>{{ item.label || item.kind }}</span>
+                  <strong>{{ item.count }}</strong>
+                </div>
+                <div v-for="(count, grade) in operationsOverview?.quality?.grade_counts || {}" :key="grade">
+                  <span>质量 {{ qualityGradeLabel(String(grade)) }}</span>
+                  <strong>{{ count }}</strong>
+                </div>
+              </div>
+              <p class="admin-model-helper">启用分类 {{ operationsOverview?.routing?.enabled_kind_count || 0 }} 个，停用 {{ operationsOverview?.routing?.disabled_kind_count || 0 }} 个。</p>
+            </aside>
+          </div>
+
+          <section class="admin-routing-editor-card">
+            <header class="admin-routing-editor-head compact">
+              <div>
+                <h4>Prompt 优化采用统计</h4>
+                <p>记录 A/B 对比后被管理员采用的模板，帮助判断哪些模板在真实问题中更稳定。</p>
+              </div>
+            </header>
+            <div class="admin-model-grid admin-routing-bottom-grid">
+              <section class="admin-model-form-card">
+                <h4>模板胜出排行</h4>
+                <div v-if="operationsOverview?.prompt_adoptions?.by_template?.length" class="admin-search-test-meta-grid">
+                  <div v-for="item in operationsOverview.prompt_adoptions.by_template" :key="item.key">
+                    <span>{{ promptTemplateLabel(item.key) }}</span>
+                    <strong>{{ item.wins }}</strong>
+                  </div>
+                </div>
+                <div v-else class="admin-dialog-empty">暂无采用记录。完成 A/B 对比后可点击“采用 A/B”。</div>
+              </section>
+              <section class="admin-model-form-card">
+                <h4>按分类自动推荐</h4>
+                <div v-if="operationsOverview?.prompt_adoptions?.recommended_by_document_kind?.length" class="admin-feedback-list compact">
+                  <article v-for="item in operationsOverview.prompt_adoptions.recommended_by_document_kind" :key="`${item.kind}-${item.template}`" class="admin-feedback-card resolved">
+                    <div class="admin-feedback-card-main">
+                      <div class="admin-feedback-head">
+                        <strong>{{ item.label || item.kind }}</strong>
+                        <span class="admin-feedback-status resolved">推荐</span>
+                      </div>
+                      <p class="admin-feedback-content">{{ item.template_label || promptTemplateLabel(item.template) }}</p>
+                      <p class="admin-model-helper">胜出 {{ item.wins || 0 }} 次<span v-if="item.latest_at"> · 最近 {{ formatDateTime(item.latest_at) }}</span></p>
+                    </div>
+                  </article>
+                </div>
+                <div v-else class="admin-dialog-empty">暂无分类推荐。积累采用记录后会自动生成。</div>
+              </section>
+              <aside class="admin-model-info-card">
+                <strong>最近采用记录</strong>
+                <div v-if="operationsOverview?.prompt_adoptions?.recent?.length" class="admin-feedback-list compact">
+                  <article v-for="item in operationsOverview.prompt_adoptions.recent.slice(0, 5)" :key="item.id" class="admin-feedback-card reviewed">
+                    <div class="admin-feedback-card-main">
+                      <div class="admin-feedback-head">
+                        <strong>{{ promptTemplateLabels(item.selected_template_keys) }}</strong>
+                        <span class="admin-feedback-status reviewed">{{ String(item.selected_variant || '').toUpperCase() }}</span>
+                      </div>
+                      <p class="admin-feedback-content">{{ item.question }}</p>
+                      <p class="admin-model-helper">{{ item.admin_note || '暂无备注' }}</p>
+                    </div>
+                  </article>
+                </div>
+                <div v-else class="admin-dialog-empty">暂无最近采用记录。</div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="admin-routing-editor-card">
+            <header class="admin-routing-editor-head compact">
+              <div>
+                <h4>无可靠来源/未命中问题样本</h4>
+                <p>这些问题可转成评测用例，或用于补充文档与分类关键词。</p>
+              </div>
+            </header>
+            <div v-if="operationsOverview?.chat?.recent_unanswered?.length" class="admin-feedback-list">
+              <article v-for="item in operationsOverview.chat.recent_unanswered" :key="item.message_id" class="admin-feedback-card reviewed">
+                <div class="admin-feedback-card-main">
+                  <div class="admin-feedback-head">
+                    <strong>{{ item.question || '未记录问题' }}</strong>
+                    <span class="admin-feedback-status reviewed">来源 {{ item.source_count || 0 }}</span>
+                  </div>
+                  <p class="admin-feedback-content">{{ item.answer_preview || '暂无回答快照' }}</p>
+                </div>
+                <aside class="admin-feedback-card-side">
+                  <button type="button" @click="evaluationNewCase.question = item.question || ''; evaluationNewCase.why = '来自运营中心无来源问题'; jumpToTab('evaluation')">转评测用例</button>
+                  <button type="button" @click="searchTestForm.question = item.question || ''; jumpToTab('model'); runSearchTest()">检索诊断</button>
+                </aside>
+              </article>
+            </div>
+            <div v-else class="admin-dialog-empty">最近没有无可靠来源样本。</div>
+          </section>
+
+          <section class="admin-routing-editor-card">
+            <header class="admin-routing-editor-head compact">
+              <div>
+                <h4>Prompt 模板测试预览</h4>
+                <p>输入一个真实问题，预览会命中的文档类型、Prompt 模板、附加规则和来源片段；不会调用大模型。</p>
+              </div>
+              <el-button type="primary" :loading="promptPreviewLoading" @click="previewPromptTemplate">运行预览</el-button>
+            </header>
+            <div class="admin-form-row admin-form-row-wrap">
+              <el-input v-model="promptPreviewForm.question" clearable placeholder="例如：报销需要提交哪些材料？" class="admin-input-lg" @keyup.enter="previewPromptTemplate" />
+              <el-select v-model="promptPreviewForm.knowledge_scope" class="admin-select-md">
+                <el-option label="正式库" value="production" />
+                <el-option label="测试库" value="test" />
+                <el-option label="全部" value="all" />
+              </el-select>
+              <el-input-number v-model="promptPreviewForm.top_k" :min="1" :max="20" />
+            </div>
+            <div v-if="promptPreviewResult" class="admin-search-test-result">
+              <div class="admin-search-test-meta">
+                <span>Backend: <strong>{{ promptPreviewResult.retrieval_backend || '-' }}</strong></span>
+                <span>Candidates: <strong>{{ promptPreviewResult.candidate_count ?? 0 }}</strong></span>
+                <span>Answer Contexts: <strong>{{ promptPreviewResult.answer_context_count ?? 0 }}</strong></span>
+                <span>Templates: <strong>{{ promptPreviewResult.prompt_template?.count || 0 }}</strong></span>
+              </div>
+              <div class="admin-router-diagnostics">
+                <article class="admin-router-diagnostic-card">
+                  <span>命中文档类型</span>
+                  <strong>{{ formatPromptPreviewKinds(promptPreviewResult.matched_document_kinds) || '-' }}</strong>
+                  <p>路由：{{ promptPreviewResult.retrieval_route?.name || '-' }}</p>
+                </article>
+                <article class="admin-router-diagnostic-card" :class="promptPreviewResult.prompt_template?.count ? '' : 'is-warning'">
+                  <span>Prompt 模板</span>
+                  <strong>{{ formatDiagnosticList(promptPreviewResult.prompt_template?.labels) || '未匹配' }}</strong>
+                  <p>应用到回答：{{ promptPreviewResult.prompt_template?.applied_to_answer === false ? '否' : '是' }}</p>
+                  <p v-if="promptPreviewResult.prompt_template?.recommended?.length">推荐来源：{{ formatPromptTemplateRecommendations(promptPreviewResult.prompt_template.recommended) }}</p>
+                </article>
+                <article class="admin-router-diagnostic-card">
+                  <span>基础规则</span>
+                  <strong>{{ (promptPreviewResult.rules_preview?.base_rules || []).length }} 条</strong>
+                  <p>{{ formatDiagnosticList(promptPreviewResult.rules_preview?.base_rules) }}</p>
+                </article>
+              </div>
+              <section class="admin-search-context-preview">
+                <header>
+                  <div>
+                    <strong>最终追加到模型的模板规则</strong>
+                    <span>仅展示模板附加规则，不展示完整系统提示词。</span>
+                  </div>
+                  <div><button type="button" @click="copyText(promptPreviewResult.rules_preview?.template_instructions || '')">复制规则</button></div>
+                </header>
+                <pre>{{ promptPreviewResult.rules_preview?.template_instructions || '暂无模板规则' }}</pre>
+              </section>
+              <div v-if="promptPreviewResult.source_diagnostics?.length" class="admin-search-source-list">
+                <article v-for="item in promptPreviewResult.source_diagnostics" :key="`${item.rank}-${item.document_id}-${item.location}`" class="admin-search-source-card">
+                  <header>
+                    <strong>#{{ item.rank }} {{ item.document_title }}</strong>
+                    <span>{{ item.document_kind_label || item.document_kind }}</span>
+                  </header>
+                  <div class="admin-doc-card-meta">
+                    <span>{{ item.retrieval_channel || '-' }}</span>
+                    <span>score {{ formatRetrievalScore(item.score) }}</span>
+                    <span>rerank {{ formatRetrievalScore(item.rerank_score) }}</span>
+                    <span>{{ item.location || '-' }}</span>
+                  </div>
+                  <p>{{ item.preview || '暂无片段预览' }}</p>
+                </article>
+              </div>
+              <div v-else class="admin-dialog-empty">没有命中可用于回答的来源片段。</div>
+            </div>
+          </section>
+
+          <section class="admin-routing-editor-card">
+            <header class="admin-routing-editor-head compact">
+              <div>
+                <h4>Prompt 模板回答 A/B 对比</h4>
+                <p>同一个问题分别应用两组模板，比较回答结构、来源利用和无依据风险。dry-run 不调用模型，只做抽取式预览。</p>
+              </div>
+              <el-button type="primary" :loading="promptCompareLoading" @click="comparePromptTemplates">运行 A/B 对比</el-button>
+            </header>
+            <div class="admin-form-row admin-form-row-wrap">
+              <el-input v-model="promptCompareForm.question" clearable placeholder="输入要对比的问题" class="admin-input-lg" @keyup.enter="comparePromptTemplates" />
+              <el-select v-model="promptCompareForm.knowledge_scope" class="admin-select-md">
+                <el-option label="正式库" value="production" />
+                <el-option label="测试库" value="test" />
+                <el-option label="全部" value="all" />
+              </el-select>
+              <el-input-number v-model="promptCompareForm.top_k" :min="1" :max="20" />
+              <el-checkbox v-model="promptCompareForm.dry_run">dry-run</el-checkbox>
+            </div>
+            <div class="admin-model-grid admin-routing-bottom-grid">
+              <label class="admin-model-field">
+                <span>A 组模板</span>
+                <el-select v-model="promptCompareForm.template_a_keys" multiple filterable class="admin-full-select">
+                  <el-option v-for="item in enabledPromptTemplateOptions" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
+              </label>
+              <label class="admin-model-field">
+                <span>B 组模板</span>
+                <el-select v-model="promptCompareForm.template_b_keys" multiple filterable class="admin-full-select">
+                  <el-option v-for="item in enabledPromptTemplateOptions" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
+              </label>
+            </div>
+            <div v-if="promptCompareResult" class="admin-search-test-result">
+              <div class="admin-search-test-meta">
+                <span>Backend: <strong>{{ promptCompareResult.retrieval_backend || '-' }}</strong></span>
+                <span>Contexts: <strong>{{ promptCompareResult.answer_context_count || 0 }}</strong></span>
+                <span>Mode: <strong>{{ promptCompareResult.dry_run ? 'dry-run' : 'model' }}</strong></span>
+              </div>
+              <div class="admin-model-grid admin-routing-bottom-grid">
+                <article class="admin-model-form-card">
+                  <h4>A：{{ formatDiagnosticList(promptCompareResult.variant_a?.prompt_template?.labels) || '模板 A' }}</h4>
+                  <div class="admin-doc-card-meta">
+                    <span>长度 {{ promptCompareResult.variant_a?.quality_signals?.length || 0 }}</span>
+                    <span>结构化 {{ promptCompareResult.variant_a?.quality_signals?.has_structure ? '是' : '否' }}</span>
+                    <span>提到无依据 {{ promptCompareResult.variant_a?.quality_signals?.mentions_no_evidence ? '是' : '否' }}</span>
+                  </div>
+                  <pre class="admin-answer-compare-box">{{ promptCompareResult.variant_a?.answer || '暂无回答' }}</pre>
+                </article>
+                <article class="admin-model-form-card">
+                  <h4>B：{{ formatDiagnosticList(promptCompareResult.variant_b?.prompt_template?.labels) || '模板 B' }}</h4>
+                  <div class="admin-doc-card-meta">
+                    <span>长度 {{ promptCompareResult.variant_b?.quality_signals?.length || 0 }}</span>
+                    <span>结构化 {{ promptCompareResult.variant_b?.quality_signals?.has_structure ? '是' : '否' }}</span>
+                    <span>提到无依据 {{ promptCompareResult.variant_b?.quality_signals?.mentions_no_evidence ? '是' : '否' }}</span>
+                  </div>
+                  <pre class="admin-answer-compare-box">{{ promptCompareResult.variant_b?.answer || '暂无回答' }}</pre>
+                </article>
+              </div>
+              <div class="admin-quality-tags semantic">
+                <span v-for="item in promptCompareResult.comparison_tips || []" :key="item">{{ item }}</span>
+              </div>
+              <div class="admin-form-row admin-form-row-wrap">
+                <el-input v-model="promptAdoptionNote" clearable placeholder="采用备注，例如：A 结构更清晰，B 有无依据扩写" class="admin-input-lg" />
+                <el-button :loading="promptAdoptionSaving === 'a'" @click="adoptPromptVariant('a')">采用 A</el-button>
+                <el-button :loading="promptAdoptionSaving === 'b'" @click="adoptPromptVariant('b')">采用 B</el-button>
+              </div>
+              <div v-if="promptCompareResult.source_diagnostics?.length" class="admin-search-source-list">
+                <article v-for="item in promptCompareResult.source_diagnostics" :key="`${item.rank}-${item.document_id}-${item.location}`" class="admin-search-source-card">
+                  <header>
+                    <strong>#{{ item.rank }} {{ item.document_title }}</strong>
+                    <span>{{ item.document_kind }}</span>
+                  </header>
+                  <p>{{ item.preview || '暂无片段预览' }}</p>
+                </article>
+              </div>
+            </div>
+          </section>
+
+          <section class="admin-routing-editor-card">
+            <header class="admin-routing-editor-head compact">
+              <div>
+                <h4>Prompt 模板管理</h4>
+                <p>先作为后台配置沉淀不同文档类型的回答规范；后续可以接入回答生成链路。</p>
+              </div>
+              <div class="admin-row-actions">
+                <el-button :loading="savingPromptTemplates" @click="savePromptTemplates">保存模板</el-button>
+                <el-button :disabled="savingPromptTemplates" @click="resetPromptTemplates">恢复默认</el-button>
+              </div>
+            </header>
+            <el-table :data="promptTemplates" class="admin-table admin-routing-table">
+              <el-table-column label="模板" min-width="180">
+                <template #default="scope">
+                  <el-input v-model="scope.row.label" placeholder="模板名称" @change="markPromptTemplatesDirty" />
+                  <p class="admin-model-helper">Key：{{ scope.row.key }}</p>
+                </template>
+              </el-table-column>
+              <el-table-column label="文档类型" width="180">
+                <template #default="scope">
+                  <el-select v-model="scope.row.document_kind" class="admin-full-select" @change="markPromptTemplatesDirty">
+                    <el-option v-for="item in routingDocumentKindOptions" :key="item.value" :label="item.label" :value="item.value" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="启用" width="90">
+                <template #default="scope"><el-switch v-model="scope.row.enabled" @change="markPromptTemplatesDirty" /></template>
+              </el-table-column>
+              <el-table-column label="模板内容" min-width="420">
+                <template #default="scope">
+                  <el-input v-model="scope.row.content" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" maxlength="4000" show-word-limit @change="markPromptTemplatesDirty" />
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
         </section>
       </el-tab-pane>
 
@@ -1195,6 +1740,62 @@
     </el-drawer>
 
     <el-drawer
+      v-model="documentDiagnosticsVisible"
+      title="文档诊断详情"
+      direction="rtl"
+      size="min(860px, calc(100vw - 32px))"
+      class="admin-pageindex-drawer admin-quality-drawer"
+    >
+      <div v-if="documentDiagnosticsLoading" class="admin-dialog-empty">正在加载文档诊断…</div>
+      <div v-else-if="documentDiagnosticsReport" class="admin-pageindex-drawer-body">
+        <div class="admin-pageindex-drawer-meta">
+          <span>当前文档</span>
+          <strong>{{ documentDiagnosticsReport.document?.title || docTitle(documentDiagnosticsDoc) }}</strong>
+          <p>{{ documentDiagnosticsReport.document?.filename || docFilename(documentDiagnosticsDoc) }}</p>
+        </div>
+        <section class="admin-quality-stack">
+          <div class="admin-quality-score-card">
+            <span>分类解释</span>
+            <strong>{{ documentDiagnosticsReport.classification?.label || documentKindLabel(documentDiagnosticsReport.classification?.kind) }}</strong>
+            <p>状态：{{ documentDiagnosticsReport.classification?.status || '-' }} · 置信度 {{ formatPercent(documentDiagnosticsReport.classification?.confidence ?? 0) }}</p>
+            <div v-if="documentDiagnosticsReport.classification?.reasons?.length" class="admin-quality-tags">
+              <span v-for="item in documentDiagnosticsReport.classification.reasons" :key="item">{{ item }}</span>
+            </div>
+            <p v-else class="admin-model-helper">暂无分类原因，可能来自人工确认或历史数据。</p>
+          </div>
+          <div class="admin-quality-score-card">
+            <span>处理状态</span>
+            <strong>{{ statusText(documentDiagnosticsReport.processing?.status) }}</strong>
+            <p>{{ stageText(documentDiagnosticsReport.processing?.stage) }} · 切片 {{ documentDiagnosticsReport.processing?.chunks || 0 }} · {{ documentDiagnosticsReport.processing?.searchable ? '可检索' : '不可检索' }}</p>
+            <p class="admin-model-helper">{{ documentDiagnosticsReport.processing?.message || '-' }}</p>
+          </div>
+          <div class="admin-quality-score-card">
+            <span>质量与建议</span>
+            <strong>{{ qualityGradeLabel(documentDiagnosticsReport.quality?.quality?.grade) }}</strong>
+            <div v-if="documentDiagnosticsReport.suggestions?.length" class="admin-quality-tags semantic">
+              <span v-for="item in documentDiagnosticsReport.suggestions" :key="item">{{ item }}</span>
+            </div>
+            <p v-else class="admin-model-helper">暂无必须处理的诊断建议。</p>
+          </div>
+        </section>
+        <section class="admin-feedback-detail-section">
+          <h4>切片预览</h4>
+          <div v-if="documentDiagnosticsReport.chunk_preview?.length" class="admin-search-source-list">
+            <article v-for="chunk in documentDiagnosticsReport.chunk_preview" :key="chunk.id" class="admin-search-source-card">
+              <header>
+                <strong>Chunk {{ chunk.chunk_index }}</strong>
+                <span>页码 {{ chunk.page_number || '未知' }}</span>
+              </header>
+              <p>{{ chunk.content || '暂无内容' }}</p>
+            </article>
+          </div>
+          <div v-else class="admin-dialog-empty">暂无切片，可能文档尚未解析完成。</div>
+        </section>
+      </div>
+      <div v-else class="admin-dialog-empty">暂无诊断数据。</div>
+    </el-drawer>
+
+    <el-drawer
       v-model="documentQualityVisible"
       title="文件处理质量体检"
       direction="rtl"
@@ -1358,6 +1959,17 @@ const feedbackItems = ref<any[]>([])
 const evaluationOverview = ref<any | null>(null)
 const evaluationSuiteResult = ref<any | null>(null)
 const evaluationCaseResult = ref<any | null>(null)
+const operationsOverview = ref<any | null>(null)
+const promptTemplates = ref<any[]>([])
+const promptTemplatesDirty = ref(false)
+const promptPreviewForm = reactive({ question: '', top_k: 8, knowledge_scope: 'production' })
+const promptPreviewResult = ref<any | null>(null)
+const promptPreviewLoading = ref(false)
+const promptCompareForm = reactive({ question: '', template_a_keys: ['general'] as string[], template_b_keys: ['policy'] as string[], top_k: 8, knowledge_scope: 'production', dry_run: true })
+const promptCompareResult = ref<any | null>(null)
+const promptCompareLoading = ref(false)
+const promptAdoptionNote = ref('')
+const promptAdoptionSaving = ref('')
 const graphOverview = ref<any | null>(null)
 const graphDocuments = ref<any[]>([])
 const graphRelations = ref<any[]>([])
@@ -1374,6 +1986,7 @@ const approvalBusy = ref(false)
 const approvalUser = ref<any | null>(null)
 const approvalForm = reactive({ group_ids: [] as string[], is_admin: false, note: '' })
 const evaluationForm = reactive({ question: '', top_k: 8 })
+const evaluationNewCase = reactive({ id: '', category: '后台维护', question: '', why: '', top_k: 8 })
 const graphSearchForm = reactive({ question: '', top_k: 8 })
 
 type DocStatusFilter = 'all' | 'ready' | 'processing' | 'waiting' | 'failed'
@@ -1396,6 +2009,10 @@ const documentQualityVisible = ref(false)
 const documentQualityLoading = ref(false)
 const documentQualityDoc = ref<any | null>(null)
 const documentQualityReport = ref<any | null>(null)
+const documentDiagnosticsVisible = ref(false)
+const documentDiagnosticsLoading = ref(false)
+const documentDiagnosticsDoc = ref<any | null>(null)
+const documentDiagnosticsReport = ref<any | null>(null)
 const chunkEditorVisible = ref(false)
 const chunkEditorLoading = ref(false)
 const feedbackDetailVisible = ref(false)
@@ -1416,6 +2033,7 @@ const deletingDocId = ref<string | null>(null)
 const deletingGroupId = ref<string | null>(null)
 const rebuildingPageIndexDocId = ref<string | null>(null)
 const uploadingDoc = ref(false)
+const uploadQueue = ref<any[]>([])
 const uploadKnowledgeScope = ref<'production' | 'test'>('production')
 const uploadDocumentKind = ref('auto')
 const lastUploadSummary = ref<UploadSummary | null>(null)
@@ -1433,10 +2051,13 @@ const feedbackRootCauseFilter = ref<FeedbackRootCauseFilter>('all')
 const feedbackSearch = ref('')
 const loadingFeedback = ref(false)
 const loadingEvaluation = ref(false)
+const loadingOperations = ref(false)
 const loadingGraph = ref(false)
 const graphSearchLoading = ref(false)
 const evaluationSuiteRunning = ref(false)
 const evaluationCaseRunning = ref(false)
+const savingEvaluationCase = ref(false)
+const savingPromptTemplates = ref(false)
 const loadingTasks = ref(false)
 const rebuildingGraphDocId = ref<string | null>(null)
 const retryingTaskId = ref<string | null>(null)
@@ -1453,6 +2074,19 @@ let statusPollDeadline = 0
 const STATUS_POLL_INTERVAL_MS = 3000
 const STATUS_POLL_TIMEOUT_MS = 5 * 60 * 1000
 const TASK_POLL_INTERVAL_MS = 5000
+const routingBuiltinKindValues = new Set(['policy', 'employee_guide', 'workorder', 'form', 'table', 'contract', 'finance', 'hr', 'project', 'training', 'general'])
+const routingTopicOptions = [
+  { value: 'form_fields', label: '表单字段/信息表问题' },
+  { value: 'employee_portal', label: '员工入口/平台操作问题' },
+  { value: 'employee_esign', label: '电子签署/实名认证问题' },
+  { value: 'workorder', label: '工单/内部流程问题' },
+]
+const routingRouteOptions = [
+  { value: 'text', label: '文本问答' },
+  { value: 'table', label: '表格查询' },
+  { value: 'metadata', label: '文档信息' },
+  { value: 'summary', label: '汇总总结' },
+]
 const feedbackRootCauseOptions: Array<{ value: FeedbackRootCause; label: string }> = [
   { value: '', label: '未归因' },
   { value: 'answer_quality', label: '回答组织问题' },
@@ -1480,14 +2114,27 @@ const testingModel = ref(false)
 const modelTestMessage = ref('')
 const modelTestStatus = ref<'idle' | 'ok' | 'failed'>('idle')
 const searchTestForm = reactive({ question: '', top_k: 8, knowledge_scope: 'production' })
+const routingConfig = ref<any | null>(null)
+const routingConfigText = ref('')
+const routingKindRows = ref<Array<{ value: string; label: string; markersText: string; extensionsText: string; disabled?: boolean; builtin?: boolean }>>([])
+const routingRuleRows = ref<Array<{ topic: string; route: string; allowed_kinds: string[] }>>([])
+const routingDocumentKindOptions = ref<Array<{ value: string; label: string }>>([])
+const showRoutingAdvancedJson = ref(false)
+const savingRoutingRules = ref(false)
+const reclassifyingDocuments = ref(false)
+const reclassifyScope = ref<'all' | 'production' | 'test'>('all')
+const reclassifyOnlyLowConfidence = ref(false)
+const routingReclassifyResult = ref<any | null>(null)
 const searchTesting = ref(false)
 const searchContextPreviewOpen = ref(false)
 const expandedSearchSources = ref<Record<string, boolean>>({})
 const schemaAliasActionBusy = ref('')
 const searchTestResult = ref<any | null>(null)
+const enabledPromptTemplateOptions = computed(() => promptTemplates.value.filter((item: any) => item?.enabled).map((item: any) => ({ value: String(item.key || ''), label: item.label || item.key })).filter((item: any) => item.value))
 const routerAnalysis = computed(() => searchTestResult.value?.query_analysis || searchTestResult.value?.retrieval_meta?.query_analysis || {})
 const routerRoute = computed(() => searchTestResult.value?.retrieval_route || searchTestResult.value?.retrieval_meta?.retrieval_route || {})
 const routerEvidence = computed(() => searchTestResult.value?.evidence_check || searchTestResult.value?.retrieval_meta?.evidence_check || {})
+const promptTemplateDiagnostic = computed(() => searchTestResult.value?.prompt_template || searchTestResult.value?.retrieval_meta?.prompt_template || {})
 const searchSourceQualityNotice = computed(() => searchTestResult.value?.source_quality_notice || {})
 const searchSourceQualityWarning = computed(() => searchTestResult.value?.source_warning || searchSourceQualityNotice.value?.warning || '')
 const retrievalDebugSummary = computed(() => searchTestResult.value?.retrieval_debug_summary || {})
@@ -1509,6 +2156,7 @@ const feedbackCompareSummary = computed(() => {
 })
 const evaluationCases = computed(() => Array.isArray(evaluationOverview.value?.cases) ? evaluationOverview.value.cases : [])
 const evaluationCaseSources = computed(() => Array.isArray(evaluationCaseResult.value?.source_diagnostics) ? evaluationCaseResult.value.source_diagnostics : [])
+const evaluationCasePromptTemplate = computed(() => evaluationCaseResult.value?.prompt_template || evaluationCaseResult.value?.retrieval_meta?.prompt_template || {})
 const graphSearchContexts = computed(() => Array.isArray(graphSearchResult.value?.contexts) ? graphSearchResult.value.contexts : [])
 const graphVisibleRelations = computed(() => graphPreviewRelations.value.filter((item: any) => item?.status !== 'ignored'))
 const graphTypePalette = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#dc2626', '#0891b2', '#4f46e5', '#65a30d']
@@ -1899,6 +2547,9 @@ function knowledgeScopeLabel(value: any) {
 }
 
 function documentKindLabel(value: any) {
+  const key = String(value || 'general')
+  const matched = routingDocumentKindOptions.value.find((item) => String(item.value) === key)
+  if (matched?.label) return matched.label
   return ({
     table: '表格数据',
     employee_guide: '员工指南',
@@ -1906,7 +2557,23 @@ function documentKindLabel(value: any) {
     form: '表单/信息表',
     policy: '制度/政策',
     general: '通用文档',
-  } as Record<string, string>)[String(value || 'general')] || '通用文档'
+  } as Record<string, string>)[key] || key || '通用文档'
+}
+
+function documentKindStatusLabel(doc: any) {
+  const status = String(doc?.document_kind_status || 'confirmed')
+  const confidence = Number(doc?.document_kind_confidence ?? 1)
+  const percent = Number.isFinite(confidence) ? ` · ${(confidence * 100).toFixed(0)}%` : ''
+  if (status === 'needs_review') return `待复核${percent}`
+  if (status === 'auto') return `自动识别${percent}`
+  return `已确认${percent}`
+}
+
+function documentKindReviewClass(doc: any) {
+  const status = String(doc?.document_kind_status || 'confirmed')
+  if (status === 'needs_review') return 'needs-review'
+  if (status === 'auto') return 'auto'
+  return 'confirmed'
 }
 
 function isUserPending(item: any) {
@@ -2259,6 +2926,7 @@ async function load() {
   try {
     groups.value = (await http.get('/admin/groups')).data || []
     users.value = (await http.get('/admin/users')).data || []
+    await loadRoutingConfig(false)
     docs.value = (await http.get('/admin/documents')).data || []
     docs.value.forEach((d: any) => {
       docGroupMap[d.id] = (d.groups || []).map((g: any) => g.id)
@@ -2267,6 +2935,8 @@ async function load() {
     await loadTasks(false)
     await loadFeedback(false)
     await loadEvaluationOverview(false)
+    await loadOperationsOverview(false)
+    await loadPromptTemplates(false)
     await loadGraphData(false)
     await loadPageIndexStatus()
     await loadVectorStatus()
@@ -2297,6 +2967,7 @@ async function loadDocumentStatus() {
   await loadPageIndexStatus()
   await loadVectorStatus()
   await loadDocumentQualityMap()
+  await loadOperationsOverview(false)
   lastRefreshAt.value = new Date()
 }
 
@@ -2413,6 +3084,196 @@ async function loadVectorStatus() {
     vectorStatus.value = (await http.get('/admin/vector/status')).data || null
   } catch (err: any) {
     vectorStatus.value = { backend: 'unknown', qdrant_enabled: false, qdrant_ready: false, degraded: true, status: 'unknown', message: requestErrorDetail(err, '向量库状态读取失败') }
+  }
+}
+
+function splitRoutingValues(value: any) {
+  return String(value || '')
+    .split(/[，,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function makeRoutingKindValue(label = 'custom') {
+  const base = String(label || 'custom').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '')
+  return `${base || 'custom'}_${Date.now().toString(36)}`
+}
+
+function syncRoutingFormFromConfig(config: any, options?: Array<{ value: string; label: string }>) {
+  const safeConfig = config || {}
+  const kinds = Array.isArray(safeConfig.document_kinds) ? safeConfig.document_kinds : []
+  routingKindRows.value = kinds.map((item: any) => ({
+    value: String(item?.value || makeRoutingKindValue(item?.label || 'custom')),
+    label: String(item?.label || item?.value || '未命名类型'),
+    markersText: Array.isArray(item?.markers) ? item.markers.join('，') : '',
+    extensionsText: Array.isArray(item?.extensions) ? item.extensions.join(', ') : '',
+    disabled: Boolean(item?.disabled) && String(item?.value || '') !== 'general',
+    builtin: routingBuiltinKindValues.has(String(item?.value || '')),
+  }))
+  const rules = Array.isArray(safeConfig.route_rules) ? safeConfig.route_rules : []
+  routingRuleRows.value = rules.map((item: any) => ({
+    topic: String(item?.topic || ''),
+    route: String(item?.route || ''),
+    allowed_kinds: Array.isArray(item?.allowed_kinds) ? item.allowed_kinds.map((kind: any) => String(kind || '')).filter(Boolean) : [],
+  }))
+  routingDocumentKindOptions.value = Array.isArray(options) && options.length
+    ? options
+    : routingKindRows.value.filter((item) => !item.disabled).map((item) => ({ value: item.value, label: item.label }))
+  syncRoutingConfigTextFromForm()
+}
+
+function buildRoutingConfigFromForm() {
+  const kindValues = new Set<string>()
+  const documentKinds = routingKindRows.value.map((row) => {
+    let value = String(row.value || '').trim()
+    if (!value) value = makeRoutingKindValue(row.label)
+    row.value = value
+    kindValues.add(value)
+    return {
+      value,
+      label: String(row.label || value).trim() || value,
+      markers: splitRoutingValues(row.markersText),
+      extensions: splitRoutingValues(row.extensionsText).map((item) => item.replace(/^\./, '').toLowerCase()),
+      disabled: Boolean(row.disabled) && value !== 'general',
+    }
+  })
+  const routeRules = routingRuleRows.value
+    .map((row) => ({
+      topic: String(row.topic || '').trim(),
+      route: String(row.route || '').trim(),
+      allowed_kinds: (row.allowed_kinds || []).filter((kind) => kindValues.has(String(kind)) && !routingKindRows.value.find((item) => item.value === String(kind))?.disabled),
+    }))
+    .filter((row) => (row.topic || row.route) && row.allowed_kinds.length)
+  return {
+    version: Number(routingConfig.value?.version || 1),
+    document_kinds: documentKinds,
+    route_rules: routeRules,
+    classification: routingConfig.value?.classification || { low_confidence_threshold: 0.55 },
+  }
+}
+
+function syncRoutingConfigTextFromForm() {
+  const config = buildRoutingConfigFromForm()
+  routingConfig.value = config
+  routingDocumentKindOptions.value = routingKindRows.value.filter((item) => !item.disabled).map((item) => ({ value: item.value, label: item.label || item.value }))
+  routingConfigText.value = JSON.stringify(config, null, 2)
+}
+
+function addRoutingKind() {
+  const value = makeRoutingKindValue('custom')
+  routingKindRows.value.push({ value, label: '新文档类型', markersText: '', extensionsText: '', disabled: false, builtin: false })
+  syncRoutingConfigTextFromForm()
+}
+
+function toggleRoutingKind(index: number) {
+  const row = routingKindRows.value[index]
+  if (!row || row.value === 'general') return
+  row.disabled = !row.disabled
+  if (row.disabled) {
+    routingRuleRows.value.forEach((rule) => {
+      rule.allowed_kinds = rule.allowed_kinds.filter((kind) => kind !== row.value)
+    })
+  }
+  syncRoutingConfigTextFromForm()
+}
+
+function removeRoutingKind(index: number) {
+  const row = routingKindRows.value[index]
+  if (!row || row.builtin) return
+  const value = row.value
+  routingKindRows.value.splice(index, 1)
+  routingRuleRows.value.forEach((rule) => {
+    rule.allowed_kinds = rule.allowed_kinds.filter((kind) => kind !== value)
+  })
+  syncRoutingConfigTextFromForm()
+}
+
+function addRoutingRule() {
+  routingRuleRows.value.push({ topic: '', route: 'text', allowed_kinds: [] })
+  syncRoutingConfigTextFromForm()
+}
+
+function removeRoutingRule(index: number) {
+  routingRuleRows.value.splice(index, 1)
+  syncRoutingConfigTextFromForm()
+}
+
+async function loadRoutingConfig(showMessage = true) {
+  try {
+    const data = (await http.get('/admin/document-routing/config')).data || {}
+    routingConfig.value = data.config || null
+    syncRoutingFormFromConfig(data.config || {}, Array.isArray(data.document_kind_options) ? data.document_kind_options : [])
+    if (showMessage) ElMessage.success('路由规则已重新读取')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载路由规则失败')
+  }
+}
+
+async function saveRoutingConfig() {
+  savingRoutingRules.value = true
+  try {
+    const parsed = showRoutingAdvancedJson.value ? JSON.parse(routingConfigText.value || '{}') : buildRoutingConfigFromForm()
+    const data = (await http.put('/admin/document-routing/config', { config: parsed })).data || {}
+    routingConfig.value = data.config || null
+    syncRoutingFormFromConfig(data.config || {}, Array.isArray(data.document_kind_options) ? data.document_kind_options : [])
+    ElMessage.success('路由规则已保存')
+  } catch (err: any) {
+    ElMessage.error(err instanceof SyntaxError ? '规则 JSON 格式不正确' : (err?.response?.data?.detail || '保存路由规则失败'))
+  } finally {
+    savingRoutingRules.value = false
+  }
+}
+
+async function resetRoutingConfig() {
+  await ElMessageBox.confirm('确定恢复默认文档类型和路由规则吗？当前自定义规则会被覆盖。', '恢复默认规则', {
+    confirmButtonText: '恢复默认',
+    cancelButtonText: '取消',
+    type: 'warning',
+  })
+  savingRoutingRules.value = true
+  try {
+    const data = (await http.post('/admin/document-routing/reset')).data || {}
+    routingConfig.value = data.config || null
+    syncRoutingFormFromConfig(data.config || {}, Array.isArray(data.document_kind_options) ? data.document_kind_options : [])
+    ElMessage.success('已恢复默认规则')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '恢复默认规则失败')
+  } finally {
+    savingRoutingRules.value = false
+  }
+}
+
+async function reclassifyDocuments() {
+  await ElMessageBox.confirm('确定按当前规则重新识别文档类型吗？该操作会更新文档分类字段，但不会删除文档或重建索引。', '一键重分类', {
+    confirmButtonText: '开始重分类',
+    cancelButtonText: '取消',
+    type: 'warning',
+  })
+  reclassifyingDocuments.value = true
+  routingReclassifyResult.value = null
+  try {
+    const data = (await http.post('/admin/document-routing/reclassify', { knowledge_scope: reclassifyScope.value, only_low_confidence: reclassifyOnlyLowConfidence.value })).data || {}
+    routingReclassifyResult.value = data
+    ElMessage.success(`重分类完成：处理 ${data.total || 0} 份，变更 ${data.changed || 0} 份`)
+    await loadDocumentStatus()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '一键重分类失败')
+  } finally {
+    reclassifyingDocuments.value = false
+  }
+}
+
+async function updateDocumentClassification(doc: any, value: string) {
+  if (!doc?.id || !value || String(doc.document_kind || '') === String(value)) return
+  try {
+    const data = (await http.put(`/admin/documents/${doc.id}/classification`, { document_kind: value })).data || {}
+    doc.document_kind = data.document_kind || value
+    doc.document_kind_confidence = data.document_kind_confidence ?? 1
+    doc.document_kind_status = data.document_kind_status || 'confirmed'
+    doc.document_kind_reason = 'manual'
+    ElMessage.success('文档类型已确认')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '更新文档类型失败')
   }
 }
 
@@ -2636,6 +3497,216 @@ async function loadTasks(showMessage = true, fromPolling = false) {
     if (!fromPolling) ElMessage.error(err?.response?.data?.detail || '加载后台任务失败')
   } finally {
     loadingTasks.value = false
+  }
+}
+
+async function loadOperationsOverview(showMessage = true) {
+  loadingOperations.value = true
+  try {
+    operationsOverview.value = (await http.get('/admin/operations/overview', { params: { days: 30 } })).data || null
+    if (showMessage) ElMessage.success('运营数据已刷新')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载运营数据失败')
+  } finally {
+    loadingOperations.value = false
+  }
+}
+
+async function loadPromptTemplates(showMessage = false) {
+  try {
+    const data = (await http.get('/admin/prompt-templates')).data || {}
+    promptTemplates.value = Array.isArray(data.templates) ? data.templates : []
+    promptTemplatesDirty.value = false
+    if (showMessage) ElMessage.success('Prompt 模板已刷新')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载 Prompt 模板失败')
+  }
+}
+
+function markPromptTemplatesDirty() {
+  promptTemplatesDirty.value = true
+}
+
+async function savePromptTemplates() {
+  savingPromptTemplates.value = true
+  try {
+    const data = (await http.put('/admin/prompt-templates', { templates: promptTemplates.value })).data || {}
+    promptTemplates.value = Array.isArray(data.templates) ? data.templates : promptTemplates.value
+    promptTemplatesDirty.value = false
+    ElMessage.success('Prompt 模板已保存')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '保存 Prompt 模板失败')
+  } finally {
+    savingPromptTemplates.value = false
+  }
+}
+
+async function previewPromptTemplate() {
+  const question = String(promptPreviewForm.question || '').trim()
+  if (!question) {
+    ElMessage.error('请输入要预览的问题')
+    return
+  }
+  promptPreviewLoading.value = true
+  promptPreviewResult.value = null
+  try {
+    promptPreviewResult.value = (await http.post('/admin/prompt-templates/preview', {
+      question,
+      top_k: Number(promptPreviewForm.top_k) || 8,
+      knowledge_scope: promptPreviewForm.knowledge_scope,
+    })).data || null
+    ElMessage.success('Prompt 模板预览完成')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || 'Prompt 模板预览失败')
+  } finally {
+    promptPreviewLoading.value = false
+  }
+}
+
+function formatPromptPreviewKinds(items: any[]) {
+  if (!Array.isArray(items) || !items.length) return ''
+  return items.map((item: any) => `${item.label || item.kind} ${item.count || 0}`).join('、')
+}
+
+function promptTemplateLabel(key: string) {
+  const item = promptTemplates.value.find((template: any) => String(template?.key || '') === String(key || ''))
+  return item?.label || key || '-'
+}
+
+function promptTemplateLabels(keys: any[]) {
+  if (!Array.isArray(keys) || !keys.length) return '-'
+  return keys.map((key) => promptTemplateLabel(String(key))).join('、')
+}
+
+function formatPromptTemplateRecommendations(items: any[]) {
+  if (!Array.isArray(items) || !items.length) return '-'
+  return items
+    .map((item: any) => `${item.kind || 'general'} → ${promptTemplateLabel(String(item.key || ''))}（胜出 ${item.wins || 0} 次）`)
+    .join('、')
+}
+
+async function comparePromptTemplates() {
+  const question = String(promptCompareForm.question || '').trim()
+  if (!question) {
+    ElMessage.error('请输入要对比的问题')
+    return
+  }
+  if (!promptCompareForm.template_a_keys.length || !promptCompareForm.template_b_keys.length) {
+    ElMessage.error('请选择 A/B 两组模板')
+    return
+  }
+  promptCompareLoading.value = true
+  promptCompareResult.value = null
+  try {
+    promptCompareResult.value = (await http.post('/admin/prompt-templates/compare', {
+      question,
+      template_a_keys: promptCompareForm.template_a_keys,
+      template_b_keys: promptCompareForm.template_b_keys,
+      top_k: Number(promptCompareForm.top_k) || 8,
+      knowledge_scope: promptCompareForm.knowledge_scope,
+      dry_run: Boolean(promptCompareForm.dry_run),
+    })).data || null
+    ElMessage.success('Prompt 模板 A/B 对比完成')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || 'Prompt 模板 A/B 对比失败')
+  } finally {
+    promptCompareLoading.value = false
+  }
+}
+
+async function adoptPromptVariant(variant: 'a' | 'b') {
+  if (!promptCompareResult.value) {
+    ElMessage.error('请先运行 A/B 对比')
+    return
+  }
+  const selectedKeys = variant === 'a' ? promptCompareForm.template_a_keys : promptCompareForm.template_b_keys
+  const rejectedKeys = variant === 'a' ? promptCompareForm.template_b_keys : promptCompareForm.template_a_keys
+  promptAdoptionSaving.value = variant
+  try {
+    const data = (await http.post('/admin/prompt-templates/adoptions', {
+      question: promptCompareResult.value.question || promptCompareForm.question,
+      selected_variant: variant,
+      selected_template_keys: selectedKeys,
+      rejected_template_keys: rejectedKeys,
+      document_kinds: (promptCompareResult.value.source_diagnostics || []).map((item: any) => item.document_kind).filter(Boolean),
+      source_document_ids: (promptCompareResult.value.source_diagnostics || []).map((item: any) => item.document_id).filter(Boolean),
+      admin_note: promptAdoptionNote.value,
+      dry_run: Boolean(promptCompareResult.value.dry_run),
+    })).data || {}
+    if (operationsOverview.value) operationsOverview.value.prompt_adoptions = data.stats || operationsOverview.value.prompt_adoptions
+    promptAdoptionNote.value = ''
+    ElMessage.success(`已采用 ${variant.toUpperCase()} 组模板`)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '记录采用结果失败')
+  } finally {
+    promptAdoptionSaving.value = ''
+  }
+}
+
+async function resetPromptTemplates() {
+  try {
+    await ElMessageBox.confirm('将恢复默认 Prompt 模板，并覆盖当前模板内容。确定继续？', '恢复默认模板', { type: 'warning' })
+  } catch {
+    return
+  }
+  savingPromptTemplates.value = true
+  try {
+    const data = (await http.post('/admin/prompt-templates/reset')).data || {}
+    promptTemplates.value = Array.isArray(data.templates) ? data.templates : []
+    promptTemplatesDirty.value = false
+    ElMessage.success('已恢复默认 Prompt 模板')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '恢复默认模板失败')
+  } finally {
+    savingPromptTemplates.value = false
+  }
+}
+
+async function createEvaluationCase() {
+  const question = String(evaluationNewCase.question || '').trim()
+  if (!question) {
+    ElMessage.error('请输入评测问题')
+    return
+  }
+  savingEvaluationCase.value = true
+  try {
+    await http.post('/admin/evaluation/cases', {
+      id: evaluationNewCase.id,
+      category: evaluationNewCase.category,
+      question,
+      why: evaluationNewCase.why,
+      top_k: Number(evaluationNewCase.top_k) || 8,
+    })
+    evaluationNewCase.id = ''
+    evaluationNewCase.category = '后台维护'
+    evaluationNewCase.question = ''
+    evaluationNewCase.why = ''
+    evaluationNewCase.top_k = 8
+    await loadEvaluationOverview(false)
+    ElMessage.success('评测用例已新增')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '新增评测用例失败')
+  } finally {
+    savingEvaluationCase.value = false
+  }
+}
+
+async function deleteEvaluationCase(item: any) {
+  if (item?.source !== 'custom') {
+    ElMessage.warning('内置文件用例不能在后台删除')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`确定删除评测用例「${item.id || item.question}」？`, '删除评测用例', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await http.delete(`/admin/evaluation/cases/${item.id}`)
+    await loadEvaluationOverview(false)
+    ElMessage.success('评测用例已删除')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '删除评测用例失败')
   }
 }
 
@@ -3030,11 +4101,31 @@ async function toggleUserStatus(item: any) {
 async function handleFile(file: any) {
   const rawFile = file?.raw
   if (!rawFile) return
+  uploadQueue.value.push(rawFile)
+  if (!uploadingDoc.value) await processUploadQueue()
+}
+
+async function processUploadQueue() {
   uploadingDoc.value = true
+  let successCount = 0
+  try {
+    while (uploadQueue.value.length) {
+      const rawFile = uploadQueue.value.shift()
+      if (!rawFile) continue
+      const ok = await uploadSingleDocument(rawFile)
+      if (ok) successCount += 1
+    }
+    if (successCount > 1) ElMessage.success(`已提交 ${successCount} 个文档进入解析队列`)
+  } finally {
+    uploadingDoc.value = false
+  }
+}
+
+async function uploadSingleDocument(rawFile: any) {
   const fd = new FormData()
   fd.append('file', rawFile)
   fd.append('knowledge_scope', uploadKnowledgeScope.value)
-  fd.append('document_kind', uploadDocumentKind.value)
+  fd.append('document_kind', uploadDocumentKind.value || 'auto')
   try {
     const data = (await http.post('/admin/documents', fd, { headers: { 'Content-Type': 'multipart/form-data' } })).data || {}
     lastUploadSummary.value = {
@@ -3053,7 +4144,10 @@ async function handleFile(file: any) {
         filename: rawFile.name,
         source_type: rawFile.name.split('.').pop() || 'file',
         knowledge_scope: data.knowledge_scope || uploadKnowledgeScope.value,
-        document_kind: data.document_kind || uploadDocumentKind.value || 'general',
+        document_kind: data.document_kind || (uploadDocumentKind.value === 'auto' ? 'general' : uploadDocumentKind.value) || 'general',
+        document_kind_confidence: data.document_kind_confidence ?? 1,
+        document_kind_reason: data.document_kind_reason || '',
+        document_kind_status: data.document_kind_status || (uploadDocumentKind.value === 'auto' ? 'auto' : 'confirmed'),
         groups: [],
         status: data.status || 'pending',
         stage: 'queued',
@@ -3064,13 +4158,14 @@ async function handleFile(file: any) {
       }, ...docs.value]
       docGroupMap[data.id] = []
     }
-    ElMessage.success('文档上传并已进入解析队列')
+    if (uploadQueue.value.length === 0) ElMessage.success('文档上传并已进入解析队列')
     if (lastUploadSummary.value?.docId) startStatusPolling(lastUploadSummary.value.docId)
     await load()
     await nextTick()
     if (lastUploadSummary.value?.docId) {
       document.getElementById(`admin-doc-${lastUploadSummary.value.docId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
+    return true
   } catch (err: any) {
     const rawDetail = err?.response?.data?.detail || err?.message || '文档上传失败'
     const detail = /服务器内部错误|timeout|locked|busy/i.test(rawDetail)
@@ -3085,9 +4180,8 @@ async function handleFile(file: any) {
       error: detail,
       searchable: false,
     }
-    ElMessage.error(detail)
-  } finally {
-    uploadingDoc.value = false
+    ElMessage.error(`${rawFile.name}：${detail}`)
+    return false
   }
 }
 async function saveDocPermission(documentId: string) {
@@ -3270,6 +4364,21 @@ async function openDocumentQuality(doc: any) {
     ElMessage.error(requestErrorDetail(err, '加载文件质量报告失败'))
   } finally {
     documentQualityLoading.value = false
+  }
+}
+
+async function openDocumentDiagnostics(doc: any) {
+  if (!doc?.id) return
+  documentDiagnosticsDoc.value = doc
+  documentDiagnosticsVisible.value = true
+  documentDiagnosticsLoading.value = true
+  documentDiagnosticsReport.value = null
+  try {
+    documentDiagnosticsReport.value = (await http.get(`/admin/documents/${doc.id}/diagnostics`)).data || null
+  } catch (err: any) {
+    ElMessage.error(requestErrorDetail(err, '加载文档诊断失败'))
+  } finally {
+    documentDiagnosticsLoading.value = false
   }
 }
 

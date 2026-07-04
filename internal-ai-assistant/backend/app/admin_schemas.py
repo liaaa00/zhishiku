@@ -87,6 +87,10 @@ class DocumentPermissionUpdate(BaseModel):
     group_ids: List[str]
 
 
+class DocumentClassificationUpdate(BaseModel):
+    document_kind: str
+
+
 class ChunkUpdate(BaseModel):
     content: str
 

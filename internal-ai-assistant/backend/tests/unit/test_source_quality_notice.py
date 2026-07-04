@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, model_contexts_for_answer
+from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, model_contexts_for_answer, should_use_fast_extractive_answer
 
 
 def test_source_quality_notice_summarizes_poor_and_blocked_sources() -> None:
@@ -139,6 +139,35 @@ def test_model_contexts_for_answer_returns_empty_when_no_evidence_passes_gate() 
     assert selected == []
 
 
+def test_model_contexts_for_answer_filters_weak_generic_company_matches() -> None:
+    selected = model_contexts_for_answer([
+        {
+            "document_id": "weak-pageindex-doc",
+            "document_title": "新版外服云平台注册流程-微助手",
+            "content": "上海外服（集团）有限公司操作手册",
+            "retrieval_channel": "pageindex",
+            "pageindex_source": True,
+            "score": 0.47,
+            "rerank_score": 0.5533,
+            "match_terms": ["公司"],
+            "intent_ranking": {"positive_signals": [], "lexical_coverage": 0.0625},
+        },
+        {
+            "document_id": "specific-doc",
+            "document_title": "公积金办理说明",
+            "content": "公积金办理说明和材料要求",
+            "retrieval_channel": "pageindex",
+            "pageindex_source": True,
+            "score": 0.47,
+            "rerank_score": 0.5533,
+            "match_terms": ["公积金"],
+            "intent_ranking": {"positive_signals": [], "lexical_coverage": 0.2},
+        },
+    ], summary_mode=False)
+
+    assert [item.get("document_id") for item in selected] == ["specific-doc"]
+
+
 def test_retrieval_debug_summary_warns_on_low_confidence_and_quality() -> None:
     quality_notice = {"has_low_quality_sources": True, "warning": "low quality"}
     summary = build_retrieval_debug_summary([
@@ -152,3 +181,52 @@ def test_retrieval_debug_summary_warns_on_low_confidence_and_quality() -> None:
     assert summary["channel_counts"]["pageindex"] == 1
     assert "low quality" in summary["warnings"]
     assert any("置信度" in item for item in summary["warnings"])
+
+
+def test_model_contexts_for_answer_caps_large_non_summary_contexts() -> None:
+    contexts = [
+        {
+            "document_id": f"doc-{index}",
+            "document_title": "Long Doc",
+            "content": "长内容" * 2000,
+            "retrieval_channel": "pageindex",
+            "score": 0.8,
+            "pageindex_source": True,
+        }
+        for index in range(12)
+    ]
+
+    selected = model_contexts_for_answer(contexts, summary_mode=False)
+
+    assert len(selected) <= 8
+    assert len(selected) < len(contexts)
+    assert sum(len(item.get("content") or "") for item in selected) <= 18000
+
+
+def test_fast_extractive_answer_is_used_for_large_broad_contexts() -> None:
+    contexts = [
+        {
+            "document_id": f"doc-{index}",
+            "document_title": "浙江企服工单系统开发需求文档",
+            "content": "功能需求和流程说明" * 30,
+            "retrieval_channel": "pageindex",
+            "score": 0.82,
+            "pageindex_source": True,
+        }
+        for index in range(6)
+    ]
+
+    assert should_use_fast_extractive_answer(
+        "浙江企服工单系统开发需求文档主要包含哪些功能需求？",
+        contexts,
+        {"intent": "deep_analysis"},
+        summary_mode=False,
+        table_answer_mode=False,
+    ) is True
+    assert should_use_fast_extractive_answer(
+        "202512重庆社保截止时间是什么？",
+        contexts,
+        {"intent": "precise_lookup"},
+        summary_mode=False,
+        table_answer_mode=False,
+    ) is False

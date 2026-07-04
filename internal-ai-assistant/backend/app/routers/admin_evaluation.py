@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -16,15 +17,27 @@ from ..citation_utils import bounded_limit
 from ..database import get_db
 from ..grounding import compute_grounding_confidence, serialize_sources
 from ..models import Document, DocumentProcessingStatus, Feedback, User
+from ..prompt_template_service import select_prompt_templates_for_contexts
 from ..retrieval import adaptive_retrieve_contexts
+from ..settings_service import get_setting, set_setting
 from .chat_api import build_retrieval_debug_summary, build_source_quality_notice, model_contexts_for_answer
-from .deps import require_admin
+from .deps import audit, new_id, require_admin
 
 router = APIRouter()
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_REAL_CASES_PATH = ROOT_DIR / "tests" / "retrieval_eval_real_cases.json"
+CUSTOM_EVAL_CASES_SETTING_KEY = "admin_custom_evaluation_cases_json"
 LOW_CONFIDENCE_THRESHOLD = 0.35
+
+
+class EvaluationCasePayload(BaseModel):
+    id: str = ""
+    category: str = ""
+    question: str
+    why: str = ""
+    top_k: int = 8
+    expected: dict[str, Any] = Field(default_factory=dict)
 
 
 def _normalize_text(value: Any) -> str:
@@ -39,7 +52,62 @@ def _load_real_eval_cases() -> list[dict[str, Any]]:
         payload = json.loads(DEFAULT_REAL_CASES_PATH.read_text(encoding="utf-8"))
     except Exception:
         return []
-    return [case for case in payload.get("cases") or [] if isinstance(case, dict)]
+    cases = [case for case in payload.get("cases") or [] if isinstance(case, dict)]
+    for case in cases:
+        case.setdefault("source", "file")
+    return cases
+
+
+def _normalize_eval_case(raw: dict[str, Any]) -> dict[str, Any]:
+    question = str(raw.get("question") or "").strip()
+    if not question:
+        raise ValueError("question_required")
+    top_k_raw = raw.get("top_k") or 8
+    try:
+        top_k = max(1, min(int(top_k_raw), 20))
+    except (TypeError, ValueError):
+        top_k = 8
+    case_id = str(raw.get("id") or "").strip()[:120]
+    return {
+        "id": case_id,
+        "category": str(raw.get("category") or "后台维护").strip()[:120] or "后台维护",
+        "question": question[:1000],
+        "why": str(raw.get("why") or "").strip()[:1000],
+        "top_k": top_k,
+        "expected": raw.get("expected") if isinstance(raw.get("expected"), dict) else {},
+        "source": str(raw.get("source") or "custom"),
+    }
+
+
+def _load_custom_eval_cases(db: Session) -> list[dict[str, Any]]:
+    raw = get_setting(db, CUSTOM_EVAL_CASES_SETTING_KEY, "")
+    try:
+        payload = json.loads(raw or "{}")
+    except Exception:
+        return []
+    rows = payload.get("cases") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return []
+    cases: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            item = _normalize_eval_case(row)
+        except ValueError:
+            continue
+        item["source"] = "custom"
+        cases.append(item)
+    return cases
+
+
+def _save_custom_eval_cases(db: Session, cases: list[dict[str, Any]]) -> None:
+    normalized = [_normalize_eval_case({**case, "source": "custom"}) for case in cases]
+    set_setting(db, CUSTOM_EVAL_CASES_SETTING_KEY, json.dumps({"cases": normalized}, ensure_ascii=False, indent=2))
+
+
+def _load_all_eval_cases(db: Session) -> list[dict[str, Any]]:
+    return _load_real_eval_cases() + _load_custom_eval_cases(db)
 
 
 def _context_title_text(context: dict[str, Any]) -> str:
@@ -206,10 +274,47 @@ def _document_stats(db: Session) -> dict[str, Any]:
     }
 
 
+@router.get("/api/admin/evaluation/cases")
+def list_evaluation_cases(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    cases = _load_all_eval_cases(db)
+    return {"ok": True, "case_count": len(cases), "cases": [_summarize_case(case) | {"source": case.get("source") or "file"} for case in cases]}
+
+
+@router.post("/api/admin/evaluation/cases")
+def create_evaluation_case(req: EvaluationCasePayload, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
+    try:
+        item = _normalize_eval_case(req.dict())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="评测问题不能为空") from exc
+    custom_cases = _load_custom_eval_cases(db)
+    if not item["id"]:
+        item["id"] = f"custom-{new_id()}"
+    if any(str(case.get("id")) == item["id"] for case in _load_all_eval_cases(db)):
+        raise HTTPException(status_code=400, detail="评测用例 ID 已存在")
+    item["source"] = "custom"
+    custom_cases.insert(0, item)
+    _save_custom_eval_cases(db, custom_cases)
+    audit(db, actor, "evaluation_case.create", "setting", CUSTOM_EVAL_CASES_SETTING_KEY, {"id": item["id"], "question": item["question"][:120]})
+    db.commit()
+    return {"ok": True, "case": _summarize_case(item) | {"source": "custom"}}
+
+
+@router.delete("/api/admin/evaluation/cases/{case_id}")
+def delete_evaluation_case(case_id: str, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
+    custom_cases = _load_custom_eval_cases(db)
+    kept = [case for case in custom_cases if str(case.get("id")) != case_id]
+    if len(kept) == len(custom_cases):
+        raise HTTPException(status_code=404, detail="只能删除后台维护的评测用例，或该用例不存在")
+    _save_custom_eval_cases(db, kept)
+    audit(db, actor, "evaluation_case.delete", "setting", CUSTOM_EVAL_CASES_SETTING_KEY, {"id": case_id})
+    db.commit()
+    return {"ok": True, "id": case_id, "case_count": len(kept)}
+
+
 @router.get("/api/admin/evaluation/overview")
 def evaluation_overview(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db), _: User = Depends(require_admin)):
     since = datetime.utcnow() - timedelta(days=days)
-    cases = _load_real_eval_cases()
+    cases = _load_all_eval_cases(db)
     feedback = _feedback_stats(db, since)
     documents = _document_stats(db)
     risk_signals: list[str] = []
@@ -245,6 +350,15 @@ def run_evaluation_case(req: ChatRequest, db: Session = Depends(get_db), user: U
     answer_contexts = model_contexts_for_answer(contexts, False)
     retrieval_meta["answer_context_count"] = len(answer_contexts)
     retrieval_meta["answer_context_filtered_count"] = max(0, len(contexts) - len(answer_contexts))
+    table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
+    prompt_template_context = select_prompt_templates_for_contexts(db, answer_contexts, table_answer_mode=table_answer_mode)
+    retrieval_meta["prompt_template"] = {
+        "keys": prompt_template_context.get("keys") or [],
+        "labels": prompt_template_context.get("labels") or [],
+        "count": prompt_template_context.get("count") or 0,
+        "recommended": prompt_template_context.get("recommended") or [],
+        "applied_to_answer": not table_answer_mode,
+    }
     confidence = compute_grounding_confidence(answer_contexts)
     retrieval_debug_summary = build_retrieval_debug_summary(answer_contexts, candidate_count, confidence, source_quality_notice)
     source_diagnostics = []
@@ -278,6 +392,7 @@ def run_evaluation_case(req: ChatRequest, db: Session = Depends(get_db), user: U
         "retrieval_debug_summary": retrieval_debug_summary,
         "source_quality_notice": source_quality_notice,
         "source_warning": source_quality_notice.get("warning") or "",
+        "prompt_template": retrieval_meta.get("prompt_template") or {},
         "query_analysis": retrieval_meta.get("query_analysis") or {},
         "retrieval_route": retrieval_meta.get("retrieval_route") or {},
         "evidence_check": retrieval_meta.get("evidence_check") or {},
@@ -291,7 +406,7 @@ def run_evaluation_case(req: ChatRequest, db: Session = Depends(get_db), user: U
 
 @router.post("/api/admin/evaluation/run-suite")
 def run_evaluation_suite(limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    cases = _load_real_eval_cases()[: bounded_limit(limit, 20, 100)]
+    cases = _load_all_eval_cases(db)[: bounded_limit(limit, 20, 100)]
     results: list[dict[str, Any]] = []
     failures = 0
     for case in cases:

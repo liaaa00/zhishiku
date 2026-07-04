@@ -344,7 +344,7 @@ def stream_conversational_answer(
             yield error_text[i : i + 80]
 
 
-def _build_knowledge_messages(question: str, contexts: List[dict], history: Optional[List[dict]] = None, structured_digest: str = "") -> list[dict]:
+def _build_knowledge_messages(question: str, contexts: List[dict], history: Optional[List[dict]] = None, structured_digest: str = "", prompt_instructions: str = "") -> list[dict]:
     context_text = "\n\n".join(
         f"[来源{i + 1}] 文档：{c.get('document_title') or c.get('filename') or '未知文档'}；页码：{c.get('page_number') or '未知'}；类型：{c.get('source_type') or 'document'}\n{c.get('content') or ''}"
         for i, c in enumerate(contexts)
@@ -371,6 +371,8 @@ def _build_knowledge_messages(question: str, contexts: List[dict], history: Opti
         "3. 能表格化就用 Markdown 表格，但只放用户真正需要的信息；\n"
         "4. 不要在正文或末尾输出 [来源1]、[来源2] 这类标记；引用依据会由系统在右侧/底部来源面板展示。"
     )
+    if prompt_instructions:
+        system = f"{system}\n\n【后台 Prompt 模板补充规则】\n{prompt_instructions}"
     return [
         {"role": "system", "content": system},
         *[{"role": h["role"], "content": h["content"]} for h in (history or [])],
@@ -386,6 +388,7 @@ def chat_answer_v2(
     model: Optional[str] = None,
     history: Optional[List[dict]] = None,
     structured_digest: str = "",
+    prompt_instructions: str = "",
 ) -> str:
     try:
         client = _openai_client(api_key, base_url)
@@ -395,7 +398,7 @@ def chat_answer_v2(
     try:
         response = client.chat.completions.create(
             model=real_model,
-            messages=_build_knowledge_messages(question, contexts, history, structured_digest),
+            messages=_build_knowledge_messages(question, contexts, history, structured_digest, prompt_instructions),
             temperature=0.2,
         )
         return response.choices[0].message.content or "未生成回答。"
@@ -411,6 +414,7 @@ def stream_chat_answer_v2(
     model: Optional[str] = None,
     history: Optional[List[dict]] = None,
     structured_digest: str = "",
+    prompt_instructions: str = "",
 ):
     try:
         client = _openai_client(api_key, base_url)
@@ -423,7 +427,7 @@ def stream_chat_answer_v2(
     try:
         stream = client.chat.completions.create(
             model=real_model,
-            messages=_build_knowledge_messages(question, contexts, history, structured_digest),
+            messages=_build_knowledge_messages(question, contexts, history, structured_digest, prompt_instructions),
             temperature=0.2,
             stream=True,
         )

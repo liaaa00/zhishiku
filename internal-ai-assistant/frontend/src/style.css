@@ -2828,6 +2828,32 @@ body.admin-scroll-page {
   line-height: 1.45;
 }
 
+.admin-doc-kind-review {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #f4f4f5;
+  color: #52525b;
+}
+
+.admin-doc-kind-review.needs-review {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.admin-doc-kind-review.auto {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.admin-doc-kind-review.confirmed {
+  border-color: #bbf7d0;
+  background: #ecfdf5;
+  color: #047857;
+}
+
 .admin-doc-card-side {
   display: grid;
   gap: 12px;
@@ -3258,6 +3284,113 @@ body.admin-scroll-page {
   border-color: #fecaca;
   background: #fef2f2;
   color: #b91c1c;
+}
+
+.admin-routing-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.admin-routing-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-routing-steps article {
+  padding: 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #eff6ff;
+}
+
+.admin-routing-steps strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #1d4ed8;
+  font-size: 14px;
+}
+
+.admin-routing-steps p {
+  margin: 0;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-routing-editor-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #ececf1;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.admin-model-form-card > span,
+.admin-routing-advanced-head strong {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-model-form-card > strong {
+  color: #202123;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.admin-model-form-card > p {
+  margin: 0;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.admin-routing-editor-head,
+.admin-routing-advanced-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-routing-editor-head h4 {
+  margin: 0 0 4px;
+  color: #202123;
+  font-size: 15px;
+}
+
+.admin-routing-editor-head p,
+.admin-routing-advanced-head p {
+  margin: 0;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-routing-system-id {
+  margin-top: 4px;
+  color: #8e8ea0;
+  font-size: 12px;
+}
+
+.admin-routing-table :deep(.el-textarea__inner) {
+  font-family: inherit;
+}
+
+.admin-routing-editor-head.compact {
+  margin-top: 4px;
+}
+
+.admin-routing-advanced-body {
+  display: grid;
+  gap: 16px;
+  padding-top: 4px;
+}
+
+.admin-routing-bottom-grid {
+  margin-top: 0;
 }
 
 .admin-model-helper {
@@ -3889,6 +4022,20 @@ body.admin-scroll-page {
   white-space: pre-wrap;
 }
 
+.admin-answer-compare-box {
+  max-height: 420px;
+  margin: 12px 0 0;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
 .admin-inline-actions {
   display: flex;
   flex-wrap: wrap;
@@ -4259,7 +4406,8 @@ body.admin-scroll-page {
 
   .admin-doc-card-row,
   .admin-task-card,
-  .admin-model-grid {
+  .admin-model-grid,
+  .admin-routing-steps {
     grid-template-columns: 1fr;
   }
 }
@@ -7266,4 +7414,36 @@ body.admin-scroll-page {
   }
 
 
+}
+
+.composer-scope-row {
+  max-width: 900px;
+  margin: 8px auto 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.composer-scope-row button {
+  border: 1px solid #dbe4f0;
+  background: rgba(255, 255, 255, .86);
+  color: #475569;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer-scope-row button.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 750;
+}
+
+.composer-scope-row button:disabled {
+  cursor: not-allowed;
+  opacity: .58;
 }

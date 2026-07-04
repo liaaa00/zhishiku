@@ -23,6 +23,8 @@ TABLE_QUERY_VERBS = (
     "筛选",
     "汇总",
     "规则",
+    "哪些",
+    "有哪些",
     "多少个",
     "有多少",
     "什么时候",
@@ -403,7 +405,7 @@ def _required_answer_columns(question: str, plan_select_columns: list[str]) -> l
         required.append("social_account")
     if any(term in text for term in ("公积金比例", "补充公积金比例")) or ("比例" in text and "公积金" in text):
         required.append("fund_ratio")
-    if "备注" in text:
+    if any(term in text for term in ("备注", "资料", "材料", "需提供", "需要提供", "提供哪些")):
         required.append("remark")
     return list(dict.fromkeys(column for column in required if column))
 
@@ -530,7 +532,7 @@ def _focus_key_markers(compact_question: str) -> tuple[str, ...]:
         markers.append("截止时间")
     if any(term in compact_question for term in ("预计缴款", "缴款时间")):
         markers.append("预计缴款时间")
-    if "备注" in compact_question or "注意事项" in compact_question:
+    if any(term in compact_question for term in ("备注", "注意事项", "资料", "材料", "需提供", "需要提供", "提供哪些")):
         markers.append("备注")
     if any(term in compact_question for term in ("同城转入", "谁来操作", "谁操作", "谁", "哪位", "操作人", "办理人", "经办人", "对接人", "后道")):
         markers.extend(["备注", "后道对接人", "对接人", "操作人", "办理人", "经办人"])

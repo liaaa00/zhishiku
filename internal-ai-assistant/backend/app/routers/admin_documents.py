@@ -5,13 +5,15 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..admin_schemas import ChunkUpdate, DocumentPermissionUpdate
+from ..admin_schemas import ChunkUpdate, DocumentClassificationUpdate, DocumentPermissionUpdate
 from ..admin_utils import load_groups_by_ids
 from ..ai_client import embed_texts, image_to_text
 from ..citation_utils import bounded_limit
 from ..database import get_db
 from ..document_access import cleanup_document_rows, ensure_admin_document
-from ..document_metadata import get_document_kind, get_document_scope, infer_document_kind, normalize_document_kind, normalize_document_scope
+from ..document_metadata import get_document_kind, get_document_scope, normalize_document_scope
+from ..document_quality import build_document_quality_report
+from ..document_routing_config import get_document_routing_config, infer_document_kind_from_config, normalize_configured_document_kind
 from ..document_status import set_doc_status
 from ..document_utils import extract_supported_document
 from ..models import BackgroundTask, Document, DocumentChunk, DocumentPageIndex, DocumentProcessingStatus, User
@@ -42,7 +44,7 @@ def list_documents(
     row_limit = bounded_limit(limit, 500, 1000)
     docs = db.execute(
         select(Document)
-        .where(~Document.source_type.like("chat_%"))
+        .where((~Document.source_type.like("chat_%")) | (Document.knowledge_scope == "test"))
         .order_by(Document.created_at.desc())
         .limit(row_limit)
     ).scalars().all()
@@ -58,6 +60,9 @@ def list_documents(
                 "source_type": d.source_type,
                 "knowledge_scope": get_document_scope(d),
                 "document_kind": get_document_kind(d),
+                "document_kind_confidence": float(getattr(d, "document_kind_confidence", 1.0) or 0.0),
+                "document_kind_reason": getattr(d, "document_kind_reason", "") or "",
+                "document_kind_status": getattr(d, "document_kind_status", "confirmed") or "confirmed",
                 "groups": [] if summary else [{"id": g.id, "name": g.name} for g in d.groups],
                 "groups_included": not summary,
                 "status": st.status if st else "pending",
@@ -85,8 +90,13 @@ def upload_document(
     source_type = ext.lstrip('.')
     title = Path(filename).stem
     resolved_scope = normalize_document_scope(knowledge_scope, "production")
-    inferred_kind = infer_document_kind(title, filename, source_type)
-    resolved_kind = inferred_kind if str(document_kind or "").strip().lower() in {"", "auto"} else normalize_document_kind(document_kind, inferred_kind)
+    classification = infer_document_kind_from_config(db, title, filename, source_type)
+    inferred_kind = str(classification.get("kind") or "general")
+    resolved_kind = inferred_kind if str(document_kind or "").strip().lower() in {"", "auto"} else normalize_configured_document_kind(document_kind, inferred_kind, db)
+    confidence = 1.0 if resolved_kind != inferred_kind else float(classification.get("confidence") or 0.0)
+    reason = "manual" if resolved_kind != inferred_kind else "; ".join(str(item) for item in classification.get("reasons") or [])[:1000]
+    threshold = float(get_document_routing_config(db).get("classification", {}).get("low_confidence_threshold", 0.55) or 0.55)
+    kind_status = "confirmed" if resolved_kind != inferred_kind else ("needs_review" if confidence < threshold else "auto")
 
     try:
         doc = Document(
@@ -97,6 +107,9 @@ def upload_document(
             source_type=source_type,
             knowledge_scope=resolved_scope,
             document_kind=resolved_kind,
+            document_kind_confidence=confidence,
+            document_kind_reason=reason,
+            document_kind_status=kind_status,
             created_by=user.id,
         )
         db.add(doc)
@@ -112,11 +125,74 @@ def upload_document(
             "message": "文档已上传，正在后台解析。",
             "knowledge_scope": resolved_scope,
             "document_kind": resolved_kind,
+            "document_kind_confidence": confidence,
+            "document_kind_reason": reason,
+            "document_kind_status": kind_status,
         }
     except Exception:
         db.rollback()
         storage_path.unlink(missing_ok=True)
         raise
+
+
+@router.get("/api/admin/documents/{document_id}/diagnostics")
+def get_document_diagnostics(document_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    doc = ensure_admin_document(db, document_id)
+    st = db.get(DocumentProcessingStatus, doc.id)
+    pi = db.get(DocumentPageIndex, doc.id)
+    chunks = db.execute(
+        select(DocumentChunk).where(DocumentChunk.document_id == doc.id).order_by(DocumentChunk.chunk_index.asc()).limit(5)
+    ).scalars().all()
+    routing = get_document_routing_config(db)
+    kind = get_document_kind(doc)
+    kind_options = {str(item.get("value") or ""): str(item.get("label") or item.get("value") or "") for item in routing.get("document_kinds") or [] if isinstance(item, dict)}
+    reason_text = getattr(doc, "document_kind_reason", "") or ""
+    classification_reasons = [part.strip() for part in reason_text.split(";") if part.strip()]
+    try:
+        quality_report = build_document_quality_report(db, doc.id)
+    except ValueError:
+        quality_report = None
+    return {
+        "ok": True,
+        "document": {
+            "id": doc.id,
+            "title": doc.title,
+            "filename": doc.filename,
+            "source_type": doc.source_type,
+            "knowledge_scope": get_document_scope(doc),
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        },
+        "classification": {
+            "kind": kind,
+            "label": kind_options.get(kind, kind),
+            "confidence": float(getattr(doc, "document_kind_confidence", 0.0) or 0.0),
+            "status": getattr(doc, "document_kind_status", "confirmed") or "confirmed",
+            "reason": reason_text,
+            "reasons": classification_reasons,
+            "manual_confirmed": (getattr(doc, "document_kind_status", "") or "") == "confirmed",
+        },
+        "processing": {
+            "status": st.status if st else "pending",
+            "stage": st.stage if st else "uploaded",
+            "message": st.message if st else "文档已上传，等待后台解析。",
+            "chunks": st.chunks if st else 0,
+            "searchable": st.searchable if st else False,
+        },
+        "quality": quality_report,
+        "page_index": pageindex_admin_summary(pi),
+        "chunk_preview": [
+            {"id": c.id, "page_number": c.page_number, "chunk_index": c.chunk_index, "content": (c.content or "")[:700]}
+            for c in chunks
+        ],
+        "suggestions": [
+            item for item in [
+                "分类置信度较低，建议管理员确认文档类型。" if float(getattr(doc, "document_kind_confidence", 1.0) or 0.0) < 0.55 else "",
+                "文档尚不可检索，请检查解析任务或重新解析。" if not (st and st.searchable) else "",
+                "高级索引未就绪，可在需要结构化阅读时重建 PageIndex。" if pageindex_admin_summary(pi).get("status") not in {"ready", "stale"} else "",
+            ]
+            if item
+        ],
+    }
 
 
 @router.get("/api/admin/documents/{document_id}/chunks")
@@ -246,6 +322,19 @@ def delete_document(document_id: str, db: Session = Depends(get_db), actor: User
             # 不应让文件清理失败导致前端误以为删除失败；残留文件后续可由维护任务清理。
             file_warning = f"数据库记录已删除，但原文件暂时被占用未能立即清理：{exc}"
     return {"ok": True, "warning": file_warning}
+
+
+@router.put("/api/admin/documents/{document_id}/classification")
+def update_document_classification(document_id: str, req: DocumentClassificationUpdate, db: Session = Depends(get_db), actor: User = Depends(require_admin)):
+    doc = ensure_admin_document(db, document_id)
+    old_kind = get_document_kind(doc)
+    doc.document_kind = normalize_configured_document_kind(req.document_kind, old_kind, db)
+    doc.document_kind_confidence = 1.0
+    doc.document_kind_reason = "manual"
+    doc.document_kind_status = "confirmed"
+    audit(db, actor, "document.classification_update", "document", doc.id, {"old_kind": old_kind, "document_kind": doc.document_kind})
+    db.commit()
+    return {"ok": True, "id": doc.id, "document_kind": doc.document_kind, "document_kind_confidence": doc.document_kind_confidence, "document_kind_status": doc.document_kind_status}
 
 
 @router.put("/api/admin/documents/{document_id}/permissions")

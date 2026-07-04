@@ -3,15 +3,16 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..document_metadata import (
-    allowed_kinds_for_query_topic,
     enrich_context_metadata,
     filter_contexts_by_allowed_kinds,
     normalize_document_scope,
 )
-from ..models import User
+from ..document_routing_config import allowed_kinds_for_query_topic_config
+from ..models import Document, DocumentChunk, User
 from ..settings_service import get_embedding_config
 from .evidence_checker import check_evidence
 from .query_analyzer import analyze_query
@@ -126,13 +127,127 @@ def _should_check_graph(question: str, route_name: str) -> bool:
 
 
 def _context_identity(context: dict[str, Any]) -> str:
-    return "|".join(str(context.get(key) or "") for key in ("retrieval_channel", "document_id", "chunk_id", "chunk_index", "content"))
+    return "|".join(str(context.get(key) or "") for key in ("document_id", "chunk_id", "chunk_index", "content"))
 
 
-def _merge_contexts(primary: list[dict[str, Any]], extra: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+def _compact_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _add_title_token(tokens: set[str], token: str) -> None:
+    compact = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(token or "")).lower()
+    if len(compact) >= 4 and not compact.isdigit():
+        tokens.add(compact)
+        without_tail_number = re.sub(r"\d{2,}$", "", compact)
+        if len(without_tail_number) >= 4 and not without_tail_number.isdigit():
+            tokens.add(without_tail_number)
+
+
+def _title_match_tokens(value: Any) -> set[str]:
+    raw = str(value or "").rsplit(".", 1)[0]
+    tokens: set[str] = set()
+    _add_title_token(tokens, raw)
+    for part in re.split(r"[^0-9A-Za-z\u4e00-\u9fff]+", raw):
+        _add_title_token(tokens, part)
+    return tokens
+
+
+def _document_title_matches_question(question: str, title: str, filename: str) -> bool:
+    compact_question = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(question or "")).lower()
+    if len(compact_question) < 4:
+        return False
+    for candidate in (title, str(filename or "").rsplit(".", 1)[0]):
+        for token in _title_match_tokens(candidate):
+            if token in compact_question:
+                return True
+    return False
+
+
+def _explicit_title_match_document_ids(db: Session, question: str, knowledge_scope: str, user: User | None = None) -> set[str]:
+    """Return accessible documents whose title/filename is explicitly mentioned in the question.
+
+    Graph evidence is useful as supporting context, but when the user names a document
+    such as “电子劳动合同操作指南”, the named document should remain the primary source.
+    """
+    query = select(Document)
+    if user is None:
+        # Without a user object we cannot safely apply personal attachment permissions,
+        # so keep the legacy conservative behavior for chat-scoped uploads.
+        query = query.where(~Document.source_type.like("chat_%"))
+    if knowledge_scope != "all":
+        query = query.where(Document.knowledge_scope == knowledge_scope)
+    group_ids = None
+    has_access = None
+    if user is not None:
+        from ..retrieval import has_document_access, user_group_ids
+
+        group_ids = user_group_ids(user)
+        has_access = has_document_access
+    matched: set[str] = set()
+    for doc in db.execute(query).scalars().all():
+        if has_access is not None and not has_access(db, doc, user, group_ids, knowledge_scope=knowledge_scope):
+            continue
+        if _document_title_matches_question(question, doc.title or "", doc.filename or ""):
+            matched.add(str(doc.id))
+    return matched
+
+
+def _question_recall_terms(question: str) -> set[str]:
+    compact = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(question or "")).lower()
+    terms = set(re.findall(r"[a-z0-9_]{2,}", compact))
+    cjk = "".join(re.findall(r"[\u4e00-\u9fff]", compact))
+    for size in (2, 3, 4, 5, 6):
+        for index in range(max(0, len(cjk) - size + 1)):
+            terms.add(cjk[index : index + size])
+    return {term for term in terms if len(term) >= 2}
+
+
+def _explicit_title_match_contexts(db: Session, question: str, document_ids: set[str], limit: int) -> list[dict[str, Any]]:
+    if not document_ids:
+        return []
+    docs = {doc.id: doc for doc in db.execute(select(Document).where(Document.id.in_(document_ids))).scalars().all()}
+    if not docs:
+        return []
+    terms = _question_recall_terms(question)
+    chunks = db.execute(
+        select(DocumentChunk)
+        .where(DocumentChunk.document_id.in_(docs.keys()))
+        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index.asc())
+    ).scalars().all()
+    scored: list[tuple[float, int, dict[str, Any]]] = []
+    for chunk in chunks:
+        doc = docs.get(chunk.document_id)
+        if not doc:
+            continue
+        haystack = f"{doc.title} {doc.filename} {chunk.content or ''}".lower()
+        hits = [term for term in terms if term in haystack]
+        title_hits = [term for term in terms if term in f"{doc.title} {doc.filename}".lower()]
+        score = 0.86 + min(0.12, len(hits) * 0.015) + min(0.08, len(title_hits) * 0.02)
+        context = {
+            "document_id": doc.id,
+            "document_title": doc.title,
+            "filename": doc.filename,
+            "chunk_id": chunk.id,
+            "page_number": chunk.page_number,
+            "chunk_index": chunk.chunk_index,
+            "source_type": doc.source_type,
+            "content": chunk.content,
+            "score": round(min(score, 0.99), 4),
+            "match_terms": hits[:12],
+            "match_reason": "显式标题命中文档",
+            "retrieval_channel": "title_match",
+            "title_match_protected": True,
+        }
+        scored.append((float(context["score"]), int(chunk.chunk_index or 0), context))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [item[2] for item in scored[: max(1, limit)]]
+
+
+def _merge_contexts(primary: list[dict[str, Any]], extra: list[dict[str, Any]], limit: int, *, extra_first: bool = True) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for context in [*extra, *primary]:
+    ordered = [*extra, *primary] if extra_first else [*primary, *extra]
+    for context in ordered:
         identity = _context_identity(context)
         if identity in seen:
             continue
@@ -166,7 +281,8 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
 
     graph_checked = _should_check_graph(question, route.name)
     graph_contexts = _graph_contexts_for_question(db, question, user, top_k, scope) if graph_checked else []
-    graph_primary_query = _should_use_graph_as_primary_context(question)
+    explicit_title_match_ids = _explicit_title_match_document_ids(db, question, scope, user)
+    graph_primary_query = route.name != "table" and _should_use_graph_as_primary_context(question) and not explicit_title_match_ids
     original_route = route.to_dict()
     contexts = result.contexts
     backend = result.backend
@@ -181,14 +297,20 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
         route_meta = {"name": "text", "intent": "text_qa", "confidence": max(float(route.confidence or 0.0), 0.86), "reason": f"graph_primary_query_overrode_{route.name}"}
         note_parts.append("graph_direct")
     elif graph_contexts and route.name != "table":
-        contexts = _merge_contexts(contexts, graph_contexts, max(top_k, len(contexts), 8))
+        contexts = _merge_contexts(contexts, graph_contexts, max(top_k, len(contexts), 8), extra_first=not bool(explicit_title_match_ids))
         backend = "hybrid+graph" if backend else "graph"
         note_parts.append("graph_merged")
+
+    title_match_contexts = _explicit_title_match_contexts(db, question, explicit_title_match_ids, max(top_k, 8)) if route.name != "table" else []
+    if title_match_contexts:
+        contexts = _merge_contexts(title_match_contexts, contexts, max(top_k, len(contexts), 8), extra_first=False)
+        backend = f"{backend}+title" if backend else "title_match"
+        note_parts.append(f"title_match_contexts={len(title_match_contexts)}")
 
     contexts = enrich_context_metadata(db, contexts)
     route_name_for_filter = str(route_meta.get("name") or route.name)
     query_profile = (result.meta or {}).get("query_profile") or {}
-    allowed_doc_kinds = allowed_kinds_for_query_topic(query_profile.get("topic"), route_name_for_filter)
+    allowed_doc_kinds = allowed_kinds_for_query_topic_config(db, query_profile.get("topic"), route_name_for_filter)
     filtered_contexts, document_kind_dropped = filter_contexts_by_allowed_kinds(contexts, allowed_doc_kinds)
     if filtered_contexts:
         contexts = filtered_contexts
@@ -210,6 +332,7 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
             "knowledge_scope": scope,
             "allowed_document_kinds": sorted(allowed_doc_kinds),
             "document_kind_filtered_count": document_kind_dropped,
+            "title_match_context_count": len(title_match_contexts),
             "embedding_quality": _embedding_quality_meta(db),
             "evidence_check": evidence.to_dict(),
             "graph_retrieval": {
@@ -218,6 +341,8 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
                 "context_count": len(graph_contexts),
                 "merged_into_contexts": bool(graph_contexts and (route.name != "table" or graph_primary_query)),
                 "direct_answer": bool(graph_contexts and graph_primary_query),
+                "explicit_title_match_document_ids": sorted(explicit_title_match_ids),
+                "title_match_protected_primary": bool(explicit_title_match_ids),
             },
         }
     )

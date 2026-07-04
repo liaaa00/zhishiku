@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..admin_schemas import ChatRequest, FeedbackCreate
-from ..ai_client import chat_answer_v2, classify_chat_intent, conversational_answer, stream_chat_answer_v2, stream_conversational_answer
+from ..ai_client import chat_answer_v2, classify_chat_intent, conversational_answer, extractive_fallback_answer, stream_chat_answer_v2, stream_conversational_answer
 from ..chat_interaction import (
     accessible_document_summary_contexts,
     append_interaction_footer,
@@ -25,14 +25,15 @@ from ..chat_interaction import (
     recent_source_contexts,
 )
 from ..database import SessionLocal, get_db
-from ..document_metadata import infer_document_kind
+from ..document_routing_config import get_document_routing_config, infer_document_kind_from_config
 from ..grounding import compute_grounding_confidence, filter_relevant_contexts, grounding_reason_for_contexts, serialize_sources
 from ..models import ChatMessage, ChatSession, Document, Feedback, User
+from ..prompt_template_service import select_prompt_templates_for_contexts
 from ..retrieval import adaptive_retrieve_contexts
 from ..routers.admin_feedback import FEEDBACK_CATEGORIES
 from ..settings_service import get_model_config
 from ..structured_digest import build_structured_digest, should_use_structured_digest
-from ..table_query import build_table_answer, build_table_structured_result
+from ..table_query import build_table_answer, build_table_structured_result, is_table_query
 from ..task_service import enqueue_document_task
 from ..upload_policy import CHAT_FILE_EXTENSIONS, IMAGE_EXTENSIONS
 from ..upload_security import validate_upload_file
@@ -76,6 +77,9 @@ def upload_chat_attachment(file: UploadFile = File(...), db: Session = Depends(g
 
     source_type = "chat_image" if ext in IMAGE_EXTENSIONS else f"chat_{ext.lstrip('.')}"
     title = Path(filename).stem
+    classification = infer_document_kind_from_config(db, title, filename, source_type)
+    confidence = float(classification.get("confidence") or 0.0)
+    threshold = float(get_document_routing_config(db).get("classification", {}).get("low_confidence_threshold", 0.55) or 0.55)
     doc = Document(
         id=doc_id,
         title=title,
@@ -83,7 +87,10 @@ def upload_chat_attachment(file: UploadFile = File(...), db: Session = Depends(g
         storage_path=str(storage_path),
         source_type=source_type,
         knowledge_scope="production",
-        document_kind=infer_document_kind(title, filename, source_type),
+        document_kind=str(classification.get("kind") or "general"),
+        document_kind_confidence=confidence,
+        document_kind_reason="; ".join(str(item) for item in classification.get("reasons") or [])[:1000],
+        document_kind_status="needs_review" if confidence < threshold else "auto",
         created_by=user.id,
     )
     db.add(doc)
@@ -105,6 +112,36 @@ def summary_display_sources(contexts: list[dict], interaction_meta: dict, summar
     return serialize_sources(contexts)
 
 
+GENERIC_ANSWER_MATCH_TERMS = {"公", "司", "公司", "员工", "标准", "模板", "资料", "材料", "信息", "字段", "需要", "提供", "是", "有", "在", "今年", "什么", "哪些", "多少", "是否", "吗"}
+
+
+def _safe_context_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _looks_like_weak_generic_answer_context(context: dict, ranking: dict) -> bool:
+    """Reject contexts that only match generic words such as 公司/是.
+
+    Retrieval may still surface these as UI candidates, but sending them into the
+    answer composer makes unrelated questions look grounded and can trigger slow
+    model calls. Keep contexts with explicit intent signals, specific match terms,
+    or strong semantic scores.
+    """
+
+    if ranking.get("positive_signals"):
+        return False
+    match_terms = [str(term).strip() for term in (context.get("match_terms") or []) if str(term).strip()]
+    specific_terms = [term for term in match_terms if len(term) >= 2 and term not in GENERIC_ANSWER_MATCH_TERMS]
+    lexical_coverage = _safe_context_float(ranking.get("lexical_coverage"), 0.0)
+    best_score = max(_safe_context_float(context.get("rerank_score"), 0.0), _safe_context_float(context.get("score"), 0.0))
+    if not specific_terms:
+        return best_score < 0.58
+    return lexical_coverage < 0.12 and best_score < 0.58
+
+
 def _answer_context_is_relevant(context: dict) -> bool:
     source_quality = context.get("source_quality") if isinstance(context.get("source_quality"), dict) else {}
     if source_quality.get("grade") == "blocked":
@@ -113,10 +150,14 @@ def _answer_context_is_relevant(context: dict) -> bool:
     channel = context.get("retrieval_channel") or ("pageindex" if context.get("pageindex_source") else "")
     if channel == "table" and context.get("is_header"):
         return False
-    if channel in {"table", "graph", "pageindex"}:
+    if channel in {"table", "graph"}:
         return True
 
     ranking = context.get("intent_ranking") if isinstance(context.get("intent_ranking"), dict) else {}
+    if _looks_like_weak_generic_answer_context(context, ranking):
+        return False
+    if channel == "pageindex":
+        return True
     if ranking.get("positive_signals"):
         return True
 
@@ -130,9 +171,7 @@ def _answer_context_is_relevant(context: dict) -> bool:
     return False
 
 
-def model_contexts_for_answer(contexts: list[dict], summary_mode: bool, max_contexts: int = 600, max_chars: int = 500000) -> list[dict]:
-    if not summary_mode:
-        return [context for context in contexts if _answer_context_is_relevant(context)]
+def _cap_answer_contexts(contexts: list[dict], max_contexts: int, max_chars: int) -> list[dict]:
     selected: list[dict] = []
     used_chars = 0
     for context in contexts:
@@ -141,14 +180,41 @@ def model_contexts_for_answer(contexts: list[dict], summary_mode: bool, max_cont
         content = str(context.get("content") or "")
         remaining_chars = max_chars - used_chars
         if len(content) > remaining_chars:
-            if remaining_chars > 0 and not selected:
-                clipped = dict(context)
-                clipped["content"] = content[:remaining_chars]
-                selected.append(clipped)
+            if remaining_chars <= 0:
+                break
+            clipped = dict(context)
+            clipped["content"] = content[:remaining_chars].rstrip() + "..."
+            clipped["context_clipped_for_answer"] = True
+            selected.append(clipped)
+            used_chars += remaining_chars
             break
         selected.append(context)
         used_chars += len(content)
     return selected
+
+
+def model_contexts_for_answer(contexts: list[dict], summary_mode: bool, max_contexts: int = 600, max_chars: int = 500000) -> list[dict]:
+    if not summary_mode:
+        relevant = [context for context in contexts if _answer_context_is_relevant(context)]
+        # Normal chat turns should not send dozens of long chunks to the model. Keep
+        # the strongest evidence, while the full source list remains available for UI citations.
+        return _cap_answer_contexts(relevant, max_contexts=min(max_contexts, 8), max_chars=min(max_chars, 18000))
+    selected = _cap_answer_contexts(contexts, max_contexts=max_contexts, max_chars=max_chars)
+    return selected
+
+
+def should_use_fast_extractive_answer(question: str, contexts: list[dict], retrieval_meta: dict, *, summary_mode: bool, table_answer_mode: bool) -> bool:
+    if summary_mode or table_answer_mode or not contexts:
+        return False
+    intent = str(retrieval_meta.get("intent") or "")
+    if intent not in {"deep_analysis", "broad_business"}:
+        return False
+    total_chars = sum(len(str(context.get("content") or "")) for context in contexts)
+    pageindex_count = sum(1 for context in contexts if context.get("pageindex_source") or context.get("retrieval_channel") == "pageindex")
+    broad_markers = ("主要", "哪些", "有哪些", "总结", "概括", "功能", "需求", "流程")
+    compact_question = re.sub(r"\s+", "", question or "")
+    broad_question = any(marker in compact_question for marker in broad_markers)
+    return len(contexts) >= 5 and (total_chars >= 7000 or (broad_question and pageindex_count >= 1))
 
 
 LOW_SOURCE_QUALITY_GRADES = {"poor", "blocked"}
@@ -250,14 +316,14 @@ def build_retrieval_debug_summary(contexts: list[dict], candidate_count: int, co
     }
 
 
-def _call_knowledge_answer(question: str, contexts: list[dict], api_key: str | None, base_url: str | None, model: str | None, history: list[dict] | None = None, structured_digest: str = "") -> str:
+def _call_knowledge_answer(question: str, contexts: list[dict], api_key: str | None, base_url: str | None, model: str | None, history: list[dict] | None = None, structured_digest: str = "", prompt_instructions: str = "") -> str:
     legacy_answer = _main_compat_callable("chat_answer")
     if callable(legacy_answer) and not _is_default_ai_client_callable(legacy_answer, "chat_answer"):
         try:
             return legacy_answer(question, contexts, api_key, base_url, model, history=history)
         except TypeError:
             return legacy_answer(question, contexts, api_key, base_url, model)
-    return chat_answer_v2(question, contexts, api_key, base_url, model, history=history, structured_digest=structured_digest)
+    return chat_answer_v2(question, contexts, api_key, base_url, model, history=history, structured_digest=structured_digest, prompt_instructions=prompt_instructions)
 
 
 def recent_chat_history(db: Session, session_id: str, user: User, max_messages: int = 6) -> List[dict]:
@@ -271,6 +337,36 @@ def recent_chat_history(db: Session, session_id: str, user: User, max_messages: 
     return items[-max_messages:]
 
 
+BUSINESS_KNOWLEDGE_ANCHORS = (
+    "公司",
+    "员工",
+    "社保",
+    "医保",
+    "公积金",
+    "合同",
+    "工单",
+    "制度",
+    "政策",
+    "流程",
+    "资料",
+    "文档",
+    "表单",
+    "年会",
+    "抽奖",
+    "一等奖",
+)
+BUSINESS_QUESTION_MARKERS = ("什么", "哪些", "多少", "是否", "怎么", "如何", "哪", "吗", "？", "?")
+
+
+def is_business_knowledge_like_request(question: str) -> bool:
+    text = re.sub(r"\s+", "", (question or "").strip().lower())
+    if not text or is_conversation_only_request(text):
+        return False
+    if len(text) < 6:
+        return False
+    return any(anchor in text for anchor in BUSINESS_KNOWLEDGE_ANCHORS) and any(marker in text for marker in BUSINESS_QUESTION_MARKERS)
+
+
 def decide_chat_route(question: str, history: list[dict], cfg: dict) -> dict:
     """Route a chat turn using fast rules first, then AI classification for ambiguous cases."""
     if is_standalone_editing_request(question, has_history=bool(history)):
@@ -281,8 +377,12 @@ def decide_chat_route(question: str, history: list[dict], cfg: dict) -> dict:
         return {"intent": "summary", "should_retrieve": True, "summary_mode": True, "followup_mode": False, "source": "rule_summary", "reason": "accessible_summary_request"}
     if is_followup_request(question):
         return {"intent": "followup", "should_retrieve": True, "summary_mode": False, "followup_mode": True, "source": "rule_followup", "reason": "followup_request"}
+    if is_table_query(question):
+        return {"intent": "knowledge", "should_retrieve": True, "summary_mode": False, "followup_mode": False, "source": "rule_table_query", "reason": "table_query_keyword"}
     if is_explicit_knowledge_request(question):
         return {"intent": "knowledge", "should_retrieve": True, "summary_mode": False, "followup_mode": False, "source": "rule_knowledge", "reason": "explicit_knowledge_keyword"}
+    if is_business_knowledge_like_request(question):
+        return {"intent": "knowledge", "should_retrieve": True, "summary_mode": False, "followup_mode": False, "source": "rule_business_knowledge", "reason": "business_question_keyword"}
 
     classified = classify_chat_intent(question, history, cfg.get("api_key"), cfg.get("base_url"), cfg.get("model"))
     intent = classified.get("intent") or "unknown"
@@ -336,7 +436,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         candidate_count = 0
         retrieval_meta.update({"mode": "chat", "final_context_count": 0, "candidate_count": 0})
     else:
-        contexts, retrieval_backend, retrieval_note, candidate_count, retrieved_meta = retrieve_contexts(db, question, user, limit)
+        contexts, retrieval_backend, retrieval_note, candidate_count, retrieved_meta = retrieve_contexts(db, question, user, limit, knowledge_scope=req.knowledge_scope)
         retrieval_meta.update(retrieved_meta or {})
         if followup_mode:
             followup_limit = max(int(retrieval_meta.get("target_contexts") or limit), 6)
@@ -374,8 +474,13 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         if should_retrieve:
             if contexts and not answer_contexts:
                 retrieval_note = f"{retrieval_note}; answer_evidence_filtered" if retrieval_note else "answer_evidence_filtered"
+                retrieval_meta["candidate_source_count_before_answer_filter"] = len(sources)
+                sources = []
+                source_quality_notice = build_source_quality_notice(sources)
                 answer = "未在知识库中找到充分依据：虽然检索到了一些候选片段，但没有达到可用于回答的证据门槛。请换一个更具体的问题，或让管理员检查文档解析、授权和检索配置。"
             else:
+                sources = []
+                source_quality_notice = build_source_quality_notice(sources)
                 answer = "未在知识库中找到依据：当前没有检索到你有权限访问且与问题相关的资料。请换一个更具体的问题，或让管理员确认文档上传、解析和授权状态。"
         else:
             legacy_chat = _main_compat_callable("conversational_answer")
@@ -392,14 +497,26 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
     else:
         mode = "knowledge"
         table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
+        prompt_template_context = select_prompt_templates_for_contexts(db, answer_contexts, table_answer_mode=table_answer_mode)
+        retrieval_meta["prompt_template"] = {
+            "keys": prompt_template_context.get("keys") or [],
+            "labels": prompt_template_context.get("labels") or [],
+            "count": prompt_template_context.get("count") or 0,
+            "recommended": prompt_template_context.get("recommended") or [],
+            "applied_to_answer": not table_answer_mode,
+        }
         if table_answer_mode:
             answer = build_table_answer(question, answer_contexts)
             retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
+            retrieval_meta["answer_composer"] = "table_local"
+        elif should_use_fast_extractive_answer(question, answer_contexts, retrieval_meta, summary_mode=summary_mode, table_answer_mode=table_answer_mode):
+            answer = extractive_fallback_answer(question, answer_contexts, "large_context_fast_path")
+            retrieval_meta["answer_composer"] = "extractive_fast_path"
         else:
-            answer = _call_knowledge_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest)
+            answer = _call_knowledge_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest, prompt_instructions=prompt_template_context.get("instructions") or "")
+            retrieval_meta["answer_composer"] = "llm_grounded"
             if confidence < LOW_CONFIDENCE_THRESHOLD and not summary_mode and not recent_context_used:
                 answer = "未在知识库中找到充分依据：以下仅根据检索到的知识库片段生成，请结合引用片段核验。\n\n" + answer
-        retrieval_meta["answer_composer"] = "table_local" if table_answer_mode else "llm_grounded"
         answer = append_interaction_footer(answer, suggestions)
     answer = strip_inline_source_markers(answer)
     session_id = req.session_id or new_id()
@@ -426,6 +543,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         "source_quality_notice": source_quality_notice,
         "source_warning": source_quality_notice.get("warning") or "",
         "source_warnings": [source_quality_notice.get("warning")] if source_quality_notice.get("warning") else [],
+        "prompt_template": retrieval_meta.get("prompt_template") or {},
         "document_count": int(interaction_meta.get("document_count") or len(sources) or 0),
         "citation_mode": "accessible_documents" if summary_mode else "matched_chunks",
         "grounded": grounded,
@@ -499,7 +617,7 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                 retrieval_meta.update({"mode": "chat", "final_context_count": 0, "candidate_count": 0})
             else:
                 yield _sse_event("status", {"stage": "retrieving", "message": "正在检索知识库并组织回答。"})
-                contexts, retrieval_backend, retrieval_note, candidate_count, retrieved_meta = retrieve_contexts(stream_db, question, stream_user, limit)
+                contexts, retrieval_backend, retrieval_note, candidate_count, retrieved_meta = retrieve_contexts(stream_db, question, stream_user, limit, knowledge_scope=req.knowledge_scope)
                 retrieval_meta.update(retrieved_meta or {})
                 if followup_mode:
                     followup_limit = max(int(retrieval_meta.get("target_contexts") or limit), 6)
@@ -603,6 +721,15 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
             else:
                 prefix = ""
                 table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
+                prompt_template_context = select_prompt_templates_for_contexts(stream_db, answer_contexts, table_answer_mode=table_answer_mode)
+                retrieval_meta["prompt_template"] = {
+                    "keys": prompt_template_context.get("keys") or [],
+                    "labels": prompt_template_context.get("labels") or [],
+                    "count": prompt_template_context.get("count") or 0,
+                    "recommended": prompt_template_context.get("recommended") or [],
+                    "applied_to_answer": not table_answer_mode,
+                }
+                meta["prompt_template"] = retrieval_meta["prompt_template"]
                 if confidence < LOW_CONFIDENCE_THRESHOLD and not summary_mode and not recent_context_used and not table_answer_mode:
                     prefix = "未在知识库中找到充分依据：以下仅根据检索到的知识库片段生成，请结合引用片段核验。\n\n"
                     answer_parts.append(prefix)
@@ -612,6 +739,12 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                     retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
                     retrieval_meta["answer_composer"] = "table_local"
                     for piece in [answer_text[i : i + 24] for i in range(0, len(answer_text), 24)]:
+                        answer_parts.append(piece)
+                        yield _sse_event("delta", piece)
+                elif should_use_fast_extractive_answer(question, answer_contexts, retrieval_meta, summary_mode=summary_mode, table_answer_mode=table_answer_mode):
+                    retrieval_meta["answer_composer"] = "extractive_fast_path"
+                    answer_text = extractive_fallback_answer(question, answer_contexts, "large_context_fast_path")
+                    for piece in [answer_text[i : i + 80] for i in range(0, len(answer_text), 80)]:
                         answer_parts.append(piece)
                         yield _sse_event("delta", piece)
                 else:
@@ -626,7 +759,7 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                             answer_parts.append(piece)
                             yield _sse_event("delta", piece)
                     else:
-                        for piece in stream_chat_answer_v2(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest):
+                        for piece in stream_chat_answer_v2(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest, prompt_instructions=prompt_template_context.get("instructions") or ""):
                             answer_parts.append(piece)
                             yield _sse_event("delta", piece)
                 footer = ""
@@ -687,10 +820,19 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
     answer_contexts = model_contexts_for_answer(contexts, False)
     retrieval_meta["answer_context_count"] = len(answer_contexts)
     retrieval_meta["answer_context_filtered_count"] = max(0, len(contexts) - len(answer_contexts))
+    table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
+    prompt_template_context = select_prompt_templates_for_contexts(db, answer_contexts, table_answer_mode=table_answer_mode)
+    retrieval_meta["prompt_template"] = {
+        "keys": prompt_template_context.get("keys") or [],
+        "labels": prompt_template_context.get("labels") or [],
+        "count": prompt_template_context.get("count") or 0,
+        "recommended": prompt_template_context.get("recommended") or [],
+        "applied_to_answer": not table_answer_mode,
+    }
     confidence = compute_grounding_confidence(answer_contexts)
     prompt_context_preview = build_prompt_context_preview(answer_contexts)
     retrieval_debug_summary = build_retrieval_debug_summary(answer_contexts, candidate_count, confidence, source_quality_notice)
-    if retrieval_meta.get("retrieval_route", {}).get("name") == "table":
+    if table_answer_mode:
         retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
     source_diagnostics = []
     for index, context in enumerate(contexts, start=1):
@@ -735,6 +877,7 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
         "source_quality_notice": source_quality_notice,
         "source_warning": source_quality_notice.get("warning") or "",
         "source_warnings": [source_quality_notice.get("warning")] if source_quality_notice.get("warning") else [],
+        "prompt_template": retrieval_meta.get("prompt_template") or {},
         "query_analysis": retrieval_meta.get("query_analysis") or {},
         "retrieval_route": retrieval_meta.get("retrieval_route") or {},
         "evidence_check": retrieval_meta.get("evidence_check") or {},

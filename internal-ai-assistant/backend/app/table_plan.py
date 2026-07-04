@@ -57,7 +57,7 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "bank_account": ("银行账户", "银行账户是否开具完成", "开户状态"),
     "social_account": ("社保公积金账户", "社保账户", "公积金账户", "社保公积金账户是否开具完成"),
     "fund_ratio": ("公积金比例", "补充公积金比例", "缴存比例", "比例"),
-    "remark": ("备注", "备注要求", "说明", "注意事项"),
+    "remark": ("备注", "备注要求", "说明", "注意事项", "资料", "材料", "需提供", "需要提供", "提供哪些"),
     "backend_contact": ("后道对接人", "对接人", "操作人", "办理人", "经办人"),
     "social_rule": ("操作规则-社保", "社保操作规则", "社保规则"),
     "medical_rule": ("操作规则-医保", "医保操作规则", "医保规则"),
@@ -78,7 +78,7 @@ QUESTION_COLUMN_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("bank_account", ("银行账户",)),
     ("social_account", ("社保公积金账户", "社保账户", "公积金账户")),
     ("fund_ratio", ("公积金比例", "补充公积金比例", "比例")),
-    ("remark", ("备注", "备注要求", "说明", "注意事项")),
+    ("remark", ("备注", "备注要求", "说明", "注意事项", "资料", "材料", "需提供", "需要提供", "提供哪些")),
     ("backend_contact", ("后道对接人", "对接人", "操作人", "办理人", "经办人")),
     ("social_rule", ("社保操作规则", "操作规则-社保")),
     ("medical_rule", ("医保操作规则", "操作规则-医保")),
@@ -391,6 +391,25 @@ def _split_or_segments(text: str) -> list[str]:
     return [segment for segment in re.split(r"(?:或者|或|OR|or)", text) if segment]
 
 
+def _text_for_city_detection(text: str) -> str:
+    # “北仑分公司/北仑进度表/北仑表” often refers to the document name, not a row city.
+    cleaned = text
+    for pattern in (r"北仑分公司", r"北仑(?:开设)?(?:最新)?进度表", r"北仑表"):
+        cleaned = re.sub(pattern, "", cleaned)
+    return cleaned
+
+
+def _collapse_city_filters(filters: list[dict[str, str]]) -> list[dict[str, str]]:
+    city_filters = [item for item in filters if item.get("column") == "city" and item.get("operator") == "contains"]
+    if len(city_filters) <= 1:
+        return filters
+    values = [str(item.get("value") or "") for item in city_filters]
+    redundant = {value for value in values if any(value != other and value in other for other in values)}
+    if not redundant:
+        return filters
+    return [item for item in filters if not (item.get("column") == "city" and item.get("operator") == "contains" and str(item.get("value") or "") in redundant)]
+
+
 def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> list[dict[str, str]]:
     filters: list[dict[str, str]] = []
     for alias, markers in QUESTION_COLUMN_TERMS:
@@ -398,10 +417,11 @@ def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> lis
             filters.extend(_parse_marker_filters(text, alias, marker))
 
     if include_city_tokens:
-        for city in CITY_TERMS:
-            if city in text and not any(item.get("column") == "city" and item.get("value") == city for item in filters):
+        city_text = _text_for_city_detection(text)
+        for city in sorted(CITY_TERMS, key=len, reverse=True):
+            if city in city_text and not any(item.get("column") == "city" and item.get("value") == city for item in filters):
                 filters.append(_normalize_filter("city", city, "contains"))
-    return _dedupe_filters(filters)
+    return _collapse_city_filters(_dedupe_filters(filters))
 
 
 def parse_value_filters(question: str, include_quoted_company: bool = True) -> list[dict[str, str]]:

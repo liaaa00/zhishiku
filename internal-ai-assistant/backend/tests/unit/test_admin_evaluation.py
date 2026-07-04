@@ -60,3 +60,30 @@ def test_evaluation_overview_summarizes_feedback_documents_and_cases() -> None:
     assert payload["documents"]["failed"] == 1
     assert any("反馈" in item or "文档" in item for item in payload["risk_signals"])
     assert payload["automation_note"]
+
+
+def test_admin_can_create_and_delete_custom_evaluation_case() -> None:
+    client = make_client()
+
+    create_resp = client.post(
+        "/api/admin/evaluation/cases",
+        json={"id": "custom-case-1", "category": "反馈沉淀", "question": "制度报销需要哪些材料？", "why": "来自用户反馈", "top_k": 6},
+    )
+    assert create_resp.status_code == 200
+    created = create_resp.json()["case"]
+    assert created["id"] == "custom-case-1"
+    assert created["source"] == "custom"
+
+    list_resp = client.get("/api/admin/evaluation/cases")
+    assert list_resp.status_code == 200
+    cases = list_resp.json()["cases"]
+    assert any(item["id"] == "custom-case-1" and item["source"] == "custom" for item in cases)
+
+    overview_resp = client.get("/api/admin/evaluation/overview")
+    assert overview_resp.status_code == 200
+    assert any(item["id"] == "custom-case-1" for item in overview_resp.json()["cases"])
+
+    delete_resp = client.delete("/api/admin/evaluation/cases/custom-case-1")
+    assert delete_resp.status_code == 200
+    list_after = client.get("/api/admin/evaluation/cases").json()["cases"]
+    assert not any(item["id"] == "custom-case-1" for item in list_after)

@@ -54,6 +54,9 @@ class Document(Base):
     source_type = Column(String(20), nullable=False, default="pdf")
     knowledge_scope = Column(String(30), nullable=False, default="production", index=True)  # production/test
     document_kind = Column(String(50), nullable=False, default="general", index=True)  # table/employee_guide/workorder/form/policy/general
+    document_kind_confidence = Column(Float, nullable=False, default=1.0)
+    document_kind_reason = Column(Text, nullable=False, default="")
+    document_kind_status = Column(String(30), nullable=False, default="confirmed", index=True)  # auto/needs_review/confirmed
     created_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     groups = relationship("Group", secondary=document_group_link, back_populates="documents")
