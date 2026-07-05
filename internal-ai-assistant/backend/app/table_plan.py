@@ -122,6 +122,7 @@ FILTER_OPERATOR_LABELS = {
     "not_contains": "不包含",
     "is_empty": "为空",
     "is_not_empty": "非空",
+    "is_concrete": "为有效值",
     "gt": "大于",
     "gte": "大于等于",
     "lt": "小于",
@@ -320,7 +321,7 @@ def _is_question_value(value: str) -> bool:
 def _normalize_filter(column: str, value: str = "", operator: str = "contains") -> dict[str, str]:
     normalized = {"column": column, "operator": operator}
     cleaned_value = clean(value).strip(" \t\r\n'\"‘’“”《》")
-    if operator not in {"is_empty", "is_not_empty"}:
+    if operator not in {"is_empty", "is_not_empty", "is_concrete"}:
         normalized["value"] = cleaned_value
     return normalized
 
@@ -382,7 +383,7 @@ def _dedupe_filters(filters: list[dict[str, str]]) -> list[dict[str, str]]:
         key = _filter_key(item.get("column", ""), item.get("operator", "contains"), item.get("value", ""))
         if key in seen:
             continue
-        if item.get("operator") not in {"is_empty", "is_not_empty"} and not item.get("value"):
+        if item.get("operator") not in {"is_empty", "is_not_empty", "is_concrete"} and not item.get("value"):
             continue
         seen.add(key)
         result.append(item)
@@ -393,7 +394,62 @@ def _split_or_segments(text: str) -> list[str]:
     return [segment for segment in re.split(r"(?:或者|或|OR|or)", text) if segment]
 
 
+_BRANCH_OPENING_TERMS = (
+    "开了分公司",
+    "开设了分公司",
+    "开设分公司",
+    "开分公司",
+    "有分公司",
+    "设立分公司",
+    "成立分公司",
+)
+
+_CITY_LIST_INTENT_TERMS = (
+    "哪些城市",
+    "哪几个城市",
+    "几个城市",
+    "多少个城市",
+    "多少座城市",
+    "在哪些城市",
+)
+
+_CURRENT_OPENING_TERMS = (
+    "目前",
+    "现在",
+    "当前",
+    "已开设",
+    "已开通",
+    "已经开设",
+    "已经开通",
+    "开设完成",
+    "开具完成",
+)
+
+
+def _has_branch_opening_intent(text: str) -> bool:
+    compact_text = compact(text)
+    return any(term in compact_text for term in _BRANCH_OPENING_TERMS)
+
+
+def city_terms_are_scope(question: str) -> bool:
+    """Return True when city-like words name the business scope rather than row city filters."""
+    compact_text = compact(question)
+    if not compact_text:
+        return False
+    has_city_list_intent = any(term in compact_text for term in _CITY_LIST_INTENT_TERMS)
+    return has_city_list_intent and _has_branch_opening_intent(compact_text)
+
+
+def _requires_opened_branch_status(text: str) -> bool:
+    compact_text = compact(text)
+    if not compact_text or not _has_branch_opening_intent(compact_text):
+        return False
+    return any(term in compact_text for term in _CURRENT_OPENING_TERMS) or any(term in compact_text for term in ("开了", "开设了"))
+
+
 def _text_for_city_detection(text: str) -> str:
+    if city_terms_are_scope(text):
+        return ""
     # “北仑分公司/北仑进度表/北仑表” often refers to the document name, not a row city.
     cleaned = text
     for pattern in (r"北仑分公司", r"北仑(?:开设)?(?:最新)?进度表", r"北仑表"):
@@ -412,7 +468,7 @@ def _collapse_city_filters(filters: list[dict[str, str]]) -> list[dict[str, str]
     return [item for item in filters if not (item.get("column") == "city" and item.get("operator") == "contains" and str(item.get("value") or "") in redundant)]
 
 
-def _requires_branch_company_name(text: str) -> bool:
+def _requires_concrete_branch_company_name(text: str) -> bool:
     compact_text = compact(text)
     if not compact_text:
         return False
@@ -429,11 +485,17 @@ def _requires_branch_company_name(text: str) -> bool:
             "开设公司名称为准",
         )
     )
-    if explicit_basis:
+    return explicit_basis or _has_branch_opening_intent(compact_text)
+
+
+def _requires_branch_company_name(text: str) -> bool:
+    compact_text = compact(text)
+    if not compact_text:
+        return False
+    if _requires_concrete_branch_company_name(compact_text):
         return True
-    branch_opening = any(term in compact_text for term in ("开了分公司", "开设分公司", "开分公司", "开设公司"))
     branch_name = any(term in compact_text for term in ("分公司名称", "开设公司名称"))
-    return branch_opening and branch_name and any(term in compact_text for term in ("有", "非空", "为准"))
+    return branch_name and any(term in compact_text for term in ("有", "非空", "不为空", "为准"))
 
 
 def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> list[dict[str, str]]:
@@ -448,7 +510,11 @@ def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> lis
             if city in city_text and not any(item.get("column") == "city" and item.get("value") == city for item in filters):
                 filters.append(_normalize_filter("city", city, "contains"))
     if _requires_branch_company_name(text):
-        filters.append(_normalize_filter("branch_company", operator="is_not_empty"))
+        operator = "is_concrete" if _requires_concrete_branch_company_name(text) else "is_not_empty"
+        filters.append(_normalize_filter("branch_company", operator=operator))
+    if _requires_opened_branch_status(text):
+        filters.append(_normalize_filter("bank_account", "是", "eq"))
+        filters.append(_normalize_filter("social_account", "是", "eq"))
     return _collapse_city_filters(_dedupe_filters(filters))
 
 
@@ -528,10 +594,11 @@ def select_columns(question: str, value_filters: list[dict[str, str]] | None = N
         if not column:
             continue
         for alias in COLUMN_ALIASES.get(column, ()):  # remove filter expressions before detecting projections
-            if operator in {"is_empty", "is_not_empty"}:
-                for phrase, empty_operator in _EMPTY_OPERATORS:
-                    if empty_operator == operator:
-                        text = text.replace(f"{alias}{phrase}", "")
+            if operator in {"is_empty", "is_not_empty", "is_concrete"}:
+                if operator in {"is_empty", "is_not_empty"}:
+                    for phrase, empty_operator in _EMPTY_OPERATORS:
+                        if empty_operator == operator:
+                            text = text.replace(f"{alias}{phrase}", "")
                 continue
             if not value:
                 continue

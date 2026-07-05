@@ -160,14 +160,27 @@ def test_beilun_alias_also_handles_short_month_and_field_question() -> None:
         db.close()
 
 
-def _progress_row(row_id: str, row_number: int, city: str) -> DocumentTableRow:
+def _progress_row(
+    row_id: str,
+    row_number: int,
+    city: str,
+    *,
+    bank: str = "是",
+    social: str = "是",
+    ratio: str | None = None,
+    branch_company: str | None = None,
+) -> DocumentTableRow:
+    if ratio is None:
+        ratio = "5%+5%、8%+8%、12+12%" if city == "宁波北仑" else "5%+5%"
+    if branch_company is None:
+        branch_company = "外服（浙江）企业服务有限公司" if city == "宁波北仑" else f"外服（浙江）企业服务有限公司{city}分公司"
     payload = {
         "省份": "浙江" if city in {"宁波北仑", "杭州"} else "北京",
         "城市": city,
-        "当前进度-1.银行账户是否开具完成": "是",
-        "当前进度-2.社保公积金账户是否开具完成": "是",
-        "当前进度-3.公积金比例": "5%+5%、8%+8%、12+12%" if city == "宁波北仑" else "5%+5%",
-        "当前进度-4.开设公司名称": "外服（浙江）企业服务有限公司" if city == "宁波北仑" else f"外服（浙江）企业服务有限公司{city}分公司",
+        "当前进度-1.银行账户是否开具完成": bank,
+        "当前进度-2.社保公积金账户是否开具完成": social,
+        "当前进度-3.公积金比例": ratio,
+        "当前进度-4.开设公司名称": branch_company,
     }
     return DocumentTableRow(
         id=row_id,
@@ -253,7 +266,7 @@ def test_beilun_progress_alias_matches_ningbo_beilun_row() -> None:
         db.close()
 
 
-def test_beilun_branch_city_list_uses_opened_company_name_not_dispatch_unit_name() -> None:
+def test_branch_city_list_treats_subject_as_scope_and_requires_opened_status() -> None:
     db = _db_session()
     try:
         user = User(id="admin", username="admin", password_hash="x", is_admin=True, is_active=True)
@@ -280,6 +293,9 @@ def test_beilun_branch_city_list_uses_opened_company_name_not_dispatch_unit_name
             _progress_header("progress-header"),
             _progress_row("progress-ningbo-beilun", 3, "宁波北仑"),
             _progress_row("progress-beijing", 4, "北京"),
+            _progress_row("progress-dalian", 5, "大连", ratio=""),
+            _progress_row("progress-yuncheng", 6, "运城", social="否"),
+            _progress_row("progress-guiyang", 7, "贵阳", bank="否", social="否", ratio="", branch_company="未开设"),
             _header("dispatch-header"),
             _row("dispatch-ningbo-202603", 3, "宁波"),
         ])
@@ -287,17 +303,25 @@ def test_beilun_branch_city_list_uses_opened_company_name_not_dispatch_unit_name
 
         question = "目前北仑在哪些城市开了分公司，以有分公司名称的为准。"
         plan = parse_table_query_plan(question)
-        assert {"column": "branch_company", "operator": "is_not_empty"} in plan.filters
+        assert {"column": "city", "operator": "contains", "value": "北仑"} not in plan.filters
+        assert {"column": "branch_company", "operator": "is_concrete"} in plan.filters
+        assert {"column": "bank_account", "operator": "eq", "value": "是"} in plan.filters
+        assert {"column": "social_account", "operator": "eq", "value": "是"} in plan.filters
+        assert plan.distinct_by == "city"
 
         contexts, meta = table_mode_contexts(db, question, user, top_k=8)
         data_rows = [item for item in contexts if not item.get("is_header")]
-        row_ids = [str(item.get("table_row_id")) for item in data_rows]
-        assert row_ids == ["progress-ningbo-beilun"]
-        assert meta["value_filter_matched_rows"] == 1
+        row_ids = {str(item.get("table_row_id")) for item in data_rows}
+        assert row_ids == {"progress-ningbo-beilun", "progress-beijing", "progress-dalian"}
+        assert meta["value_filter_matched_rows"] == 3
 
         answer = build_table_answer(question, contexts)
-        assert "共有 1 个城市" in answer
+        assert "共有 3 个城市" in answer
         assert "城市=宁波北仑" in answer
+        assert "城市=北京" in answer
+        assert "城市=大连" in answer
+        assert "城市=运城" not in answer
+        assert "城市=贵阳" not in answer
         assert "城市=宁波\n" not in answer
     finally:
         db.close()

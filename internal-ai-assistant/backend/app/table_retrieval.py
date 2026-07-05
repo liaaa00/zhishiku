@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .models import User
-from .table_plan import CITY_EQUIVALENTS, CITY_TERMS, COLUMN_ALIASES, clean as plan_clean, compact as _compact, describe_table_query_plan, parse_table_query_plan
+from .table_plan import CITY_EQUIVALENTS, CITY_TERMS, COLUMN_ALIASES, city_terms_are_scope, clean as plan_clean, compact as _compact, describe_table_query_plan, parse_table_query_plan
 from .table_query import row_to_context, select_table_documents, table_rows_for_documents
 from .table_schema import infer_column_semantics, semantic_columns_debug, semantic_schema_suggestions, semantic_value
 from .table_schema_aliases import apply_confirmed_schema_aliases, load_table_schema_aliases, merge_schema_suggestion_status
@@ -230,6 +230,8 @@ def _row_matches_single_filter(context: dict, item: dict[str, str]) -> bool:
         return all(_compare_values(candidate, value, operator) for candidate in focused_values) if focused_values else True
     if operator == "is_not_empty":
         return any(_compare_values(candidate, value, operator) for candidate in focused_values)
+    if operator == "is_concrete":
+        return any(_has_concrete_value(candidate) for candidate in focused_values)
     if operator == "ne":
         return all(_compare_values(candidate, value, operator) for candidate in focused_values) if focused_values else True
     return any(_compare_values(candidate, value, operator) for candidate in focused_values)
@@ -398,7 +400,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
     month_tokens = plan.time_tokens or _month_tokens(question)
     year_tokens = _year_tokens(question)
     branch_completion_query = plan.branch_completion_filter
-    city_tokens = [] if branch_completion_query else _city_tokens(question)
+    city_tokens = [] if branch_completion_query or city_terms_are_scope(question) else _city_tokens(question)
     value_filters = plan.filters
     filter_logic = plan.filter_logic
     filter_groups = plan.filter_groups
