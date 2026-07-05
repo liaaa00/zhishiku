@@ -140,7 +140,13 @@ def _row_values_for_alias(row: dict, alias_group: str) -> list[str]:
     return values
 
 
-def _row_values_for_aliases(row: dict, alias_groups: tuple[str, ...], semantic_map: dict | None = None) -> list[str]:
+def _row_values_for_aliases(
+    row: dict,
+    alias_groups: tuple[str, ...],
+    semantic_map: dict | None = None,
+    *,
+    allow_fallback: bool = True,
+) -> list[str]:
     values: list[str] = []
     for group in alias_groups:
         if semantic_map and group in semantic_map:
@@ -148,7 +154,7 @@ def _row_values_for_aliases(row: dict, alias_groups: tuple[str, ...], semantic_m
             if raw_name in row:
                 values.append(_clean(row.get(raw_name, "")))
         values.extend(_row_values_for_alias(row, group))
-    if not values:
+    if not values and allow_fallback:
         values = [_clean(value) for value in row.values()]
     return list(dict.fromkeys(values))
 
@@ -212,7 +218,7 @@ def _row_matches_single_filter(context: dict, item: dict[str, str]) -> bool:
     column = item.get("column") or ""
     operator = item.get("operator") or "contains"
     value = item.get("value") or ""
-    focused_values = _row_values_for_aliases(row, (column,), semantic_map)
+    focused_values = _row_values_for_aliases(row, (column,), semantic_map, allow_fallback=column != "branch_company")
     combined = " ".join(value for value in focused_values if value)
     if column == "city" and operator in {"contains", "eq"} and value:
         return any(alias in combined for alias in _city_equivalents(value))

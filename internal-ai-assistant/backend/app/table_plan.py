@@ -54,6 +54,7 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "city": ("城市", "所在城市", "地市", "地区", "省市"),
     "province": ("省份", "省", "所在省份"),
     "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称"),
+    "branch_company": ("开设公司名称", "当前进度-4.开设公司名称", "分公司名称"),
     "bank_account": ("银行账户", "银行账户是否开具完成", "开户状态"),
     "social_account": ("社保公积金账户", "社保账户", "公积金账户", "社保公积金账户是否开具完成"),
     "fund_ratio": ("公积金比例", "补充公积金比例", "缴存比例", "比例"),
@@ -96,6 +97,7 @@ COLUMN_LABELS = {
     "city": "城市",
     "province": "省份",
     "company": "公司",
+    "branch_company": "分公司名称",
     "bank_account": "银行账户",
     "social_account": "社保公积金账户",
     "fund_ratio": "公积金比例",
@@ -410,6 +412,30 @@ def _collapse_city_filters(filters: list[dict[str, str]]) -> list[dict[str, str]
     return [item for item in filters if not (item.get("column") == "city" and item.get("operator") == "contains" and str(item.get("value") or "") in redundant)]
 
 
+def _requires_branch_company_name(text: str) -> bool:
+    compact_text = compact(text)
+    if not compact_text:
+        return False
+    explicit_basis = any(
+        term in compact_text
+        for term in (
+            "以有分公司名称为准",
+            "以有分公司名称的为准",
+            "有分公司名称为准",
+            "有分公司名称的为准",
+            "分公司名称为准",
+            "以有开设公司名称为准",
+            "有开设公司名称",
+            "开设公司名称为准",
+        )
+    )
+    if explicit_basis:
+        return True
+    branch_opening = any(term in compact_text for term in ("开了分公司", "开设分公司", "开分公司", "开设公司"))
+    branch_name = any(term in compact_text for term in ("分公司名称", "开设公司名称"))
+    return branch_opening and branch_name and any(term in compact_text for term in ("有", "非空", "为准"))
+
+
 def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> list[dict[str, str]]:
     filters: list[dict[str, str]] = []
     for alias, markers in QUESTION_COLUMN_TERMS:
@@ -421,6 +447,8 @@ def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> lis
         for city in sorted(CITY_TERMS, key=len, reverse=True):
             if city in city_text and not any(item.get("column") == "city" and item.get("value") == city for item in filters):
                 filters.append(_normalize_filter("city", city, "contains"))
+    if _requires_branch_company_name(text):
+        filters.append(_normalize_filter("branch_company", operator="is_not_empty"))
     return _collapse_city_filters(_dedupe_filters(filters))
 
 

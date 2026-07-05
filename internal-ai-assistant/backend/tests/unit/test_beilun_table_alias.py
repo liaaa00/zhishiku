@@ -11,6 +11,7 @@ from app.models import Document, DocumentTableRow, User
 from app.rag.query_analyzer import analyze_query
 from app.rag.retrieval_router import select_route
 from app.table_plan import parse_table_query_plan
+from app.table_query import build_table_answer
 from app.table_retrieval import table_mode_contexts
 
 
@@ -248,5 +249,55 @@ def test_beilun_progress_alias_matches_ningbo_beilun_row() -> None:
             assert data_rows
             assert str(data_rows[0].get("table_row_id")) == "progress-ningbo-beilun"
             assert "城市=宁波北仑" in str(data_rows[0].get("content") or "")
+    finally:
+        db.close()
+
+
+def test_beilun_branch_city_list_uses_opened_company_name_not_dispatch_unit_name() -> None:
+    db = _db_session()
+    try:
+        user = User(id="admin", username="admin", password_hash="x", is_admin=True, is_active=True)
+        progress_doc = Document(
+            id="doc-beilun-progress",
+            title="北仑分公司开设最新进度表0310",
+            filename="北仑分公司开设最新进度表0310.xlsx",
+            storage_path="progress.xlsx",
+            source_type="xlsx",
+            created_by="admin",
+        )
+        dispatch_doc = Document(
+            id="doc-beilun-dispatch",
+            title="202603北仑派单截止时间",
+            filename="202603北仑派单截止时间.xlsx",
+            storage_path="dispatch.xlsx",
+            source_type="xlsx",
+            created_by="admin",
+        )
+        db.add_all([
+            user,
+            progress_doc,
+            dispatch_doc,
+            _progress_header("progress-header"),
+            _progress_row("progress-ningbo-beilun", 3, "宁波北仑"),
+            _progress_row("progress-beijing", 4, "北京"),
+            _header("dispatch-header"),
+            _row("dispatch-ningbo-202603", 3, "宁波"),
+        ])
+        db.commit()
+
+        question = "目前北仑在哪些城市开了分公司，以有分公司名称的为准。"
+        plan = parse_table_query_plan(question)
+        assert {"column": "branch_company", "operator": "is_not_empty"} in plan.filters
+
+        contexts, meta = table_mode_contexts(db, question, user, top_k=8)
+        data_rows = [item for item in contexts if not item.get("is_header")]
+        row_ids = [str(item.get("table_row_id")) for item in data_rows]
+        assert row_ids == ["progress-ningbo-beilun"]
+        assert meta["value_filter_matched_rows"] == 1
+
+        answer = build_table_answer(question, contexts)
+        assert "共有 1 个城市" in answer
+        assert "城市=宁波北仑" in answer
+        assert "城市=宁波\n" not in answer
     finally:
         db.close()
