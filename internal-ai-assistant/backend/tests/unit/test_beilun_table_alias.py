@@ -325,3 +325,60 @@ def test_branch_city_list_treats_subject_as_scope_and_requires_opened_status() -
         assert "城市=宁波\n" not in answer
     finally:
         db.close()
+
+
+def test_branch_progress_analysis_uses_scope_and_keeps_unopened_rows() -> None:
+    db = _db_session()
+    try:
+        user = User(id="admin", username="admin", password_hash="x", is_admin=True, is_active=True)
+        progress_doc = Document(
+            id="doc-beilun-progress",
+            title="北仑分公司开设最新进度表0310",
+            filename="北仑分公司开设最新进度表0310.xlsx",
+            storage_path="progress.xlsx",
+            source_type="xlsx",
+            created_by="admin",
+        )
+        dispatch_doc = Document(
+            id="doc-beilun-dispatch",
+            title="202603北仑派单截止时间",
+            filename="202603北仑派单截止时间.xlsx",
+            storage_path="dispatch.xlsx",
+            source_type="xlsx",
+            created_by="admin",
+        )
+        db.add_all([
+            user,
+            progress_doc,
+            dispatch_doc,
+            _progress_header("progress-header"),
+            _progress_row("progress-ningbo-beilun", 3, "宁波北仑"),
+            _progress_row("progress-beijing", 4, "北京"),
+            _progress_row("progress-dalian", 5, "大连", ratio=""),
+            _progress_row("progress-yuncheng", 6, "运城", social="否"),
+            _progress_row("progress-guiyang", 7, "贵阳", bank="否", social="否", ratio="", branch_company="未开设"),
+            _header("dispatch-header"),
+            _row("dispatch-ningbo-202603", 3, "宁波"),
+        ])
+        db.commit()
+
+        question = "分析一下北仑分公司开设进度有什么风险和下一步建议"
+        plan = parse_table_query_plan(question)
+        assert {"column": "city", "operator": "contains", "value": "北仑"} not in plan.filters
+        assert not any(item.get("column") == "branch_company" for item in plan.filters)
+
+        contexts, meta = table_mode_contexts(db, question, user, top_k=8)
+        data_rows = [item for item in contexts if not item.get("is_header")]
+        row_ids = {str(item.get("table_row_id")) for item in data_rows}
+        assert row_ids == {
+            "progress-ningbo-beilun",
+            "progress-beijing",
+            "progress-dalian",
+            "progress-yuncheng",
+            "progress-guiyang",
+        }
+        assert "dispatch-ningbo-202603" not in row_ids
+        assert meta["table_analysis_query"] is True
+        assert meta["table_analysis_progress_matched_rows"] == 5
+    finally:
+        db.close()

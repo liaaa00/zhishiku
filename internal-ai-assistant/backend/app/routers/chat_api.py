@@ -213,6 +213,39 @@ def table_contexts_for_answer(contexts: list[dict]) -> list[dict]:
     return [context for context in contexts if _answer_context_is_relevant(context)]
 
 
+_TABLE_LLM_ANALYSIS_TERMS = (
+    "分析",
+    "总结",
+    "归纳",
+    "建议",
+    "风险",
+    "异常",
+    "原因",
+    "为什么",
+    "怎么看",
+    "评估",
+    "评价",
+    "对比",
+    "趋势",
+    "优先级",
+    "推进",
+    "下一步",
+    "洞察",
+)
+
+
+def should_use_table_llm_analysis(question: str) -> bool:
+    """Route analytical table questions to the LLM with a full structured digest."""
+    compact_question = re.sub(r"\s+", "", question or "")
+    return any(term in compact_question for term in _TABLE_LLM_ANALYSIS_TERMS)
+
+
+def digest_contexts_for_answer(contexts: list[dict], answer_contexts: list[dict], *, table_answer_mode: bool) -> list[dict]:
+    if table_answer_mode:
+        return table_contexts_for_answer(contexts)
+    return answer_contexts
+
+
 def should_use_fast_extractive_answer(question: str, contexts: list[dict], retrieval_meta: dict, *, summary_mode: bool, table_answer_mode: bool) -> bool:
     if summary_mode or table_answer_mode or not contexts:
         return False
@@ -478,8 +511,12 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         confidence = max(confidence, 0.62)
     grounded = bool(answer_contexts)
     grounding_reason = grounding_reason_for_contexts(answer_contexts, confidence)
+    table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
+    table_llm_analysis_mode = table_answer_mode and should_use_table_llm_analysis(question)
     suggestions = [] if conversation_only else build_interaction_suggestions(question, answer_contexts, summary_mode=summary_mode)
-    structured_digest = build_structured_digest(question, answer_contexts, summary_mode) if should_use_structured_digest(question, answer_contexts, summary_mode) else ""
+    digest_contexts = digest_contexts_for_answer(contexts, answer_contexts, table_answer_mode=table_answer_mode)
+    retrieval_meta["structured_digest_context_count"] = len(digest_contexts)
+    structured_digest = build_structured_digest(question, digest_contexts, summary_mode) if should_use_structured_digest(question, digest_contexts, summary_mode) else ""
     if not contexts or (should_retrieve and not summary_mode and not answer_contexts):
         if should_retrieve:
             if contexts and not answer_contexts:
@@ -506,7 +543,6 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         answer = append_interaction_footer(answer, suggestions)
     else:
         mode = "knowledge"
-        table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
         prompt_template_context = select_prompt_templates_for_contexts(db, answer_contexts, table_answer_mode=table_answer_mode)
         retrieval_meta["prompt_template"] = {
             "keys": prompt_template_context.get("keys") or [],
@@ -515,12 +551,16 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
             "recommended": prompt_template_context.get("recommended") or [],
             "applied_to_answer": not table_answer_mode,
         }
-        if table_answer_mode:
+        if table_answer_mode and not table_llm_analysis_mode:
             table_answer_contexts = table_contexts_for_answer(contexts)
             retrieval_meta["table_answer_context_count"] = len(table_answer_contexts)
             answer = build_table_answer(question, table_answer_contexts)
             retrieval_meta["table_structured_result"] = build_table_structured_result(question, table_answer_contexts)
             retrieval_meta["answer_composer"] = "table_local"
+        elif table_llm_analysis_mode:
+            retrieval_meta["table_llm_analysis"] = True
+            answer = _call_knowledge_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest, prompt_instructions=prompt_template_context.get("instructions") or "")
+            retrieval_meta["answer_composer"] = "table_llm_with_structured_digest"
         elif should_use_fast_extractive_answer(question, answer_contexts, retrieval_meta, summary_mode=summary_mode, table_answer_mode=table_answer_mode):
             answer = extractive_fallback_answer(question, answer_contexts, "large_context_fast_path")
             retrieval_meta["answer_composer"] = "extractive_fast_path"
@@ -661,8 +701,12 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                 confidence = max(confidence, 0.62)
             grounded = bool(answer_contexts)
             grounding_reason = grounding_reason_for_contexts(answer_contexts, confidence)
+            table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
+            table_llm_analysis_mode = table_answer_mode and should_use_table_llm_analysis(question)
             suggestions = [] if conversation_only else build_interaction_suggestions(question, answer_contexts, summary_mode=summary_mode)
-            structured_digest = build_structured_digest(question, answer_contexts, summary_mode) if should_use_structured_digest(question, answer_contexts, summary_mode) else ""
+            digest_contexts = digest_contexts_for_answer(contexts, answer_contexts, table_answer_mode=table_answer_mode)
+            retrieval_meta["structured_digest_context_count"] = len(digest_contexts)
+            structured_digest = build_structured_digest(question, digest_contexts, summary_mode) if should_use_structured_digest(question, digest_contexts, summary_mode) else ""
             no_answer_evidence = bool(should_retrieve and contexts and not summary_mode and not answer_contexts)
             if no_answer_evidence:
                 retrieval_note = f"{retrieval_note}; answer_evidence_filtered" if retrieval_note else "answer_evidence_filtered"
@@ -732,7 +776,6 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                     yield _sse_event("delta", footer)
             else:
                 prefix = ""
-                table_answer_mode = retrieval_meta.get("retrieval_route", {}).get("name") == "table"
                 prompt_template_context = select_prompt_templates_for_contexts(stream_db, answer_contexts, table_answer_mode=table_answer_mode)
                 retrieval_meta["prompt_template"] = {
                     "keys": prompt_template_context.get("keys") or [],
@@ -746,13 +789,19 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                     prefix = "未在知识库中找到充分依据：以下仅根据检索到的知识库片段生成，请结合引用片段核验。\n\n"
                     answer_parts.append(prefix)
                     yield _sse_event("delta", prefix)
-                if table_answer_mode:
+                if table_answer_mode and not table_llm_analysis_mode:
                     table_answer_contexts = table_contexts_for_answer(contexts)
                     retrieval_meta["table_answer_context_count"] = len(table_answer_contexts)
                     answer_text = build_table_answer(question, table_answer_contexts)
                     retrieval_meta["table_structured_result"] = build_table_structured_result(question, table_answer_contexts)
                     retrieval_meta["answer_composer"] = "table_local"
                     for piece in [answer_text[i : i + 24] for i in range(0, len(answer_text), 24)]:
+                        answer_parts.append(piece)
+                        yield _sse_event("delta", piece)
+                elif table_llm_analysis_mode:
+                    retrieval_meta["table_llm_analysis"] = True
+                    retrieval_meta["answer_composer"] = "table_llm_with_structured_digest"
+                    for piece in stream_chat_answer_v2(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest, prompt_instructions=prompt_template_context.get("instructions") or ""):
                         answer_parts.append(piece)
                         yield _sse_event("delta", piece)
                 elif should_use_fast_extractive_answer(question, answer_contexts, retrieval_meta, summary_mode=summary_mode, table_answer_mode=table_answer_mode):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, model_contexts_for_answer, should_use_fast_extractive_answer, table_contexts_for_answer
+from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, digest_contexts_for_answer, model_contexts_for_answer, should_use_fast_extractive_answer, should_use_table_llm_analysis, table_contexts_for_answer
 
 
 def test_source_quality_notice_summarizes_poor_and_blocked_sources() -> None:
@@ -229,10 +229,17 @@ def test_table_contexts_for_answer_keep_all_table_rows() -> None:
 
     model_selected = model_contexts_for_answer(contexts, summary_mode=False)
     table_selected = table_contexts_for_answer(contexts)
+    digest_selected = digest_contexts_for_answer(contexts, model_selected, table_answer_mode=True)
 
     assert len(model_selected) == 8
     assert len(table_selected) == 12
+    assert len(digest_selected) == 12
     assert all(not item.get("is_header") for item in table_selected)
+
+
+def test_table_llm_analysis_intent_only_for_analytical_questions() -> None:
+    assert should_use_table_llm_analysis("分析一下这些城市分公司开设进度有什么风险") is True
+    assert should_use_table_llm_analysis("目前北仑在哪些城市开了分公司") is False
 
 
 def test_fast_extractive_answer_is_used_for_large_broad_contexts() -> None:

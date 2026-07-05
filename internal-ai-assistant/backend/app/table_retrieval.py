@@ -246,6 +246,12 @@ def _row_matches_filter_plan(context: dict, filters: list[dict[str, str]], logic
     return all(_row_matches_single_filter(context, item) for item in filters)
 
 
+def _row_has_branch_progress_columns(context: dict) -> bool:
+    row = context.get("table_row") if isinstance(context.get("table_row"), dict) else {}
+    key_text = " ".join(str(key or "") for key in row.keys())
+    return any(marker in key_text for marker in ("银行账户", "社保公积金账户", "公积金比例", "开设公司名称"))
+
+
 def _required_column_groups(question: str, select_columns: list[str]) -> list[str]:
     compact_question = _compact(question)
     if any(term in compact_question for term in ("统计", "平均", "均值", "汇总", "合计", "按城市", "按省", "按公司", "分城市", "分省", "分公司分别")):
@@ -377,6 +383,32 @@ def _row_score(question: str, context: dict, doc_rank: int) -> float:
     return round(score, 4)
 
 
+_TABLE_ANALYSIS_TERMS = (
+    "分析",
+    "总结",
+    "归纳",
+    "建议",
+    "风险",
+    "异常",
+    "原因",
+    "为什么",
+    "怎么看",
+    "评估",
+    "评价",
+    "对比",
+    "趋势",
+    "优先级",
+    "推进",
+    "下一步",
+    "洞察",
+)
+
+
+def _is_table_analysis_query(question: str) -> bool:
+    compact_question = re.sub(r"\s+", "", question or "")
+    return any(term in compact_question for term in _TABLE_ANALYSIS_TERMS)
+
+
 def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10, knowledge_scope: str = "production") -> tuple[list[dict], dict]:
     docs = select_table_documents(db, question, user, limit=2, knowledge_scope=knowledge_scope)
     if not docs:
@@ -415,6 +447,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
     time_grain = plan.time_grain
     time_value = plan.time_value
     query_op = plan.query_op
+    table_analysis_query = _is_table_analysis_query(question)
     required_columns = _required_column_groups(question, select_columns)
     plan_meta = plan.to_dict()
     plan_explanation = describe_table_query_plan(plan)
@@ -451,7 +484,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
         # If the question names a month, score the whole table first so later
         # worksheets such as 202603 are not dropped by an early per-doc limit.
         candidate_rows = data_rows if month_tokens else data_rows[:per_doc_limit]
-        min_row_score = 0.2 if value_filters or aggregate_op or metrics else 0.75
+        min_row_score = 0.2 if value_filters or aggregate_op or metrics or table_analysis_query else 0.75
         for order, context in enumerate(candidate_rows):
             score = _row_score(question, context, doc_rank)
             if score >= min_row_score:
@@ -494,6 +527,13 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
         value_filter_matched_rows = len(value_matched)
         scored_contexts = value_matched
 
+    table_analysis_progress_matched_rows = 0
+    if table_analysis_query:
+        progress_matched = [item for item in scored_contexts if _row_has_branch_progress_columns(item[3])]
+        table_analysis_progress_matched_rows = len(progress_matched)
+        if progress_matched:
+            scored_contexts = progress_matched
+
     branch_completion_matched_rows = 0
     if branch_completion_query:
         branch_matched = [item for item in scored_contexts if _row_matches_branch_completion(item[3])]
@@ -527,6 +567,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
             "filter_logic": filter_logic,
             "filter_groups": filter_groups,
             "value_filter_matched_rows": value_filter_matched_rows,
+            "table_analysis_progress_matched_rows": table_analysis_progress_matched_rows,
             "group_by": group_by,
             "distinct_by": distinct_by,
             "aggregate_op": aggregate_op,
@@ -541,6 +582,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
             "time_value": time_value,
             "time_tokens": month_tokens,
             "query_op": query_op,
+            "table_analysis_query": table_analysis_query,
         }
     if len(selected) < max_contexts:
         selected_doc_ids = list(dict.fromkeys(str(item.get("document_id") or "") for item in selected if item.get("document_id")))
@@ -572,6 +614,7 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
         "filter_logic": filter_logic,
         "filter_groups": filter_groups,
         "value_filter_matched_rows": value_filter_matched_rows,
+        "table_analysis_progress_matched_rows": table_analysis_progress_matched_rows,
         "group_by": group_by,
         "distinct_by": distinct_by,
         "aggregate_op": aggregate_op,
@@ -586,4 +629,5 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
         "time_value": time_value,
         "time_tokens": month_tokens,
         "query_op": query_op,
+        "table_analysis_query": table_analysis_query,
     }

@@ -398,6 +398,7 @@ _BRANCH_OPENING_TERMS = (
     "开了分公司",
     "开设了分公司",
     "开设分公司",
+    "分公司开设",
     "开分公司",
     "有分公司",
     "设立分公司",
@@ -425,6 +426,31 @@ _CURRENT_OPENING_TERMS = (
     "开具完成",
 )
 
+_TABLE_ANALYSIS_SCOPE_TERMS = (
+    "分析",
+    "总结",
+    "归纳",
+    "建议",
+    "风险",
+    "异常",
+    "原因",
+    "为什么",
+    "评估",
+    "评价",
+    "对比",
+    "趋势",
+    "推进",
+    "下一步",
+)
+
+_BRANCH_PROGRESS_SCOPE_TERMS = (
+    "分公司开设进度",
+    "分公司开设情况",
+    "开设进度",
+    "开设情况",
+    "开设最新进度表",
+)
+
 
 def _has_branch_opening_intent(text: str) -> bool:
     compact_text = compact(text)
@@ -437,7 +463,11 @@ def city_terms_are_scope(question: str) -> bool:
     if not compact_text:
         return False
     has_city_list_intent = any(term in compact_text for term in _CITY_LIST_INTENT_TERMS)
-    return has_city_list_intent and _has_branch_opening_intent(compact_text)
+    if has_city_list_intent and _has_branch_opening_intent(compact_text):
+        return True
+    has_analysis_intent = any(term in compact_text for term in _TABLE_ANALYSIS_SCOPE_TERMS)
+    has_progress_scope = any(term in compact_text for term in _BRANCH_PROGRESS_SCOPE_TERMS)
+    return has_analysis_intent and has_progress_scope and _has_branch_opening_intent(compact_text)
 
 
 def _requires_opened_branch_status(text: str) -> bool:
@@ -485,7 +515,14 @@ def _requires_concrete_branch_company_name(text: str) -> bool:
             "开设公司名称为准",
         )
     )
-    return explicit_basis or _has_branch_opening_intent(compact_text)
+    if explicit_basis:
+        return True
+    has_analysis_intent = any(term in compact_text for term in _TABLE_ANALYSIS_SCOPE_TERMS)
+    has_progress_scope = any(term in compact_text for term in _BRANCH_PROGRESS_SCOPE_TERMS)
+    has_opened_basis = any(term in compact_text for term in (*_CURRENT_OPENING_TERMS, "开了", "开设了", "为准"))
+    if has_analysis_intent and has_progress_scope and not has_opened_basis:
+        return False
+    return _has_branch_opening_intent(compact_text)
 
 
 def _requires_branch_company_name(text: str) -> bool:
