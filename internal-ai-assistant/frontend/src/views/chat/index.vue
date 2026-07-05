@@ -9,7 +9,7 @@
         </div>
       </div>
 
-      <button class="new-chat" type="button" @click="newConversation">
+      <button class="new-chat" type="button" aria-label="新建对话" @click="newConversation">
         <span>＋</span>
         新建对话
       </button>
@@ -29,7 +29,7 @@
             <span class="session-main">{{ item.title || '新的对话' }}</span>
             <span class="session-meta">{{ item.preview || '暂无预览' }}</span>
           </button>
-          <button class="session-delete" type="button" title="删除会话" @click.stop="deleteSession(item.id)">×</button>
+          <button class="session-delete" type="button" title="删除会话" :aria-label="`删除会话：${item.title || '新的对话'}`" @click.stop="deleteSession(item.id)">×</button>
         </div>
         <div v-if="!sessions.length" class="empty-side">暂无历史对话</div>
       </div>
@@ -48,7 +48,7 @@
         </div>
         <div class="topbar-actions">
           <div class="chat-search-box">
-            <input v-model="chatSearchQuery" type="search" placeholder="搜索当前会话" @keydown.enter.prevent="jumpToNextSearchMatch" />
+            <input v-model="chatSearchQuery" type="search" aria-label="搜索当前会话" placeholder="搜索当前会话" @keydown.enter.prevent="jumpToNextSearchMatch" />
             <span>{{ chatSearchSummary }}</span>
             <button type="button" :disabled="!chatSearchMatches.length" @click="jumpToPrevSearchMatch">上一个</button>
             <button type="button" :disabled="!chatSearchMatches.length" @click="jumpToNextSearchMatch">下一个</button>
@@ -65,6 +65,11 @@
         <div v-if="showHero" class="hero-panel">
           <h2>有什么可以帮忙的？</h2>
           <p>可以直接提问，也可以上传文件后让我总结、整理表格或核对引用来源。</p>
+          <div class="hero-trust-row" aria-label="知识库能力提示">
+            <span>基于权限知识库</span>
+            <span>来源可核验</span>
+            <span>支持文档与表格</span>
+          </div>
           <div class="prompt-grid">
             <button v-for="item in promptCards" :key="item" type="button" @click="askPrompt(item)">{{ item }}</button>
           </div>
@@ -276,6 +281,7 @@
               :class="{ active: attachmentMenuOpen }"
               :disabled="sending || uploadingAttachment"
               title="上传图片或文件"
+              aria-label="上传图片或文件"
               @click="toggleAttachmentMenu"
             >
               <span aria-hidden="true">+</span>
@@ -306,6 +312,7 @@
             :class="['send-button', { stopping: sending }]"
             type="button"
             :disabled="stoppingGeneration || (!sending && !question.trim() && !readyAttachmentCount)"
+            :aria-label="sending ? '停止生成回答' : '发送问题'"
             @click="sending ? stopGeneration() : send()"
           >
             <span v-if="sending">{{ stoppingGeneration ? '停止中…' : '停止' }}</span>
@@ -328,7 +335,7 @@
           <strong>{{ sourcePanelTitle }}</strong>
           <span>{{ sourcePanelCount }}</span>
         </div>
-        <button type="button" @click="closeSourcePanel">×</button>
+        <button type="button" aria-label="关闭来源面板" @click="closeSourcePanel">×</button>
       </header>
 
       <div class="source-panel-toolbar">
