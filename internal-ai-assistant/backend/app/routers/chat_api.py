@@ -203,6 +203,16 @@ def model_contexts_for_answer(contexts: list[dict], summary_mode: bool, max_cont
     return selected
 
 
+def table_contexts_for_answer(contexts: list[dict]) -> list[dict]:
+    """Use all relevant table data rows for deterministic table answers.
+
+    The 8-context cap above protects LLM prompts, but table answers are composed
+    locally from structured rows. Applying the model cap would truncate counts
+    and distinct lists such as city lists.
+    """
+    return [context for context in contexts if _answer_context_is_relevant(context)]
+
+
 def should_use_fast_extractive_answer(question: str, contexts: list[dict], retrieval_meta: dict, *, summary_mode: bool, table_answer_mode: bool) -> bool:
     if summary_mode or table_answer_mode or not contexts:
         return False
@@ -506,8 +516,10 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
             "applied_to_answer": not table_answer_mode,
         }
         if table_answer_mode:
-            answer = build_table_answer(question, answer_contexts)
-            retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
+            table_answer_contexts = table_contexts_for_answer(contexts)
+            retrieval_meta["table_answer_context_count"] = len(table_answer_contexts)
+            answer = build_table_answer(question, table_answer_contexts)
+            retrieval_meta["table_structured_result"] = build_table_structured_result(question, table_answer_contexts)
             retrieval_meta["answer_composer"] = "table_local"
         elif should_use_fast_extractive_answer(question, answer_contexts, retrieval_meta, summary_mode=summary_mode, table_answer_mode=table_answer_mode):
             answer = extractive_fallback_answer(question, answer_contexts, "large_context_fast_path")
@@ -735,8 +747,10 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                     answer_parts.append(prefix)
                     yield _sse_event("delta", prefix)
                 if table_answer_mode:
-                    answer_text = build_table_answer(question, answer_contexts)
-                    retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
+                    table_answer_contexts = table_contexts_for_answer(contexts)
+                    retrieval_meta["table_answer_context_count"] = len(table_answer_contexts)
+                    answer_text = build_table_answer(question, table_answer_contexts)
+                    retrieval_meta["table_structured_result"] = build_table_structured_result(question, table_answer_contexts)
                     retrieval_meta["answer_composer"] = "table_local"
                     for piece in [answer_text[i : i + 24] for i in range(0, len(answer_text), 24)]:
                         answer_parts.append(piece)
@@ -833,7 +847,9 @@ def search_test(req: ChatRequest, db: Session = Depends(get_db), user: User = De
     prompt_context_preview = build_prompt_context_preview(answer_contexts)
     retrieval_debug_summary = build_retrieval_debug_summary(answer_contexts, candidate_count, confidence, source_quality_notice)
     if table_answer_mode:
-        retrieval_meta["table_structured_result"] = build_table_structured_result(question, answer_contexts)
+        table_answer_contexts = table_contexts_for_answer(contexts)
+        retrieval_meta["table_answer_context_count"] = len(table_answer_contexts)
+        retrieval_meta["table_structured_result"] = build_table_structured_result(question, table_answer_contexts)
     source_diagnostics = []
     for index, context in enumerate(contexts, start=1):
         content = " ".join(str(context.get("content") or "").split())

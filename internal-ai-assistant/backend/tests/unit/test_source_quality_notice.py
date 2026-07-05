@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, model_contexts_for_answer, should_use_fast_extractive_answer
+from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, model_contexts_for_answer, should_use_fast_extractive_answer, table_contexts_for_answer
 
 
 def test_source_quality_notice_summarizes_poor_and_blocked_sources() -> None:
@@ -201,6 +201,38 @@ def test_model_contexts_for_answer_caps_large_non_summary_contexts() -> None:
     assert len(selected) <= 8
     assert len(selected) < len(contexts)
     assert sum(len(item.get("content") or "") for item in selected) <= 18000
+
+
+def test_table_contexts_for_answer_keep_all_table_rows() -> None:
+    contexts = [
+        {
+            "document_id": "table-doc",
+            "document_title": "Table",
+            "content": f"城市=城市{index}",
+            "retrieval_channel": "table",
+            "is_header": False,
+            "score": 0.0,
+        }
+        for index in range(12)
+    ]
+    contexts.insert(
+        0,
+        {
+            "document_id": "table-header",
+            "document_title": "Table Header",
+            "content": "城市=城市",
+            "retrieval_channel": "table",
+            "is_header": True,
+            "score": 0.45,
+        },
+    )
+
+    model_selected = model_contexts_for_answer(contexts, summary_mode=False)
+    table_selected = table_contexts_for_answer(contexts)
+
+    assert len(model_selected) == 8
+    assert len(table_selected) == 12
+    assert all(not item.get("is_header") for item in table_selected)
 
 
 def test_fast_extractive_answer_is_used_for_large_broad_contexts() -> None:
