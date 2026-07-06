@@ -305,22 +305,23 @@ def test_branch_city_list_treats_subject_as_scope_and_requires_opened_status() -
         plan = parse_table_query_plan(question)
         assert {"column": "city", "operator": "contains", "value": "北仑"} not in plan.filters
         assert {"column": "branch_company", "operator": "is_concrete"} in plan.filters
-        assert {"column": "bank_account", "operator": "eq", "value": "是"} in plan.filters
-        assert {"column": "social_account", "operator": "eq", "value": "是"} in plan.filters
+        # 显式「以有分公司名称的为准」时，判定口径仅为名称有效，不叠加银行/社保状态。
+        assert not any(item.get("column") == "bank_account" for item in plan.filters)
+        assert not any(item.get("column") == "social_account" for item in plan.filters)
         assert plan.distinct_by == "city"
 
         contexts, meta = table_mode_contexts(db, question, user, top_k=8)
         data_rows = [item for item in contexts if not item.get("is_header")]
         row_ids = {str(item.get("table_row_id")) for item in data_rows}
-        assert row_ids == {"progress-ningbo-beilun", "progress-beijing", "progress-dalian"}
-        assert meta["value_filter_matched_rows"] == 3
+        assert row_ids == {"progress-ningbo-beilun", "progress-beijing", "progress-dalian", "progress-yuncheng"}
+        assert meta["value_filter_matched_rows"] == 4
 
         answer = build_table_answer(question, contexts)
-        assert "共有 3 个城市" in answer
+        assert "共有 4 个城市" in answer
         assert "城市=宁波北仑" in answer
         assert "城市=北京" in answer
         assert "城市=大连" in answer
-        assert "城市=运城" not in answer
+        assert "城市=运城" in answer
         assert "城市=贵阳" not in answer
         assert "城市=宁波\n" not in answer
     finally:

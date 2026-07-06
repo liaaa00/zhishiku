@@ -498,24 +498,28 @@ def _collapse_city_filters(filters: list[dict[str, str]]) -> list[dict[str, str]
     return [item for item in filters if not (item.get("column") == "city" and item.get("operator") == "contains" and str(item.get("value") or "") in redundant)]
 
 
+_EXPLICIT_BRANCH_NAME_BASIS_TERMS = (
+    "以有分公司名称为准",
+    "以有分公司名称的为准",
+    "有分公司名称为准",
+    "有分公司名称的为准",
+    "分公司名称为准",
+    "以有开设公司名称为准",
+    "有开设公司名称",
+    "开设公司名称为准",
+)
+
+
+def _has_explicit_branch_name_basis(text: str) -> bool:
+    """用户显式声明「以有分公司名称为准」时，判定口径仅为名称有效，不叠加银行/社保状态。"""
+    return any(term in compact(text) for term in _EXPLICIT_BRANCH_NAME_BASIS_TERMS)
+
+
 def _requires_concrete_branch_company_name(text: str) -> bool:
     compact_text = compact(text)
     if not compact_text:
         return False
-    explicit_basis = any(
-        term in compact_text
-        for term in (
-            "以有分公司名称为准",
-            "以有分公司名称的为准",
-            "有分公司名称为准",
-            "有分公司名称的为准",
-            "分公司名称为准",
-            "以有开设公司名称为准",
-            "有开设公司名称",
-            "开设公司名称为准",
-        )
-    )
-    if explicit_basis:
+    if _has_explicit_branch_name_basis(compact_text):
         return True
     has_analysis_intent = any(term in compact_text for term in _TABLE_ANALYSIS_SCOPE_TERMS)
     has_progress_scope = any(term in compact_text for term in _BRANCH_PROGRESS_SCOPE_TERMS)
@@ -549,7 +553,7 @@ def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> lis
     if _requires_branch_company_name(text):
         operator = "is_concrete" if _requires_concrete_branch_company_name(text) else "is_not_empty"
         filters.append(_normalize_filter("branch_company", operator=operator))
-    if _requires_opened_branch_status(text):
+    if _requires_opened_branch_status(text) and not _has_explicit_branch_name_basis(text):
         filters.append(_normalize_filter("bank_account", "是", "eq"))
         filters.append(_normalize_filter("social_account", "是", "eq"))
     return _collapse_city_filters(_dedupe_filters(filters))

@@ -120,6 +120,12 @@ def _should_check_graph(question: str, route_name: str) -> bool:
     text = re.sub(r"\s+", "", question or "")
     if not text:
         return False
+    # 员工侧电子签问题有专门的文本检索对齐逻辑，图谱介入只会把“流程”类问法
+    # 误引向工单系统/表格文件（如“劳动合同电子签流程”被图谱抢走）。
+    from ..retrieval import _is_esign_query
+
+    if _is_esign_query(question):
+        return False
     if any(term in text for term in GRAPH_QUERY_TERMS):
         return True
     # 表格中的城市/月度规则也可用图谱辅助诊断，但 table 答案仍以结构化行为准。

@@ -299,6 +299,199 @@
           ]
         ]
       }
+    },
+    {
+      "id": "merged_intent_employee_esign_process_001",
+      "category": "意图排序/员工侧流程",
+      "source_script": "qa_intent_ranking_regression.py",
+      "question": "劳动合同电子签流程是什么？",
+      "why": "员工侧电子签流程问题应优先命中员工操作流程证据，即使文档标题很泛。query_profile 应识别为 esign_process。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "电子劳动合同"
+        ],
+        "must_include_terms": [
+          "微助手"
+        ]
+      }
+    },
+    {
+      "id": "merged_intent_internal_review_seal_001",
+      "category": "意图排序/内部流程",
+      "source_script": "qa_intent_ranking_regression.py",
+      "question": "合同组内部审核和盖章归档流程是什么？",
+      "why": "内部合同组审核/盖章问题应命中内部工单流程，不能被员工签署指南压过去。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "合同组"
+        ]
+      }
+    },
+    {
+      "id": "merged_scope_identity_entry_001",
+      "category": "范围隔离/硬路由",
+      "source_script": "qa_scope_and_hard_routing_regression.py",
+      "question": "员工怎么进入身份认证页面？",
+      "why": "身份认证入口应命中员工指南/微助手身份认证，不应落到入职信息表等无关文档。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "微助手"
+        ],
+        "top_n_must_not_match_titles": [
+          "入职人员信息表"
+        ],
+        "must_match_contexts": [
+          [
+            "身份认证"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "merged_scope_onboarding_fields_001",
+      "category": "范围隔离/硬路由",
+      "source_script": "qa_scope_and_hard_routing_regression.py",
+      "question": "员工信息表里需要填写哪些字段？",
+      "why": "字段类问题应硬路由到入职人员信息表，不应命中员工指南或工单系统。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "入职人员信息表"
+        ],
+        "top_n_must_not_match_titles": [
+          "工单系统"
+        ]
+      }
+    },
+    {
+      "id": "merged_guardrail_chengdu_fund_ratio_001",
+      "category": "表格精确查询/防幻觉",
+      "source_script": "qa_real_question_guardrails_regression.py",
+      "question": "成都分公司的公积金比例范围是什么？",
+      "why": "应走表格检索并命中成都分公司行，证据须包含公积金比例区间，不能被电子合同/工单材料带偏。",
+      "expected": {
+        "backend": "table",
+        "top_n": 5,
+        "top_n_must_not_match_titles": [
+          "电子劳动合同",
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "成都"
+        ]
+      }
+    },
+    {
+      "id": "merged_guardrail_shanghai_fund_ratio_001",
+      "category": "表格精确查询/防幻觉",
+      "source_script": "qa_real_question_guardrails_regression.py",
+      "question": "上海分公司的银行账户和社保公积金账户状态是什么？公积金比例里补充公积金是多少？",
+      "why": "复合表格问题，证据须来自上海分公司行，包含账户状态与补充公积金比例。",
+      "expected": {
+        "backend": "table",
+        "top_n": 5,
+        "top_n_must_not_match_titles": [
+          "电子劳动合同",
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "上海"
+        ]
+      }
+    },
+    {
+      "id": "merged_table_beilun_branch_cities_001",
+      "category": "表格聚合/城市清单",
+      "source_script": "用户真实提问",
+      "question": "北仑目前在哪些城市开了分公司，以有分公司名称的为准",
+      "why": "北仑是业务主体而非城市过滤条件；应走表格并命中北仑分公司开设进度表，按有分公司名称的行列出城市（真实库当前36个）。不应被派单截止时间/电子合同/工单材料带偏。",
+      "expected": {
+        "backend": "table",
+        "top_n": 8,
+        "must_include_docs": [
+          "a6a3d200-8aef-41ac-9aeb-495eeecd8744"
+        ],
+        "top_n_must_not_match_titles": [
+          "派单截止时间",
+          "电子劳动合同",
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "北仑",
+          "分公司"
+        ]
+      }
+    },
+    {
+      "id": "merged_table_beilun_completion_001",
+      "category": "表格聚合/条件计数",
+      "source_script": "qa_table_branch_completion_regression.py",
+      "question": "北仑现在开设了多少家分公司，以银行账户、社保公积金账户、公积金比例和公司名称全部开设完成的为准来进行统计",
+      "why": "北仑是业务主体而非城市过滤条件；应走表格聚合，仅当四项全部完成才计入（真实库当前28家）。",
+      "expected": {
+        "backend": "table",
+        "top_n": 8,
+        "must_include_docs": [
+          "a6a3d200-8aef-41ac-9aeb-495eeecd8744"
+        ],
+        "top_n_must_not_match_titles": [
+          "派单截止时间",
+          "电子劳动合同",
+          "工单系统"
+        ],
+        "must_include_terms": [
+          "北仑"
+        ]
+      }
+    },
+    {
+      "id": "merged_table_realq_shenzhen_deadline_001",
+      "category": "表格精确查询/日期",
+      "source_script": "qa_table_real_question_regression.py",
+      "question": "2025年12月深圳社保、医保、公积金截止时间分别是哪天？有什么备注？",
+      "why": "按月份+城市查截止时间，应走表格后端并保留备注证据。",
+      "expected": {
+        "backend": "table",
+        "top_n": 5,
+        "must_include_terms": [
+          "深圳"
+        ]
+      }
+    },
+    {
+      "id": "merged_routing_process_not_table_001",
+      "category": "路由防误判/流程问题",
+      "source_script": "qa_table_routing_regression.py",
+      "question": "上海外服劳动合同电子签流程是什么？",
+      "why": "流程类问题不应被误路由到表格模式，应走文本检索命中电子劳动合同流程。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "电子劳动合同"
+        ],
+        "top_n_must_not_match_titles": [
+          "工单系统"
+        ]
+      }
+    },
+    {
+      "id": "merged_text_fallback_workorder_delivery_001",
+      "category": "文本回退/OCR关键词",
+      "source_script": "qa_text_retrieval_fallback_regression.py",
+      "question": "工单系统里，后道交付团队登录后可以查询待办工单、导出材料附件并回写什么？",
+      "why": "覆盖 OCR 归一化关键词检索与回退片段，应命中工单系统需求文档的后道交付说明。",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "工单系统"
+        ]
+      }
     }
   ]
 }
