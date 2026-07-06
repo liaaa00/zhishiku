@@ -1,4 +1,5 @@
 import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -57,6 +58,8 @@ def migrate_password_if_needed(user, plain_password: str, db) -> bool:
 def create_token(payload: dict, expires_minutes: int = TOKEN_EXPIRE_MINUTES) -> str:
     data = payload.copy()
     data["exp"] = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
+    # 防止会话固定：每次登录生成唯一 jti (JWT ID)
+    data["jti"] = secrets.token_urlsafe(16)
     return jwt.encode(data, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 

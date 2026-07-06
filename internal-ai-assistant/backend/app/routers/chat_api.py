@@ -847,15 +847,14 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
         except Exception as exc:
             stream_db.rollback()
             traceback.print_exc()
-            detail = f"{type(exc).__name__}: {str(exc)[:300]}"
+            # 安全：不向客户端泄露异常细节，仅记录到服务端日志
             error_meta = {
                 "stream": True,
                 "error": True,
                 "summary_mode": is_accessible_summary_request(question),
                 "message": "生成回答时发生错误，请稍后重试。",
-                "detail": detail,
             }
-            yield _sse_event("status", {"stage": "error", "message": error_meta["message"], "detail": detail})
+            yield _sse_event("status", {"stage": "error", "message": error_meta["message"]})
             yield _sse_event("done", error_meta)
         finally:
             stream_db.close()
