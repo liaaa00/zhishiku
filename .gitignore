@@ -43,6 +43,9 @@ internal-ai-assistant/backend/tmp_*.py
 # Runtime data and uploads
 internal-ai-assistant/backend/data/
 
+# Knowledge-graph scratch dirs
+.tmp-kg-*/
+
 # Archives and external source dumps
 *.zip
 MaxKB-src/
