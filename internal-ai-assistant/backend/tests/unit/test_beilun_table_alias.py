@@ -266,7 +266,7 @@ def test_beilun_progress_alias_matches_ningbo_beilun_row() -> None:
         db.close()
 
 
-def test_branch_city_list_treats_subject_as_scope_and_requires_opened_status() -> None:
+def test_branch_city_list_uses_effective_name_basis_without_completion_filters() -> None:
     db = _db_session()
     try:
         user = User(id="admin", username="admin", password_hash="x", is_admin=True, is_active=True)
@@ -305,7 +305,7 @@ def test_branch_city_list_treats_subject_as_scope_and_requires_opened_status() -
         plan = parse_table_query_plan(question)
         assert {"column": "city", "operator": "contains", "value": "北仑"} not in plan.filters
         assert {"column": "branch_company", "operator": "is_concrete"} in plan.filters
-        # 显式「以有分公司名称的为准」时，判定口径仅为名称有效，不叠加银行/社保状态。
+        # 显式「以有分公司名称的为准」时，判定口径仅为有效名称；宁波北仑总部名称也计入，不叠加银行/社保状态。
         assert not any(item.get("column") == "bank_account" for item in plan.filters)
         assert not any(item.get("column") == "social_account" for item in plan.filters)
         assert plan.distinct_by == "city"

@@ -53,7 +53,7 @@ CITY_EQUIVALENTS: dict[str, tuple[str, ...]] = {
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "city": ("城市", "所在城市", "地市", "地区", "省市"),
     "province": ("省份", "省", "所在省份"),
-    "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称"),
+    "company": ("公司名称", "开设公司名称", "单位名称", "分公司", "网点名称", "机构名称", "名称"),
     "branch_company": ("开设公司名称", "当前进度-4.开设公司名称", "分公司名称"),
     "bank_account": ("银行账户", "银行账户是否开具完成", "开户状态"),
     "social_account": ("社保公积金账户", "社保账户", "公积金账户", "社保公积金账户是否开具完成"),
@@ -162,7 +162,10 @@ _VALUE_OPERATORS: tuple[tuple[str, str], ...] = (
     ("不是", "ne"),
     ("不为", "ne"),
     ("不包含", "not_contains"),
+    ("不含", "not_contains"),
     ("包含", "contains"),
+    ("含有", "contains"),
+    ("含", "contains"),
     (">=", "gte"),
     ("大于等于", "gte"),
     ("不小于", "gte"),
@@ -474,6 +477,11 @@ def _requires_opened_branch_status(text: str) -> bool:
     compact_text = compact(text)
     if not compact_text or not _has_branch_opening_intent(compact_text):
         return False
+    # 「多少个城市开设了分公司」这类城市清单/范围问句里，「开设了」描述的是业务范围
+    # （已设分公司的城市），而非要求银行+社保均完成；此时口径为名称有效即计入，
+    # 不叠加完成度过滤，否则会把 Q1(应 36) 收窄成 Q2(银行+社保都办好=29)。
+    if city_terms_are_scope(compact_text):
+        return False
     return any(term in compact_text for term in _CURRENT_OPENING_TERMS) or any(term in compact_text for term in ("开了", "开设了"))
 
 
@@ -529,14 +537,87 @@ def _requires_concrete_branch_company_name(text: str) -> bool:
     return _has_branch_opening_intent(compact_text)
 
 
+_NAME_FILL_NEGATIVE_TERMS = ("还没填", "还未填", "没有填", "尚未填", "没填", "未填")
+
+
+def _requires_empty_branch_company_name(text: str) -> bool:
+    """'还没填开设公司名称' 这类否定填写口径，映射为 branch_company is_empty。
+    与 _requires_branch_company_name(正向已填=非空) 互斥，避免 Q3(已填)/Q4(没填) 撞车。"""
+    compact_text = compact(text)
+    if not compact_text:
+        return False
+    branch_name = any(term in compact_text for term in ("分公司名称", "开设公司名称", "公司名称"))
+    return branch_name and any(term in compact_text for term in _NAME_FILL_NEGATIVE_TERMS)
+
+
 def _requires_branch_company_name(text: str) -> bool:
     compact_text = compact(text)
     if not compact_text:
+        return False
+    if _requires_empty_branch_company_name(compact_text):
         return False
     if _requires_concrete_branch_company_name(compact_text):
         return True
     branch_name = any(term in compact_text for term in ("分公司名称", "开设公司名称"))
     return branch_name and any(term in compact_text for term in ("有", "非空", "不为空", "为准"))
+
+
+_COMPLETION_POSITIVE_TERMS = ("办好", "办了", "办完", "完成", "开好", "开具完成", "开通", "搞定", "弄好")
+_COMPLETION_NEGATIVE_TERMS = ("还没", "没办", "未办", "没有办", "没完成", "未完成", "没开", "未开", "尚未", "还未")
+_COMPLETION_SUBJECTS: tuple[tuple[str, str], ...] = (
+    ("bank_account", "银行"),
+    ("social_account", "社保"),
+)
+
+
+_COMPLETION_CLAUSE_BREAKS = ("但是", "但", "可是", "然而", "却", "不过")
+
+
+def _trim_at_clause_break(segment: str) -> str:
+    """在转折连词处截断，使银行/社保完成度只读本从句。
+    '银行社保都办好了但还没填名称' 中，'还没' 属于名称从句，不能污染前半完成度极性。"""
+    cut = len(segment)
+    for brk in _COMPLETION_CLAUSE_BREAKS:
+        index = segment.find(brk)
+        if index >= 0:
+            cut = min(cut, index)
+    return segment[:cut]
+
+
+def _completion_polarity(segment: str) -> str | None:
+    """否定优先：'还没办好' 里既含'还没'又含'办好'，判为 ne。"""
+    if any(term in segment for term in _COMPLETION_NEGATIVE_TERMS):
+        return "ne"
+    if any(term in segment for term in _COMPLETION_POSITIVE_TERMS):
+        return "eq"
+    return None
+
+
+def _parse_completion_status_filters(text: str) -> list[dict[str, str]]:
+    """解析'银行/社保 办好了/还没办好'这类完成度口径，映射为 bank_account/social_account 的 eq/ne 是。"""
+    # “银行账户是否开具完成？/社保开好了吗？”是询问单条状态的疑问句，不是把状态当过滤条件；
+    # 命中 是否/吗/是不是/有没有 时按查询处理，避免把 retrieve 误当成 eq 是 过滤。
+    if any(term in text for term in ("是否", "是不是", "有没有", "有无")) or text.rstrip(" ？?").endswith("吗"):
+        return []
+    present = [(column, marker, text.find(marker)) for column, marker in _COMPLETION_SUBJECTS]
+    present = [item for item in present if item[2] >= 0]
+    if not present:
+        return []
+    if not any(term in text for term in _COMPLETION_POSITIVE_TERMS + _COMPLETION_NEGATIVE_TERMS):
+        return []
+    present.sort(key=lambda item: item[2])
+    trailing = _completion_polarity(_trim_at_clause_break(text[present[-1][2]:]))
+    result: list[dict[str, str]] = []
+    for index, (column, marker, position) in enumerate(present):
+        start = position + len(marker)
+        end = present[index + 1][2] if index + 1 < len(present) else len(text)
+        window = _trim_at_clause_break(text[start:end])
+        before_start = present[index - 1][2] if index > 0 else 0
+        before = _trim_at_clause_break(text[before_start:position])
+        polarity = _completion_polarity(window) or _completion_polarity(before) or trailing
+        if polarity:
+            result.append(_normalize_filter(column, "是", polarity))
+    return result
 
 
 def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> list[dict[str, str]]:
@@ -545,12 +626,18 @@ def _parse_filters_from_text(text: str, include_city_tokens: bool = True) -> lis
         for marker in markers:
             filters.extend(_parse_marker_filters(text, alias, marker))
 
+    for completion_filter in _parse_completion_status_filters(text):
+        if not any(item.get("column") == completion_filter.get("column") for item in filters):
+            filters.append(completion_filter)
+
     if include_city_tokens:
         city_text = _text_for_city_detection(text)
         for city in sorted(CITY_TERMS, key=len, reverse=True):
             if city in city_text and not any(item.get("column") == "city" and item.get("value") == city for item in filters):
                 filters.append(_normalize_filter("city", city, "contains"))
-    if _requires_branch_company_name(text):
+    if _requires_empty_branch_company_name(text):
+        filters.append(_normalize_filter("branch_company", operator="is_empty"))
+    elif _requires_branch_company_name(text):
         operator = "is_concrete" if _requires_concrete_branch_company_name(text) else "is_not_empty"
         filters.append(_normalize_filter("branch_company", operator=operator))
     if _requires_opened_branch_status(text) and not _has_explicit_branch_name_basis(text):
@@ -569,8 +656,42 @@ def parse_filter_expression(
     include_quoted_company: bool = True,
 ) -> tuple[list[dict[str, str]], str, list[list[dict[str, str]]]]:
     text = compact(question)
-    or_segments = _split_or_segments(text)
     groups: list[list[dict[str, str]]] = []
+
+    # 引号内公司名 + 或/或者：必须在 _split_or_segments 之前处理，
+    # 否则 '或' 会把 "总部"/"企业服务" 拆成两段，引号被割裂后无法匹配。
+    if include_quoted_company:
+        quoted_values = re.findall(r"['\"‘’“”]([^'\"‘’“”]{1,30})['\"‘’“”]", question or "")
+        has_company_context = any(marker in text for marker in ("公司", "单位", "网点", "分公司", "名称"))
+        has_or_logic = any(term in text for term in ("或者", "或"))
+        if quoted_values and has_company_context and has_or_logic and len(quoted_values) > 1:
+            base_filters = _parse_filters_from_text(text, include_city_tokens=True)
+            base_filters = [item for item in base_filters if item.get("column") != "company"]
+            or_groups = [_dedupe_filters(base_filters + [_normalize_filter("company", value, "contains")]) for value in quoted_values]
+            all_filters = _dedupe_filters([item for group in or_groups for item in group])
+            return all_filters, "or", or_groups
+
+    # “名称含A或B”这类未加引号的字段包含列举：同样必须在 _split_or_segments 之前处理，
+    # 否则 '或' 会把 A、B 拆成两段，第二段丢失字段上下文（'企业服务' 落不到 company）。
+    if include_quoted_company:
+        company_markers = tuple(dict.fromkeys(COLUMN_ALIASES["company"] + COLUMN_ALIASES["branch_company"]))
+        marker_pattern = "|".join(re.escape(marker) for marker in sorted(company_markers, key=len, reverse=True))
+        contains_match = re.search(rf"(?:{marker_pattern})(?:含|包含)([^，。；;、?？]+)", text)
+        if contains_match:
+            raw_values = _extract_value_after_operator(contains_match.group(1), 0)
+            parts = [clean(part).strip(" \t\r\n'\"‘’“”《》") for part in _split_or_segments(raw_values)]
+            parts = [part for part in parts if part]
+            base_filters = _parse_filters_from_text(text, include_city_tokens=True)
+            base_filters = [item for item in base_filters if item.get("column") != "company"]
+            if len(parts) > 1 and any(term in text for term in ("或者", "或")):
+                or_groups = [_dedupe_filters(base_filters + [_normalize_filter("company", value, "contains")]) for value in parts]
+                all_filters = _dedupe_filters([item for group in or_groups for item in group])
+                return all_filters, "or", or_groups
+            if len(parts) == 1:
+                merged = _dedupe_filters(base_filters + [_normalize_filter("company", parts[0], "contains")])
+                return merged, "and", [merged] if merged else []
+
+    or_segments = _split_or_segments(text)
     if len(or_segments) > 1:
         previous_context: list[dict[str, str]] = []
         for segment in or_segments:
@@ -596,10 +717,28 @@ def parse_filter_expression(
         return filters, "or", groups
 
     if include_quoted_company:
-        quoted_values = re.findall(r"[‘'\"]([^‘’'\"]{1,30})[’'\"]", question or "")
-        for value in quoted_values:
-            if any(marker in text for marker in ("公司", "单位", "网点", "分公司")):
-                filters.append(_normalize_filter("company", value, "contains"))
+        quoted_values = re.findall(r"['\"‘’“”]([^'\"‘’“”]{1,30})['\"‘’“”]", question or "")
+        if quoted_values:
+            # Check if question mentions company/name fields
+            has_company_context = any(marker in text for marker in ("公司", "单位", "网点", "分公司", "名称"))
+            # Check if question has OR logic (或/或者)
+            has_or_logic = any(term in text for term in ("或", "或者"))
+
+            if has_company_context:
+                if has_or_logic and len(quoted_values) > 1:
+                    # Multiple quoted values with OR logic: create separate filter groups
+                    or_groups = []
+                    base_filters = [f for f in filters if f.get("column") != "company"]
+                    for value in quoted_values:
+                        group = base_filters + [_normalize_filter("company", value, "contains")]
+                        or_groups.append(group)
+                    if or_groups:
+                        all_filters = _dedupe_filters([item for group in or_groups for item in group])
+                        return all_filters, "or", or_groups
+                else:
+                    # Single quoted value or multiple without OR: add as AND conditions
+                    for value in quoted_values:
+                        filters.append(_normalize_filter("company", value, "contains"))
 
     filters = _dedupe_filters(filters)
     return filters, "and", [filters] if filters else []
@@ -619,7 +758,7 @@ def group_by_column(question: str) -> str:
 
 def distinct_column(question: str) -> str:
     text = compact(question)
-    if any(term in text for term in ("多少个城市", "多少座城市", "几个城市", "哪些城市")):
+    if any(term in text for term in ("多少个城市", "多少座城市", "几个城市", "哪些城市", "城市有多少", "城市有几")):
         return "city"
     if any(term in text for term in ("多少家公司", "多少个公司", "几家公司")):
         return "company"

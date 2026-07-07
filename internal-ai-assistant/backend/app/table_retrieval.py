@@ -597,9 +597,31 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
                 selected_headers.append(header)
         selected.extend(selected_headers[: max_contexts - len(selected)])
 
+    data_rows = [item for item in selected if not item.get("is_header")]
+    matched_rows_count = len(data_rows)
+
+    # When distinct_by is set, calculate the deduplicated count
+    if distinct_by and data_rows:
+        distinct_values: set[str] = set()
+        for item in data_rows:
+            row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
+            semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
+            # Use semantic_value to get the column value
+            value = semantic_value(row, distinct_by, semantic_map)
+            if not value:
+                # Fallback: check column aliases
+                for alias_key in COLUMN_ALIASES.get(distinct_by, ()):
+                    if alias_key in row:
+                        value = _clean(row[alias_key])
+                        if value:
+                            break
+            if value:
+                distinct_values.add(value)
+        matched_rows_count = len(distinct_values)
+
     return selected, {
         "mode": "table",
-        "matched_rows": len([item for item in selected if not item.get("is_header")]),
+        "matched_rows": matched_rows_count,
         "matched_documents": len(docs),
         "enabled": True,
         "knowledge_scope": knowledge_scope,

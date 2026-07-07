@@ -302,6 +302,14 @@ def _score_document(question: str, doc: Document, sample_rows: list[DocumentTabl
         if any("比例" in key or "账户" in key or "完成" in key for key in row_keys):
             score += 0.2
 
+    # 「名称含XX的条目」这类按公司名称过滤的问句缺少城市/月份/网点等既有关键词，
+    # 仅凭标题/样本词打不到 0.45 阈值；改按“计划确实解析出 company/branch_company
+    # 过滤 且 本文档确有对应列”来加分，使文档选择跟随真实查询意图而非固定词表。
+    plan_columns = {item.get("column") for item in parse_table_query_plan(question).filters}
+    if plan_columns & {"company", "branch_company"}:
+        if "company" in semantic_map or any("开设公司名称" in key or "公司名称" in key or "单位名称" in key for key in row_keys):
+            score += 0.45
+
     return round(min(score, 1.0), 4)
 
 
@@ -663,7 +671,7 @@ def build_table_structured_result(question: str, contexts: list[dict]) -> dict:
     return TableAnswerComposer(question, contexts).structured_result()
 
 
-def _build_table_answer_data(data_rows: list[dict], *, distinct_by: str, group_by: str, aggregate_op: str, measure_column: str, metrics: list[dict[str, str]]) -> TableAnswerData:
+def _build_table_answer_data(data_rows: list[dict], *, question: str, query_op: str, distinct_by: str, group_by: str, aggregate_op: str, measure_column: str, metrics: list[dict[str, str]]) -> TableAnswerData:
     answer_data = TableAnswerData(
         data_rows=data_rows,
         group_counts=defaultdict(int),
@@ -672,6 +680,33 @@ def _build_table_answer_data(data_rows: list[dict], *, distinct_by: str, group_b
         group_metric_values=defaultdict(lambda: defaultdict(list)),
         docs=defaultdict(list),
     )
+    # 检测是否为分公司计数查询（需要按城市+分公司名称去重）
+    is_branch_count_query = (
+        query_op in ("count", "distinct_count")
+        and any(term in plan_clean(question) for term in ("分公司", "公司", "网点"))
+        and not distinct_by
+        and not group_by
+    )
+
+    # 分公司去重：先过滤重复记录
+    if is_branch_count_query:
+        seen_branches: set[tuple[str, str]] = set()
+        deduplicated_rows: list[dict] = []
+        for item in data_rows:
+            row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
+            semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
+            city = _first_alias_value(row, "city", semantic_map) or ""
+            branch = _first_alias_value(row, "branch_company", semantic_map) or _first_alias_value(row, "company", semantic_map) or ""
+            if city and branch:
+                key = (city, branch)
+                if key not in seen_branches:
+                    seen_branches.add(key)
+                    deduplicated_rows.append(item)
+            else:
+                deduplicated_rows.append(item)  # 保留缺少城市或分公司名称的行
+        data_rows = deduplicated_rows  # 使用去重后的数据
+        answer_data.data_rows = deduplicated_rows  # 更新answer_data中的数据行
+
     for item in data_rows:
         row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
         semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
@@ -885,6 +920,8 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
 
     answer_data = _build_table_answer_data(
         data_rows,
+        question=question,
+        query_op=plan.query_op,
         distinct_by=distinct_by,
         group_by=group_by,
         aggregate_op=aggregate_op,
