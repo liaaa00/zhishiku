@@ -2018,7 +2018,8 @@ function parsePreviewRow(line: string) {
 
   if (rowMatch) {
     payload = rowMatch[2]
-  } else if (bulletMatch && bulletMatch[1].includes('=') && bulletMatch[1].includes('|')) {
+  } else if (bulletMatch && bulletMatch[1].includes('=')) {
+    // 允许单字段 key=value 格式（如"城市=北京"）或多字段管道分隔（如"城市=北京 | 状态=有效"）
     payload = bulletMatch[1]
   } else {
     return null
@@ -2035,7 +2036,7 @@ function parsePreviewRow(line: string) {
   return Object.keys(values).length ? { rowNumber: rowMatch?.[1] || '', values } : null
 }
 
-function renderPreviewRowsTable(rows: Array<{ rowNumber: string; values: Record<string, string> }>) {
+function renderPreviewRowsTable(rows: Array<{ rowNumber: string; values: Record<string, string> }>, options: { title?: string } = {}) {
   const headers: string[] = []
   for (const row of rows) {
     for (const key of Object.keys(row.values)) {
@@ -2046,7 +2047,11 @@ function renderPreviewRowsTable(rows: Array<{ rowNumber: string; values: Record<
     const cells = headers.map((header) => inlineMarkdown(row.values[header] || ''))
     return `<tr>${cells.map((cell) => `<td>${cell}</td>`).join('')}</tr>`
   }).join('')
-  return `<div class="answer-data-table"><div class="answer-data-table-head"><strong>明细列表</strong><span>${rows.length} 条</span></div><div class="answer-data-table-scroll"><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div></div>`
+  const title = options.title ?? '明细列表'
+  const head = title
+    ? `<div class="answer-data-table-head"><strong>${escapeHtml(title)}</strong><span>${rows.length} 条</span></div>`
+    : `<div class="answer-data-table-head compact"><span>${rows.length} 条</span></div>`
+  return `<div class="answer-data-table">${head}<div class="answer-data-table-scroll"><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div></div>`
 }
 
 function renderConclusionCard(text: string) {
@@ -2057,7 +2062,7 @@ function renderConclusionCard(text: string) {
   return `<div class="answer-stat-card"><div><span>统计结论</span><p>${inlineMarkdown(text)}</p></div>${metricHtml}</div>`
 }
 
-function renderMarkdown(content: string) {
+function renderMarkdown(content: string, options: { tableTitle?: string } = {}) {
   const lines = String(content || '').replace(/\r\n/g, '\n').split('\n')
   const html: string[] = []
   let listMode: '' | 'ul' | 'ol' = ''
@@ -2104,7 +2109,7 @@ function renderMarkdown(content: string) {
         rows.push(nextRow)
         index += 1
       }
-      html.push(renderPreviewRowsTable(rows))
+      html.push(renderPreviewRowsTable(rows, { title: options.tableTitle }))
       continue
     }
 
@@ -2249,7 +2254,7 @@ function buildStructuredSections(content: string): StructuredSection[] {
     const { kind, badge } = classifyStructuredSection(block.title, body, index, blocks.length)
     return {
       title: block.title,
-      html: renderMarkdown(body),
+      html: renderMarkdown(body, { tableTitle: block.title === '明细列表' ? '' : undefined }),
       plainText: body,
       kind,
       badge,

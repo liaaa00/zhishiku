@@ -228,9 +228,16 @@ _TABLE_LLM_ANALYSIS_TERMS = (
     "对比",
     "趋势",
     "优先级",
+    "优先",
     "推进",
     "下一步",
     "洞察",
+    "延伸",
+    "进一步",
+    "关注",
+    "短板",
+    "瓶颈",
+    "缺口",
 )
 
 
@@ -238,6 +245,38 @@ def should_use_table_llm_analysis(question: str) -> bool:
     """Route analytical table questions to the LLM with a full structured digest."""
     compact_question = re.sub(r"\s+", "", question or "")
     return any(term in compact_question for term in _TABLE_LLM_ANALYSIS_TERMS)
+
+
+def build_table_fact_block(question: str, table_contexts: list[dict]) -> tuple[str, dict]:
+    """Build deterministic table facts that the LLM may explain but must not recalculate differently."""
+    if not table_contexts:
+        return "", {}
+    local_answer = build_table_answer(question, table_contexts)
+    structured_result = build_table_structured_result(question, table_contexts)
+    rows = structured_result.get("rows") if isinstance(structured_result, dict) else []
+    columns = structured_result.get("columns") if isinstance(structured_result, dict) else []
+    lines = [
+        "## 规则计算结果（硬事实，必须保持一致）",
+        "- 生成方式：系统已先按表格结构化行完成筛选、去重、计数和字段提取；LLM 只能解释、归纳和提出建议，不能改写这些数字或明细。",
+        "- 如果用户追问风险/建议/原因，只能基于下方规则结果和表格证据做分析；表里没有的信息要明确说明“表格未提供”。",
+        "",
+        "### 规则回答",
+        local_answer,
+    ]
+    if columns and rows:
+        lines.extend(["", "### 结构化结果预览", "| " + " | ".join(str(item) for item in columns) + " |", "| " + " | ".join("---" for _ in columns) + " |"])
+        for row in rows[:40]:
+            if isinstance(row, list):
+                lines.append("| " + " | ".join(str(item or "") for item in row) + " |")
+        if len(rows) > 40:
+            lines.append(f"- 还有 {len(rows) - 40} 行结构化结果未在预览中展开。")
+    return "\n".join(lines), structured_result if isinstance(structured_result, dict) else {}
+
+
+def merge_table_fact_block(structured_digest: str, fact_block: str) -> str:
+    if not fact_block:
+        return structured_digest
+    return f"{fact_block}\n\n{structured_digest}".strip() if structured_digest else fact_block
 
 
 def digest_contexts_for_answer(contexts: list[dict], answer_contexts: list[dict], *, table_answer_mode: bool) -> list[dict]:
@@ -559,6 +598,11 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
             retrieval_meta["answer_composer"] = "table_local"
         elif table_llm_analysis_mode:
             retrieval_meta["table_llm_analysis"] = True
+            table_answer_contexts = table_contexts_for_answer(contexts)
+            retrieval_meta["table_answer_context_count"] = len(table_answer_contexts)
+            fact_block, table_structured_result = build_table_fact_block(question, table_answer_contexts)
+            retrieval_meta["table_structured_result"] = table_structured_result
+            structured_digest = merge_table_fact_block(structured_digest, fact_block)
             answer = _call_knowledge_answer(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest, prompt_instructions=prompt_template_context.get("instructions") or "")
             retrieval_meta["answer_composer"] = "table_llm_with_structured_digest"
         elif should_use_fast_extractive_answer(question, answer_contexts, retrieval_meta, summary_mode=summary_mode, table_answer_mode=table_answer_mode):
@@ -801,6 +845,11 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                 elif table_llm_analysis_mode:
                     retrieval_meta["table_llm_analysis"] = True
                     retrieval_meta["answer_composer"] = "table_llm_with_structured_digest"
+                    table_answer_contexts = table_contexts_for_answer(contexts)
+                    retrieval_meta["table_answer_context_count"] = len(table_answer_contexts)
+                    fact_block, table_structured_result = build_table_fact_block(question, table_answer_contexts)
+                    retrieval_meta["table_structured_result"] = table_structured_result
+                    structured_digest = merge_table_fact_block(structured_digest, fact_block)
                     for piece in stream_chat_answer_v2(question, answer_contexts, cfg["api_key"], cfg["base_url"], cfg["model"], history=history, structured_digest=structured_digest, prompt_instructions=prompt_template_context.get("instructions") or ""):
                         answer_parts.append(piece)
                         yield _sse_event("delta", piece)

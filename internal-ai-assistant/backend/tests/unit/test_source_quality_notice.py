@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, digest_contexts_for_answer, model_contexts_for_answer, should_use_fast_extractive_answer, should_use_table_llm_analysis, table_contexts_for_answer
+from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, build_table_fact_block, digest_contexts_for_answer, merge_table_fact_block, model_contexts_for_answer, should_use_fast_extractive_answer, should_use_table_llm_analysis, table_contexts_for_answer
 
 
 def test_source_quality_notice_summarizes_poor_and_blocked_sources() -> None:
@@ -239,7 +239,53 @@ def test_table_contexts_for_answer_keep_all_table_rows() -> None:
 
 def test_table_llm_analysis_intent_only_for_analytical_questions() -> None:
     assert should_use_table_llm_analysis("分析一下这些城市分公司开设进度有什么风险") is True
+    assert should_use_table_llm_analysis("基于刚才表格结果进一步看一下短板") is True
     assert should_use_table_llm_analysis("目前北仑在哪些城市开了分公司") is False
+
+
+def test_table_fact_block_keeps_deterministic_result_for_llm_analysis() -> None:
+    contexts = [
+        {
+            "document_id": "doc-table",
+            "document_title": "北仑分公司开设最新进度表0310",
+            "retrieval_channel": "table",
+            "table_row_id": "row-1",
+            "sheet_name": "Sheet1",
+            "row_number": 3,
+            "content": "城市=北京 | 当前进度-4.开设公司名称=外服（浙江）企业服务有限公司北京分公司",
+            "table_row": {
+                "城市": "北京",
+                "当前进度-4.开设公司名称": "外服（浙江）企业服务有限公司北京分公司",
+            },
+            "table_semantic_map": {},
+            "score": 1.0,
+        },
+        {
+            "document_id": "doc-table",
+            "document_title": "北仑分公司开设最新进度表0310",
+            "retrieval_channel": "table",
+            "table_row_id": "row-2",
+            "sheet_name": "Sheet1",
+            "row_number": 4,
+            "content": "城市=上海 | 当前进度-4.开设公司名称=外服（浙江）企业服务有限公司上海分公司",
+            "table_row": {
+                "城市": "上海",
+                "当前进度-4.开设公司名称": "外服（浙江）企业服务有限公司上海分公司",
+            },
+            "table_semantic_map": {},
+            "score": 1.0,
+        },
+    ]
+
+    fact_block, structured = build_table_fact_block("分析这些分公司开设情况有什么风险", contexts)
+    merged = merge_table_fact_block("## 表格结构化证据包\n- 命中表格行数：2", fact_block)
+
+    assert "规则计算结果（硬事实，必须保持一致）" in fact_block
+    assert "LLM 只能解释、归纳和提出建议，不能改写这些数字或明细" in fact_block
+    assert "结论：共有 2 家命中记录" in fact_block
+    assert structured["type"] in {"count", "retrieve", "list"}
+    assert merged.startswith("## 规则计算结果")
+    assert "## 表格结构化证据包" in merged
 
 
 def test_fast_extractive_answer_is_used_for_large_broad_contexts() -> None:

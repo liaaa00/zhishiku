@@ -219,6 +219,18 @@ def _row_matches_single_filter(context: dict, item: dict[str, str]) -> bool:
     operator = item.get("operator") or "contains"
     value = item.get("value") or ""
     focused_values = _row_values_for_aliases(row, (column,), semantic_map, allow_fallback=column != "branch_company")
+    if column == "branch_company":
+        # branch_company is a narrower business alias than generic company.  The
+        # automatic semantic map may classify "当前进度-4.开设公司名称" as company;
+        # still use the explicit branch-company aliases for filtering.
+        explicit_values = []
+        for alias in COLUMN_ALIASES.get("branch_company", ()):
+            for key, raw in row.items():
+                if alias in str(key or ""):
+                    cleaned = _clean(raw)
+                    if cleaned:
+                        explicit_values.append(cleaned)
+        focused_values = list(dict.fromkeys(explicit_values + focused_values))
     combined = " ".join(value for value in focused_values if value)
     if column == "city" and operator in {"contains", "eq"} and value:
         return any(alias in combined for alias in _city_equivalents(value))
@@ -314,7 +326,7 @@ def _has_concrete_value(value: Any) -> bool:
         return False
     if text in {"-", "--", "/", "无", "暂无", "否"}:
         return False
-    if any(term in text for term in ("未开设", "未完成", "待定", "暂无", "无")):
+    if any(term in text for term in ("未开设", "未完成", "待定", "暂无")):
         return False
     return True
 
@@ -436,6 +448,10 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
     value_filters = plan.filters
     filter_logic = plan.filter_logic
     filter_groups = plan.filter_groups
+    requires_concrete_branch_company = any(
+        item.get("column") == "branch_company" and item.get("operator") == "is_concrete"
+        for item in value_filters
+    )
     group_by = plan.group_by
     distinct_by = plan.distinct_by
     aggregate_op = plan.aggregate_op
@@ -526,6 +542,11 @@ def table_mode_contexts(db: Session, question: str, user: User, top_k: int = 10,
         ]
         value_filter_matched_rows = len(value_matched)
         scored_contexts = value_matched
+
+    if requires_concrete_branch_company:
+        progress_matched = [item for item in scored_contexts if _row_has_branch_progress_columns(item[3])]
+        if progress_matched:
+            scored_contexts = progress_matched
 
     table_analysis_progress_matched_rows = 0
     if table_analysis_query:

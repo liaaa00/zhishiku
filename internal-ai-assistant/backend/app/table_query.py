@@ -282,7 +282,7 @@ def _score_document(question: str, doc: Document, sample_rows: list[DocumentTabl
         if any(city in value_text or city in title_text for city in ("北京", "上海", "成都", "宁波", "北仑", "重庆", "杭州", "长沙", "西安", "郑州", "石家庄")):
             score += 0.25
 
-    if any(word in question for word in ("有效网点", "网点", "开设", "有效")):
+    if any(word in question for word in ("有效网点", "网点", "开设", "有效", "开了", "开分公司", "分公司")):
         if any("当前进度" in key or "开设公司名称" in key for key in row_keys):
             score += 0.6
         if {"city", "company"}.issubset(set(semantic_map.keys())):
@@ -302,15 +302,17 @@ def _score_document(question: str, doc: Document, sample_rows: list[DocumentTabl
         if any("比例" in key or "账户" in key or "完成" in key for key in row_keys):
             score += 0.2
 
-    # 「名称含XX的条目」这类按公司名称过滤的问句缺少城市/月份/网点等既有关键词，
-    # 仅凭标题/样本词打不到 0.45 阈值；改按“计划确实解析出 company/branch_company
+    # 「名称含XX的条目」/「开了多少城市分公司」这类按公司名称过滤的问句缺少
+    # 城市/月份/网点等既有关键词；改按“计划确实解析出 company/branch_company
     # 过滤 且 本文档确有对应列”来加分，使文档选择跟随真实查询意图而非固定词表。
     plan_columns = {item.get("column") for item in parse_table_query_plan(question).filters}
     if plan_columns & {"company", "branch_company"}:
-        if "company" in semantic_map or any("开设公司名称" in key or "公司名称" in key or "单位名称" in key for key in row_keys):
+        if "branch_company" in semantic_map or any("开设公司名称" in key for key in row_keys):
+            score += 0.75
+        elif "company" in semantic_map or any("公司名称" in key or "单位名称" in key for key in row_keys):
             score += 0.45
 
-    return round(min(score, 1.0), 4)
+    return round(score, 4)
 
 
 def _document_has_matching_month_sheet(db: Session, document_id: str, month_tokens: list[str]) -> bool:
@@ -341,7 +343,7 @@ def select_table_documents(db: Session, question: str, user: User, limit: int = 
         # don't let a small leading-row sample discard the whole document before row-level filtering.
         if _document_has_matching_month_sheet(db, str(doc.id), month_tokens):
             score += 0.5
-        scored.append((min(score, 1.0), doc))
+        scored.append((score, doc))
     scored.sort(key=lambda item: (item[0], item[1].created_at), reverse=True)
     min_score = 0.45
     selected = [doc for score, doc in scored if score >= min_score][: max(1, min(limit, 5))]
@@ -591,6 +593,32 @@ def _focused_preview_columns(row: dict[str, Any], compact_question: str, select_
     return list(dict.fromkeys(columns))
 
 
+def _wants_company_name_with_city_list(compact_question: str, select_columns: list[str]) -> bool:
+    if not any(term in compact_question for term in ("名字", "名称", "叫什么", "叫啥", "分别")):
+        return False
+    return any(column in {"company", "branch_company"} for column in select_columns) or any(
+        term in compact_question for term in ("公司", "分公司", "开设公司")
+    )
+
+
+def _city_company_detail_rows(data_rows: list[dict]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in data_rows:
+        row = item.get("table_row") if isinstance(item.get("table_row"), dict) else {}
+        semantic_map = item.get("table_semantic_map") if isinstance(item.get("table_semantic_map"), dict) else {}
+        city = _first_alias_value(row, "city", semantic_map)
+        company = _first_alias_value(row, "branch_company", semantic_map) or _first_alias_value(row, "company", semantic_map)
+        if not city or not company:
+            continue
+        key = (city, company)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(key)
+    return rows
+
+
 @dataclass(slots=True)
 class TableAnswerData:
     data_rows: list[dict]
@@ -760,6 +788,8 @@ def _build_table_structured_result(question: str, data_rows: list[dict]) -> dict
     plan = parse_table_query_plan(question, include_quoted_company=False)
     answer_data = _build_table_answer_data(
         data_rows,
+        question=question,
+        query_op=plan.query_op,
         distinct_by=plan.distinct_by,
         group_by=plan.group_by,
         aggregate_op=plan.aggregate_op,
@@ -1030,9 +1060,15 @@ def _render_table_answer(question: str, data_rows: list[dict]) -> str:
     elif distinct_by and answer_data.distinct_values:
         label = "城市" if distinct_by == "city" else "公司"
         lines.append("### 明细列表")
-        for value in limited(answer_data.distinct_values):
-            lines.append(f"- {label}={value}")
-        append_notice_if_limited(len(answer_data.distinct_values))
+        if distinct_by == "city" and _wants_company_name_with_city_list(compact_question, select_columns):
+            detail_rows = _city_company_detail_rows(answer_data.data_rows)
+            for city, company in limited(detail_rows):
+                lines.append(f"- 城市={city} | 开设公司名称={company}")
+            append_notice_if_limited(len(detail_rows))
+        else:
+            for value in limited(answer_data.distinct_values):
+                lines.append(f"- {label}={value}")
+            append_notice_if_limited(len(answer_data.distinct_values))
         lines.append("")
 
     detail_intent = any(term in compact_question for term in ("列出", "明细", "清单", "名单", "哪些", "哪几", "详情", "全部"))

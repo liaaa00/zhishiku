@@ -328,6 +328,50 @@ def test_branch_city_list_uses_effective_name_basis_without_completion_filters()
         db.close()
 
 
+def test_branch_city_count_with_name_request_lists_city_and_company_name() -> None:
+    db = _db_session()
+    try:
+        user = User(id="admin", username="admin", password_hash="x", is_admin=True, is_active=True)
+        progress_doc = Document(
+            id="doc-beilun-progress",
+            title="北仑分公司开设最新进度表0310",
+            filename="北仑分公司开设最新进度表0310.xlsx",
+            storage_path="progress.xlsx",
+            source_type="xlsx",
+            created_by="admin",
+        )
+        db.add_all([
+            user,
+            progress_doc,
+            _progress_header("progress-header"),
+            _progress_row("progress-ningbo-beilun", 3, "宁波北仑"),
+            _progress_row("progress-beijing", 4, "北京"),
+            _progress_row("progress-yuncheng", 5, "运城", social="否"),
+            _progress_row("progress-guiyang", 6, "贵阳", bank="否", social="否", ratio="", branch_company="未开设"),
+        ])
+        db.commit()
+
+        question = "浙江目前开了多少个城市的分公司，分别都叫什么名字"
+        plan = parse_table_query_plan(question)
+        assert plan.query_op == "distinct_count"
+        assert plan.distinct_by == "city"
+        assert {"column": "branch_company", "operator": "is_concrete"} in plan.filters
+        assert not any(item.get("column") == "bank_account" for item in plan.filters)
+        assert not any(item.get("column") == "social_account" for item in plan.filters)
+
+        contexts, meta = table_mode_contexts(db, question, user, top_k=8)
+        assert meta["matched_rows"] == 3
+
+        answer = build_table_answer(question, contexts)
+        assert "共有 3 个城市" in answer
+        assert "城市=宁波北仑 | 开设公司名称=外服（浙江）企业服务有限公司" in answer
+        assert "城市=北京 | 开设公司名称=外服（浙江）企业服务有限公司北京分公司" in answer
+        assert "城市=运城 | 开设公司名称=外服（浙江）企业服务有限公司运城分公司" in answer
+        assert "城市=贵阳" not in answer
+    finally:
+        db.close()
+
+
 def test_branch_progress_analysis_uses_scope_and_keeps_unopened_rows() -> None:
     db = _db_session()
     try:

@@ -457,7 +457,11 @@ _BRANCH_PROGRESS_SCOPE_TERMS = (
 
 def _has_branch_opening_intent(text: str) -> bool:
     compact_text = compact(text)
-    return any(term in compact_text for term in _BRANCH_OPENING_TERMS)
+    if any(term in compact_text for term in _BRANCH_OPENING_TERMS):
+        return True
+    # “开了多少个城市的分公司 / 开了哪些城市的分公司”中，“开了”和“分公司”
+    # 往往被城市数量词隔开，不能只依赖连续短语“开了分公司”。
+    return "分公司" in compact_text and any(term in compact_text for term in ("开了", "开设", "已开", "开通", "设立", "成立"))
 
 
 def city_terms_are_scope(question: str) -> bool:
@@ -527,6 +531,8 @@ def _requires_concrete_branch_company_name(text: str) -> bool:
     compact_text = compact(text)
     if not compact_text:
         return False
+    if city_terms_are_scope(compact_text) and any(term in compact_text for term in _CITY_LIST_INTENT_TERMS):
+        return True
     if _has_explicit_branch_name_basis(compact_text):
         return True
     has_analysis_intent = any(term in compact_text for term in _TABLE_ANALYSIS_SCOPE_TERMS)
