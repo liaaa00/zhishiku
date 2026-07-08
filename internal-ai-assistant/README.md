@@ -32,9 +32,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## DeepSeek
 
-- 对话模型：`deepseek-chat`
+- 对话模型：`.env` 中的 `CHAT_MODEL`
 - 接口地址：`https://api.deepseek.com`
-- 文档检索默认使用本地哈希向量，不依赖 DeepSeek embedding
+- 文档检索本地试用可使用 local-hash；生产环境必须配置远程 embedding
 
 ## PageIndex 高级结构索引
 
@@ -56,6 +56,31 @@ PAGEINDEX_REPO_PATH=D:\path\to\internal-ai-assistant\third_party\PageIndex
 ```
 
 官方 PageIndex 不是标准 pip 包，因此项目将其作为可选源码路径加载；未安装依赖或未配置路径时，会自动回退到内置轻量结构树，不影响原知识库使用。
+
+## 生产化/实际运行
+
+真实上线或内部试运行前，先按以下文档执行：
+
+- [生产化上线检查清单](docs/生产化上线检查清单.md)
+- [部署运行手册](docs/部署运行手册.md)
+- [真实知识库导入与验收流程](docs/真实知识库导入与验收流程.md)
+- [业务评测集建设方案](docs/业务评测集建设方案.md)
+
+只读预检命令：
+
+```powershell
+python -X utf8 scripts\preflight_check.py
+```
+
+上线前建议至少跑：
+
+```powershell
+cd backend
+python -X utf8 -m pytest tests/unit -q
+python -X utf8 tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_real_cases.json
+cd ..\frontend
+npm run build
+```
 
 ## 说明
 
