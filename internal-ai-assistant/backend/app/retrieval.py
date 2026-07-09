@@ -348,6 +348,52 @@ def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(_normalize_match_text(marker) in normalized for marker in markers)
 
 
+def expanded_evidence_terms_for_query(question: str) -> list[str]:
+    """Add narrow answer-bearing terms that stabilize retrieval across backends.
+
+    These terms are not used to answer by themselves; they only keep recalled
+    evidence snippets that contain common synonymous labels or concrete method
+    names from being dropped during final context truncation.
+    """
+    compact = re.sub(r"\s+", "", _normalize_match_text(question).lower())
+    terms: list[str] = []
+
+    def add(*items: str) -> None:
+        for item in items:
+            normalized = _normalize_match_text(item).lower().strip()
+            if normalized and normalized not in terms:
+                terms.append(normalized)
+
+    if _contains_any(compact, ("身份认证", "身份验证", "认证身份", "验证身份")):
+        add("身份认证", "身份验证")
+        if _contains_any(compact, ("入口", "类型", "哪些", "哪几", "方式")):
+            add("普通个人", "雇员", "账号与安全")
+
+    if _contains_any(compact, ("实名认证", "实人认证")):
+        add("实名认证")
+        if _contains_any(compact, ("方式", "用什么", "通过", "怎么", "如何", "渠道")):
+            add("支付宝", "微信", "验证码", "输入验证码")
+
+    return terms[:20]
+
+
+def _expanded_evidence_hits(question: str, context: dict) -> list[str]:
+    terms = expanded_evidence_terms_for_query(question)
+    if not terms:
+        return []
+    haystack = _normalize_match_text(_context_full_text(context)).lower()
+    return [term for term in terms if term in haystack]
+
+
+def _stable_context_order(context: dict) -> tuple[str, int, int, str]:
+    return (
+        str(context.get("document_title") or context.get("filename") or ""),
+        _safe_int(context.get("page_number"), 10**9),
+        _safe_int(context.get("chunk_index"), 10**9),
+        str(context.get("chunk_id") or ""),
+    )
+
+
 def _is_internal_contract_workflow_context(text: str) -> bool:
     if not _contains_any(text, ESIGN_INTERNAL_WORKFLOW_MARKERS):
         return False
@@ -728,7 +774,7 @@ def sqlite_search_chunks(db: Session, query_vector: List[float], user: User, gro
                 "score": cosine_similarity(query_vector, parse_embedding(chunk.embedding_json)),
             }
         )
-    scored.sort(key=lambda x: x["score"], reverse=True)
+    scored.sort(key=lambda context: (-_safe_float(context.get("score")), *_stable_context_order(context)))
     return scored[:limit]
 
 
@@ -742,6 +788,8 @@ def keyword_terms_for_query(question: str) -> list[str]:
         for size in (2, 3, 4, 5, 6):
             for i in range(max(0, len(chunk) - size + 1)):
                 terms.add(chunk[i : i + size])
+    for term in expanded_evidence_terms_for_query(question):
+        terms.add(term)
     return sorted((term for term in terms if len(term) >= 2), key=len, reverse=True)[:80]
 
 
@@ -793,7 +841,7 @@ def keyword_search_chunks(db: Session, question: str, user: User, group_ids: lis
         context["match_terms"] = hits
         context["retrieval_channel"] = "keyword"
         scored.append(context)
-    scored.sort(key=lambda x: _safe_float(x.get("score")), reverse=True)
+    scored.sort(key=lambda context: (-_safe_float(context.get("score")), *_stable_context_order(context)))
     return scored[: max(1, min(limit, ADAPTIVE_CANDIDATE_MAX))]
 
 
@@ -1072,12 +1120,15 @@ def _rerank_context_score(question: str, question_terms: set[str], context: dict
     pageindex_boost = 0.16 if context.get("pageindex_source") else 0.0
     source_score = min(_safe_float(context.get("score"), 0.0), 1.0) * 0.35
     lexical_score = min(0.30, coverage * 0.30)
+    evidence_hits = _expanded_evidence_hits(question, context)
+    evidence_hit_score = min(0.24, len(evidence_hits) * 0.08)
     rank_penalty = min(0.08, original_rank * 0.004)
     profile_features = score_context_for_query_profile(profile or build_query_profile(question), context)
     quality_penalty = _safe_float(context.get("quality_penalty"), _safe_float((context.get("source_quality") or {}).get("penalty"), 0.0))
     score = (
         source_score
         + lexical_score
+        + evidence_hit_score
         + title_boost
         + pageindex_boost
         + _safe_float(profile_features.get("intent_score"), 0.0)
@@ -1090,6 +1141,8 @@ def _rerank_context_score(question: str, question_terms: set[str], context: dict
     )
     profile_features.update({
         "lexical_coverage": round(coverage, 4),
+        "expanded_evidence_hits": evidence_hits[:8],
+        "expanded_evidence_score": round(evidence_hit_score, 4),
         "title_boost": round(title_boost, 4),
         "quality_penalty": round(quality_penalty, 4),
     })
@@ -1112,7 +1165,15 @@ def profile_rank_contexts(question: str, contexts: list[dict], profile: dict | N
         enriched["intent_ranking"] = features
         enriched["profile_score"] = round(score, 4)
         scored.append((score, idx, enriched))
-    scored.sort(key=lambda item: (item[0], bool(item[2].get("pageindex_source"))), reverse=True)
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            -len((item[2].get("intent_ranking") or {}).get("expanded_evidence_hits") or []),
+            not bool(item[2].get("pageindex_source")),
+            item[1],
+            *_stable_context_order(item[2]),
+        )
+    )
     return [item[2] for item in scored]
 
 
@@ -1132,7 +1193,15 @@ def rerank_contexts(question: str, contexts: list[dict], limit: int, profile: di
         enriched = dict(context)
         enriched["intent_ranking"] = features
         scored.append((score, idx, enriched))
-    scored.sort(key=lambda item: (item[0], bool(item[2].get("pageindex_source"))), reverse=True)
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            -len((item[2].get("intent_ranking") or {}).get("expanded_evidence_hits") or []),
+            not bool(item[2].get("pageindex_source")),
+            item[1],
+            *_stable_context_order(item[2]),
+        )
+    )
 
     selected: list[dict] = []
     per_doc_count: dict[str, int] = {}
