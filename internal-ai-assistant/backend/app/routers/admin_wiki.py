@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Document, User, WikiCompileStatus, WikiPage
 from ..wiki.compiler import compile_document_to_wiki, compile_ready_documents
+from ..wiki.graph import build_wiki_graph
 from ..wiki.health import evaluate_wiki_health
 from ..wiki.search import retrieve_wiki_contexts
 from .deps import audit, require_admin
@@ -120,6 +121,17 @@ def wiki_health(
     _: User = Depends(require_admin),
 ):
     return evaluate_wiki_health(db, knowledge_scope=knowledge_scope, include_findings=True)
+
+
+@router.get("/api/admin/wiki/graph")
+def wiki_graph(
+    knowledge_scope: str = Query("production"),
+    status: str = Query("published", pattern="^(published|draft|archived|all)$"),
+    limit: int = Query(500, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    return build_wiki_graph(db, knowledge_scope=knowledge_scope, status=status, limit=limit)
 
 
 @router.get("/api/admin/wiki/search-test")

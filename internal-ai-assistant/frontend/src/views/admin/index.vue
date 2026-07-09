@@ -56,6 +56,7 @@
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'feedback' }]" @click="jumpToTab('feedback')">反馈管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'evaluation' }]" @click="jumpToTab('evaluation')">评测面板</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'operations' }]" @click="jumpToTab('operations')">运营中心</button>
+        <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'wikiGraph' }]" @click="jumpToTab('wikiGraph')">Wiki图谱</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'graph' }]" @click="jumpToTab('graph')">图谱管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'tasks' }]" @click="jumpToTab('tasks')">任务中心</button>
       </div>
@@ -1454,6 +1455,154 @@
         </section>
       </el-tab-pane>
 
+      <el-tab-pane label="Wiki图谱" name="wikiGraph">
+        <section class="admin-panel-card admin-graph-panel">
+          <header class="admin-section-header">
+            <div>
+              <h3>Wiki 页面关系图谱</h3>
+              <p>参考 llm_wiki 的最新版 Wiki graph 思路：Wiki 页面是节点，<code>[[wikilink]]</code> 是关系边，并叠加直接链接、共同来源、共同邻居和类型亲和四类信号来发现主题社区、意外连接与知识缺口。</p>
+            </div>
+            <el-button :disabled="loadingWikiGraph" @click="loadWikiGraphData(true)">
+              {{ loadingWikiGraph ? '刷新中…' : '刷新Wiki图谱' }}
+            </el-button>
+          </header>
+
+          <div class="admin-stat-grid admin-graph-stat-grid">
+            <article class="admin-stat-card">
+              <span>Wiki页面</span>
+              <strong>{{ wikiGraph?.node_count || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card">
+              <span>Wiki关系</span>
+              <strong>{{ wikiGraph?.edge_count || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card">
+              <span>主题社区</span>
+              <strong>{{ wikiGraph?.community_count || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': wikiGraphInsightCount > 0 }">
+              <span>图谱洞察</span>
+              <strong>{{ wikiGraphInsightCount }}</strong>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (wikiGraph?.broken_link_count || 0) > 0 }">
+              <span>断链</span>
+              <strong>{{ wikiGraph?.broken_link_count || 0 }}</strong>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (wikiGraph?.orphan_count || 0) > 0 }">
+              <span>孤立页</span>
+              <strong>{{ wikiGraph?.orphan_count || 0 }}</strong>
+            </article>
+          </div>
+
+          <section class="admin-graph-visual-card">
+            <div class="admin-graph-visual-head">
+              <div>
+                <h4>Wiki 页面网络</h4>
+                <p>节点代表 Wiki 页面，颜色代表主题社区，连线代表页面之间的 <code>[[wikilink]]</code>；线越粗说明多信号权重越高。</p>
+              </div>
+              <span>{{ wikiGraphNodes.length }} 个页面 · {{ wikiGraphEdges.length }} 条关系 · {{ wikiGraphCommunities.length }} 个社区</span>
+            </div>
+            <div v-if="wikiGraphNodes.length" class="admin-graph-network-layout">
+              <div class="admin-graph-network-wrap">
+                <div ref="wikiGraphChartRef" class="admin-graph-network" aria-label="Wiki页面关系网络"></div>
+                <div class="admin-graph-network-help">可滚轮缩放、拖拽画布和节点；悬浮节点/连线可查看 Wiki 页面与 wikilink 关系。</div>
+              </div>
+              <aside class="admin-graph-inspector">
+                <div class="admin-graph-inspector-head">
+                  <span>{{ wikiGraphSelectedNodeName ? 'Wiki相邻关系' : '高连接Wiki关系' }}</span>
+                  <button v-if="wikiGraphSelectedNodeName" type="button" @click="wikiGraphSelectedNode = ''">清除选择</button>
+                </div>
+                <strong>{{ wikiGraphSelectedNodeName || '未选择页面' }}</strong>
+                <p>{{ wikiGraphSelectedNodeName ? '以下是该 Wiki 页面直接关联的页面。' : '点击左侧 Wiki 页面节点后，这里会聚焦展示直接关系。' }}</p>
+                <div class="admin-graph-inspector-list">
+                  <article v-for="edge in wikiGraphSelectedEdges" :key="edge.id" class="admin-graph-inspector-item">
+                    <div>
+                      <span>{{ edge.source_title }}</span>
+                      <em>wikilink</em>
+                      <span>{{ edge.target_title }}</span>
+                    </div>
+                    <p>{{ wikiGraphStrengthLabel(edge.strength) }} · 权重 {{ formatWikiGraphWeight(edge.weight) }} · 出现 {{ edge.mentions || 1 }} 次</p>
+                    <small>{{ wikiGraphSignalsText(edge) }}</small>
+                    <small>{{ edge.source }} ↔ {{ edge.target }} · 共同来源 {{ edge.shared_source_count || 0 }}</small>
+                  </article>
+                </div>
+              </aside>
+            </div>
+            <div v-else-if="!loadingWikiGraph" class="admin-dialog-empty">还没有可展示的 Wiki 页面关系。请先编译 Wiki，并在页面正文中加入 <code>[[页面标题]]</code> 链接。</div>
+          </section>
+
+          <div class="admin-graph-columns">
+            <section>
+              <h4>Wiki页面节点</h4>
+              <div v-if="wikiGraphNodes.length" class="admin-feedback-list">
+                <article v-for="node in wikiGraphNodes.slice(0, 12)" :key="node.slug" class="admin-feedback-card reviewed">
+                  <div class="admin-feedback-head">
+                    <strong>{{ node.title || node.slug }}</strong>
+                    <span class="admin-feedback-status reviewed">{{ wikiPageTypeLabel(node.page_type) }}</span>
+                  </div>
+                  <p>{{ node.summary || '暂无摘要' }}</p>
+                  <small>{{ node.community_label || '社区 1' }} · 连接 {{ node.link_count || 0 }} · 入链 {{ node.incoming_link_count || 0 }} · 出链 {{ node.outgoing_link_count || 0 }} · 来源 {{ node.source_count || 0 }}</small>
+                </article>
+              </div>
+              <div v-else class="admin-dialog-empty">暂无 Wiki 页面。</div>
+            </section>
+
+            <section>
+              <h4>主题社区</h4>
+              <div v-if="wikiGraphCommunities.length" class="admin-feedback-list">
+                <article v-for="community in wikiGraphCommunities.slice(0, 8)" :key="community.id" class="admin-feedback-card reviewed">
+                  <div class="admin-feedback-head">
+                    <strong>{{ community.label || `社区 ${Number(community.id || 0) + 1}` }}</strong>
+                    <span class="admin-feedback-status reviewed">{{ community.node_count || 0 }} 页</span>
+                  </div>
+                  <p>核心页面：{{ (community.top_nodes || []).join('、') || '暂无' }}</p>
+                  <small>内部关系 {{ community.edge_count || 0 }} · 密度 {{ formatWikiGraphWeight(community.cohesion || 0) }}</small>
+                </article>
+              </div>
+              <div v-else class="admin-dialog-empty">暂无可识别的 Wiki 主题社区。</div>
+            </section>
+
+            <section>
+              <h4>Graph Insights</h4>
+              <div v-if="wikiGraphSurprisingConnections.length || wikiGraphKnowledgeGaps.length" class="admin-feedback-list">
+                <article v-for="item in wikiGraphSurprisingConnections.slice(0, 4)" :key="`surprise-${item.key}`" class="admin-feedback-card reviewed">
+                  <div class="admin-feedback-head">
+                    <strong>{{ item.source_title }} ↔ {{ item.target_title }}</strong>
+                    <span class="admin-feedback-status reviewed">意外连接</span>
+                  </div>
+                  <p>{{ (item.reasons || []).join('、') || '跨主题关系' }}</p>
+                  <small>权重 {{ formatWikiGraphWeight(item.weight) }} · 分数 {{ item.score || 0 }}</small>
+                </article>
+                <article v-for="gap in wikiGraphKnowledgeGaps.slice(0, 6)" :key="`gap-${gap.type}-${gap.title}`" class="admin-feedback-card pending">
+                  <div class="admin-feedback-head">
+                    <strong>{{ gap.title }}</strong>
+                    <span class="admin-feedback-status pending">{{ wikiGraphInsightTypeLabel(gap.type) }}</span>
+                  </div>
+                  <p>{{ gap.description }}</p>
+                  <small>{{ gap.suggestion }}</small>
+                </article>
+              </div>
+              <div v-else class="admin-dialog-empty">当前没有需要处理的 Wiki 图谱洞察。</div>
+            </section>
+
+            <section>
+              <h4>断链 Wikilink</h4>
+              <div v-if="wikiGraphBrokenLinks.length" class="admin-feedback-list">
+                <article v-for="item in wikiGraphBrokenLinks.slice(0, 12)" :key="`${item.source}-${item.target}`" class="admin-feedback-card pending">
+                  <div class="admin-feedback-head">
+                    <strong>{{ item.source_title }}</strong>
+                    <span class="admin-feedback-status pending">断链</span>
+                  </div>
+                  <p>找不到目标页面：<code>{{ item.target }}</code></p>
+                  <small>{{ item.source }}</small>
+                </article>
+              </div>
+              <div v-else class="admin-dialog-empty">当前没有 WikiLink 断链。</div>
+            </section>
+          </div>
+        </section>
+      </el-tab-pane>
+
       <el-tab-pane label="图谱管理" name="graph">
         <section class="admin-panel-card admin-graph-panel">
           <header class="admin-section-header">
@@ -1977,6 +2126,9 @@ const graphPreviewRelations = ref<any[]>([])
 const graphChartRef = ref<HTMLDivElement | null>(null)
 const graphSelectedNode = ref<string>('')
 const graphSearchResult = ref<any | null>(null)
+const wikiGraph = ref<any | null>(null)
+const wikiGraphChartRef = ref<HTMLDivElement | null>(null)
+const wikiGraphSelectedNode = ref<string>('')
 const documentQualityMap = ref<Record<string, any>>({})
 const docGroupMap = reactive<Record<string, string[]>>({})
 const groupName = ref('')
@@ -2053,6 +2205,7 @@ const loadingFeedback = ref(false)
 const loadingEvaluation = ref(false)
 const loadingOperations = ref(false)
 const loadingGraph = ref(false)
+const loadingWikiGraph = ref(false)
 const graphSearchLoading = ref(false)
 const evaluationSuiteRunning = ref(false)
 const evaluationCaseRunning = ref(false)
@@ -2070,6 +2223,8 @@ let statusPollTimer: number | null = null
 let taskPollTimer: number | null = null
 let graphChart: ECharts | null = null
 let graphResizeObserver: ResizeObserver | null = null
+let wikiGraphChart: ECharts | null = null
+let wikiGraphResizeObserver: ResizeObserver | null = null
 let statusPollDeadline = 0
 const STATUS_POLL_INTERVAL_MS = 3000
 const STATUS_POLL_TIMEOUT_MS = 5 * 60 * 1000
@@ -2230,6 +2385,61 @@ const graphSelectedNodeName = computed(() => {
   const selected = graphSelectedNode.value
   if (!selected) return ''
   const node = graphNetworkData.value.nodes.find((item: any) => item.id === selected)
+  return node?.name || ''
+})
+const wikiGraphNodes = computed(() => Array.isArray(wikiGraph.value?.nodes) ? wikiGraph.value.nodes : [])
+const wikiGraphEdges = computed(() => Array.isArray(wikiGraph.value?.edges) ? wikiGraph.value.edges : [])
+const wikiGraphBrokenLinks = computed(() => Array.isArray(wikiGraph.value?.broken_links) ? wikiGraph.value.broken_links : [])
+const wikiGraphCommunities = computed(() => Array.isArray(wikiGraph.value?.communities) ? wikiGraph.value.communities : [])
+const wikiGraphInsights = computed(() => wikiGraph.value?.insights || {})
+const wikiGraphSurprisingConnections = computed(() => Array.isArray(wikiGraphInsights.value?.surprising_connections) ? wikiGraphInsights.value.surprising_connections : [])
+const wikiGraphKnowledgeGaps = computed(() => Array.isArray(wikiGraphInsights.value?.knowledge_gaps) ? wikiGraphInsights.value.knowledge_gaps : [])
+const wikiGraphInsightCount = computed(() => wikiGraphSurprisingConnections.value.length + wikiGraphKnowledgeGaps.value.length)
+const wikiGraphPageTypeCategories = computed(() => {
+  const seen: Record<string, boolean> = {}
+  const categories: Array<{ name: string; itemStyle: { color: string } }> = []
+  wikiGraphNodes.value.forEach((node: any) => {
+    const name = wikiPageTypeLabel(node?.page_type)
+    if (seen[name]) return
+    seen[name] = true
+    categories.push({ name, itemStyle: { color: graphTypePalette[(categories.length) % graphTypePalette.length] } })
+  })
+  return categories.length ? categories : [{ name: 'Wiki页面', itemStyle: { color: graphTypePalette[0] } }]
+})
+const wikiGraphNetworkData = computed(() => ({
+  nodes: wikiGraphNodes.value.map((node: any) => ({
+    id: String(node?.slug || node?.id || ''),
+    name: String(node?.title || node?.slug || '未命名页面'),
+    category: wikiPageTypeLabel(node?.page_type),
+    value: Number(node?.link_count || 0),
+    symbolSize: graphNodeSize(Number(node?.link_count || 1)),
+    draggable: true,
+    itemStyle: { color: wikiGraphCommunityColor(Number(node?.community || 0)) },
+    page: node,
+  })).filter((node: any) => node.id),
+  links: wikiGraphEdges.value.map((edge: any) => ({
+    id: String(edge?.id || `${edge?.source}-${edge?.target}`),
+    source: String(edge?.source || ''),
+    target: String(edge?.target || ''),
+    name: formatWikiGraphWeight(edge?.weight || edge?.mentions || 1),
+    value: Number(edge?.weight || edge?.mentions || 1),
+    edge,
+    lineStyle: {
+      width: graphRelationWidth(Number(edge?.weight || edge?.mentions || 1) / 10),
+      opacity: edge?.strength === 'weak' ? 0.42 : 0.78,
+      color: edge?.strength === 'strong' ? '#2563eb' : edge?.strength === 'medium' ? '#0891b2' : '#94a3b8',
+    },
+  })).filter((edge: any) => edge.source && edge.target),
+}))
+const wikiGraphSelectedEdges = computed(() => {
+  const selected = wikiGraphSelectedNode.value
+  if (!selected) return wikiGraphEdges.value.slice(0, 8)
+  return wikiGraphEdges.value.filter((edge: any) => edge?.source === selected || edge?.target === selected).slice(0, 12)
+})
+const wikiGraphSelectedNodeName = computed(() => {
+  const selected = wikiGraphSelectedNode.value
+  if (!selected) return ''
+  const node = wikiGraphNetworkData.value.nodes.find((item: any) => item.id === selected)
   return node?.name || ''
 })
 const graphRecentTaskByDoc = computed(() => {
@@ -2790,6 +3000,40 @@ function graphRelationWidth(confidence?: number) {
   return Math.max(1, Math.min(4, 1 + value * 3))
 }
 
+function wikiGraphCommunityColor(community: number) {
+  return graphTypePalette[Math.abs(Number(community || 0)) % graphTypePalette.length]
+}
+
+function formatWikiGraphWeight(value: any) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
+  return num.toFixed(num >= 10 ? 1 : 2)
+}
+
+function wikiGraphStrengthLabel(value?: string) {
+  return ({ strong: '强关系', medium: '中关系', weak: '弱关系' } as Record<string, string>)[String(value || '')] || '关系'
+}
+
+function wikiGraphInsightTypeLabel(value?: string) {
+  return ({
+    'isolated-node': '低连接页面',
+    'broken-link': 'WikiLink断链',
+    'sparse-community': '稀疏社区',
+    'bridge-node': '桥接页面',
+  } as Record<string, string>)[String(value || '')] || value || '洞察'
+}
+
+function wikiGraphSignalsText(edge: any) {
+  const signals = edge?.signals || {}
+  const parts = [
+    `直接链接 ${formatWikiGraphWeight(signals.direct_link || 0)}`,
+    `共同来源 ${formatWikiGraphWeight(signals.source_overlap || 0)}`,
+    `共同邻居 ${formatWikiGraphWeight(signals.common_neighbor || 0)}`,
+    `类型亲和 ${formatWikiGraphWeight(signals.type_affinity || 0)}`,
+  ]
+  return parts.join(' · ')
+}
+
 function escapeHtml(value: any) {
   return String(value || '').replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as Record<string, string>)[char] || char)
 }
@@ -2937,6 +3181,7 @@ async function load() {
     await loadEvaluationOverview(false)
     await loadOperationsOverview(false)
     await loadPromptTemplates(false)
+    await loadWikiGraphData(false)
     await loadGraphData(false)
     await loadPageIndexStatus()
     await loadVectorStatus()
@@ -3061,14 +3306,20 @@ async function pollTasks() {
 function jumpToTab(name: string) {
   adminTabIndex.value = name
   if (name === 'graph') renderGraphChart()
+  if (name === 'wikiGraph') renderWikiGraphChart()
 }
 
 watch(adminTabIndex, (name) => {
   if (name === 'graph') renderGraphChart()
+  if (name === 'wikiGraph') renderWikiGraphChart()
 })
 
 watch(graphVisibleRelations, () => {
   if (adminTabIndex.value === 'graph') renderGraphChart()
+})
+
+watch(wikiGraphNetworkData, () => {
+  if (adminTabIndex.value === 'wikiGraph') renderWikiGraphChart()
 })
 
 async function loadPageIndexStatus() {
@@ -3819,6 +4070,118 @@ function disposeGraphChart() {
   graphChart = null
 }
 
+function initWikiGraphChart() {
+  if (!wikiGraphChartRef.value) return null
+  if (!wikiGraphChart) {
+    wikiGraphChart = echarts.init(wikiGraphChartRef.value)
+    wikiGraphChart.on('click', (params: any) => {
+      if (params?.dataType === 'node' && params?.data?.id) {
+        wikiGraphSelectedNode.value = wikiGraphSelectedNode.value === params.data.id ? '' : params.data.id
+      }
+    })
+    wikiGraphResizeObserver = new ResizeObserver(() => wikiGraphChart?.resize())
+    wikiGraphResizeObserver.observe(wikiGraphChartRef.value)
+  }
+  return wikiGraphChart
+}
+
+function renderWikiGraphChart() {
+  nextTick(() => {
+    if (adminTabIndex.value !== 'wikiGraph' || !wikiGraphNodes.value.length) return
+    const chart = initWikiGraphChart()
+    if (!chart) return
+    const data = wikiGraphNetworkData.value
+    const option: EChartsOption = {
+      backgroundColor: 'transparent',
+      tooltip: {
+        trigger: 'item',
+        confine: true,
+        formatter: (params: any) => {
+          if (params.dataType === 'edge') {
+            const edge = params.data?.edge || {}
+            const rawTargets = Array.isArray(edge.raw_targets) ? edge.raw_targets.join('、') : ''
+            return `<div class="admin-graph-tooltip"><strong>${escapeHtml(wikiGraphStrengthLabel(edge.strength))} · 权重 ${escapeHtml(formatWikiGraphWeight(edge.weight))}</strong><br/>${escapeHtml(edge.source_title || edge.source)} ↔ ${escapeHtml(edge.target_title || edge.target)}<br/><small>出现 ${escapeHtml(edge.mentions || 1)} 次 · 共同来源 ${escapeHtml(edge.shared_source_count || 0)}${rawTargets ? ' · ' + escapeHtml(rawTargets) : ''}<br/>${escapeHtml(wikiGraphSignalsText(edge))}</small></div>`
+          }
+          const page = params.data?.page || {}
+          return `<div class="admin-graph-tooltip"><strong>${escapeHtml(params.data?.name || 'Wiki页面')}</strong><br/><small>${escapeHtml(params.data?.category || 'Wiki页面')} · ${escapeHtml(page.community_label || '社区 1')} · 连接 ${escapeHtml(params.data?.value || 0)} · 来源 ${escapeHtml(page.source_count || 0)}</small></div>`
+        },
+      },
+      legend: [{
+        top: 0,
+        left: 0,
+        itemWidth: 10,
+        itemHeight: 10,
+        textStyle: { color: '#475569', fontSize: 11 },
+        data: wikiGraphPageTypeCategories.value.map((item) => item.name),
+      }],
+      series: [{
+        type: 'graph',
+        layout: 'force',
+        roam: true,
+        draggable: true,
+        top: 34,
+        bottom: 12,
+        left: 8,
+        right: 8,
+        data: data.nodes,
+        links: data.links,
+        categories: wikiGraphPageTypeCategories.value,
+        edgeSymbol: ['none', 'none'],
+        label: {
+          show: true,
+          position: 'right',
+          formatter: '{b}',
+          color: '#1f2937',
+          fontSize: 11,
+        },
+        edgeLabel: {
+          show: true,
+          formatter: '{b}',
+          color: '#64748b',
+          fontSize: 10,
+        },
+        force: {
+          repulsion: 170,
+          edgeLength: [80, 170],
+          gravity: 0.08,
+          friction: 0.35,
+        },
+        emphasis: {
+          focus: 'adjacency',
+          lineStyle: { width: 4 },
+        },
+        lineStyle: {
+          color: '#94a3b8',
+          curveness: 0.12,
+        },
+      }],
+    }
+    chart.setOption(option, true)
+    wikiGraphChart?.resize()
+  })
+}
+
+function disposeWikiGraphChart() {
+  wikiGraphResizeObserver?.disconnect()
+  wikiGraphResizeObserver = null
+  wikiGraphChart?.dispose()
+  wikiGraphChart = null
+}
+
+async function loadWikiGraphData(showMessage = true) {
+  loadingWikiGraph.value = true
+  try {
+    wikiGraph.value = (await http.get('/admin/wiki/graph', { params: { knowledge_scope: 'production', status: 'published', limit: 500 } })).data || null
+    if (!wikiGraphEdges.value.some((edge: any) => edge?.source === wikiGraphSelectedNode.value || edge?.target === wikiGraphSelectedNode.value)) wikiGraphSelectedNode.value = ''
+    renderWikiGraphChart()
+    if (showMessage) ElMessage.success('Wiki图谱数据已刷新')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载Wiki图谱失败')
+  } finally {
+    loadingWikiGraph.value = false
+  }
+}
+
 async function loadGraphData(showMessage = true) {
   loadingGraph.value = true
   try {
@@ -4466,6 +4829,7 @@ onUnmounted(() => {
   stopStatusPolling()
   stopTaskPolling()
   disposeGraphChart()
+  disposeWikiGraphChart()
   document.documentElement.classList.remove('admin-scroll-page')
   document.body.classList.remove('admin-scroll-page')
 })

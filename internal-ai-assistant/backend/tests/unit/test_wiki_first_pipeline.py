@@ -9,6 +9,7 @@ from app.models import Document, DocumentChunk, DocumentProcessingStatus, User, 
 from app.rag.pipeline import retrieve_contexts
 from app.wiki.compiler import compile_document_to_wiki
 from app.wiki.context_budget import apply_context_budget
+from app.wiki.graph import build_wiki_graph
 from app.wiki.health import evaluate_wiki_health
 from app.wiki.search import retrieve_wiki_contexts
 
@@ -237,3 +238,92 @@ def test_wiki_context_budget_trims_context_pack_without_mutating_input() -> None
     assert packed[0]["content"].endswith("...")
     assert len(contexts[0]["source_quotes"]) == 2
     assert contexts[0]["content"] == "A" * 2600
+
+
+def test_wiki_graph_builds_weighted_wikilink_network_with_insights() -> None:
+    Session = make_session()
+    db = Session()
+    try:
+        doc = Document(
+            id="doc-shared",
+            title="Shared Source",
+            filename="shared.pdf",
+            storage_path="/tmp/shared.pdf",
+            source_type="pdf",
+            knowledge_scope="test",
+        )
+        page_a = WikiPage(
+            id="wiki-a",
+            slug="page-a",
+            title="Page A",
+            page_type="concept",
+            status="published",
+            knowledge_scope="test",
+            summary="Page A summary",
+            content_md="# Page A\n\nLinks to [[Page B]], [[page-b]], [[Page A]], and [[Missing Page]].",
+            confidence=0.8,
+        )
+        page_b = WikiPage(
+            id="wiki-b",
+            slug="page-b",
+            title="Page B",
+            page_type="rule",
+            status="published",
+            knowledge_scope="test",
+            summary="Page B summary",
+            content_md="# Page B\n\nLinks back to [[Page A]].",
+            confidence=0.7,
+        )
+        page_c = WikiPage(
+            id="wiki-c",
+            slug="page-c",
+            title="Page C",
+            page_type="source",
+            status="published",
+            knowledge_scope="test",
+            summary="Orphan page",
+            content_md="# Page C\n\nNo links here.",
+            confidence=0.6,
+        )
+        db.add_all([doc, page_a, page_b, page_c])
+        db.flush()
+        db.add_all(
+            [
+                WikiPageSource(id="wps-a", page_id=page_a.id, document_id=doc.id, source_order=0, quote="shared quote a"),
+                WikiPageSource(id="wps-b", page_id=page_b.id, document_id=doc.id, source_order=0, quote="shared quote b"),
+            ]
+        )
+        db.commit()
+
+        graph = build_wiki_graph(db, knowledge_scope="test")
+
+        assert graph["node_count"] == 3
+        assert graph["edge_count"] == 1
+        assert graph["community_count"] == 2
+        assert graph["broken_link_count"] == 1
+        assert graph["orphan_count"] == 1
+        assert graph["signal_weights"]["source_overlap"] == 4.0
+        edge = graph["edges"][0]
+        assert {edge["source"], edge["target"]} == {"page-a", "page-b"}
+        assert edge["mentions"] == 3
+        assert edge["direction_count"] == 2
+        assert edge["shared_source_count"] == 1
+        assert edge["signals"]["source_overlap"] == 4.0
+        assert edge["weight"] > edge["signals"]["direct_link"]
+        assert edge["strength"] == "strong"
+        nodes = {node["slug"]: node for node in graph["nodes"]}
+        assert nodes["page-a"]["link_count"] == 1
+        assert nodes["page-b"]["link_count"] == 1
+        assert nodes["page-c"]["link_count"] == 0
+        assert nodes["page-a"]["source_count"] == 1
+        assert nodes["page-b"]["source_document_ids"] == ["doc-shared"]
+        assert nodes["page-a"]["community"] == nodes["page-b"]["community"]
+        assert nodes["page-c"]["community"] != nodes["page-a"]["community"]
+        assert nodes["page-a"]["broken_link_count"] == 1
+        assert graph["broken_links"][0]["target"] == "Missing Page"
+        assert graph["communities"][0]["node_count"] == 2
+        assert graph["insights"]["surprising_connections"]
+        assert graph["insights"]["knowledge_gaps"]
+        assert any(gap["type"] == "broken-link" for gap in graph["insights"]["knowledge_gaps"])
+    finally:
+        db.close()
