@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 QueryIntent = Literal["text_qa", "table_query", "metadata_query", "summary_query", "unknown"]
-RetrievalRouteName = Literal["text", "table", "metadata", "summary", "fallback"]
+RetrievalRouteName = Literal["wiki", "text", "table", "metadata", "summary", "fallback"]
 
 
 @dataclass(slots=True)

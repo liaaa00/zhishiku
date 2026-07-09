@@ -16,6 +16,7 @@ from .document_metadata import infer_document_kind
 from .document_routing_config import ensure_default_document_routing_config, infer_document_kind_from_config
 from .graph_extraction import extract_graph_for_document
 from .graph_store import set_extraction_status
+from .wiki.compiler import compile_document_to_wiki
 from .document_status import set_doc_status
 from .document_utils import extract_supported_document
 from .models import BackgroundTask, Document, DocumentPageIndex, Setting, User
@@ -234,6 +235,17 @@ def parse_document_to_chunks(db: Session, doc: Document) -> int:
     raise ValueError("不支持的文件类型")
 
 
+def _maybe_compile_wiki(db: Session, doc: Document) -> dict:
+    try:
+        result = compile_document_to_wiki(db, doc.id, publish=True)
+        audit(db, None, "wiki.compile.auto", "document", doc.id, result)
+        return result
+    except Exception as exc:
+        result = {"ok": False, "status": "failed", "document_id": doc.id, "error": str(exc)}
+        audit(db, None, "wiki.compile.auto.fail", "document", doc.id, result)
+        return result
+
+
 def process_task_once(task_id: str):
     db = SessionLocal()
     try:
@@ -274,6 +286,7 @@ def process_task_once(task_id: str):
                 set_doc_status(db, doc, "ready", "indexed", "后台解析完成，文档已加入检索索引。", chunks, True)
                 task.status = "success"
                 task.last_error = ""
+                _maybe_compile_wiki(db, doc)
                 enqueue_graph_task(db, doc, "graph_extract", None)
             else:
                 set_doc_status(db, doc, "failed", "need_ocr", "没有解析出可检索文本；扫描件 PDF 需要接入 PDF OCR。", 0, False)
@@ -490,6 +503,79 @@ def initialize_runtime_schema():
             """
         )
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_graph_extraction_status_status ON graph_extraction_status(status)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS wiki_pages (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL,
+                page_type TEXT NOT NULL DEFAULT 'source',
+                status TEXT NOT NULL DEFAULT 'draft',
+                knowledge_scope TEXT NOT NULL DEFAULT 'production',
+                summary TEXT NOT NULL DEFAULT '',
+                content_md TEXT NOT NULL DEFAULT '',
+                checksum TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0,
+                created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_pages_slug ON wiki_pages(slug)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_pages_title ON wiki_pages(title)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_pages_page_type ON wiki_pages(page_type)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_pages_status ON wiki_pages(status)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_pages_knowledge_scope ON wiki_pages(knowledge_scope)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_pages_checksum ON wiki_pages(checksum)")
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_wiki_pages_slug_scope ON wiki_pages(slug, knowledge_scope)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS wiki_page_sources (
+                id TEXT PRIMARY KEY,
+                page_id TEXT NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                chunk_id TEXT REFERENCES document_chunks(id) ON DELETE SET NULL,
+                page_number INTEGER,
+                source_order INTEGER NOT NULL DEFAULT 0,
+                quote TEXT NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_page_sources_page_id ON wiki_page_sources(page_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_page_sources_document_id ON wiki_page_sources(document_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_page_sources_chunk_id ON wiki_page_sources(chunk_id)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS wiki_page_links (
+                id TEXT PRIMARY KEY,
+                source_page_id TEXT NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+                target_page_id TEXT NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+                link_type TEXT NOT NULL DEFAULT 'wikilink',
+                anchor_text TEXT NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_page_links_source_page_id ON wiki_page_links(source_page_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_page_links_target_page_id ON wiki_page_links(target_page_id)")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_page_links_link_type ON wiki_page_links(link_type)")
+        conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_wiki_page_links_unique ON wiki_page_links(source_page_id, target_page_id, link_type)")
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS wiki_compile_status (
+                document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'not_started',
+                message TEXT NOT NULL DEFAULT '',
+                page_count INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_wiki_compile_status_status ON wiki_compile_status(status)")
 
 
 def bootstrap_default_admin():

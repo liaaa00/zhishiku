@@ -209,6 +209,70 @@ class TableSchemaAlias(Base):
     document = relationship("Document")
 
 
+class WikiPage(Base):
+    __tablename__ = "wiki_pages"
+    __table_args__ = (
+        UniqueConstraint("slug", "knowledge_scope", name="ux_wiki_pages_slug_scope"),
+    )
+    id = Column(String, primary_key=True)
+    slug = Column(String(255), nullable=False, index=True)
+    title = Column(String(255), nullable=False, index=True)
+    page_type = Column(String(50), nullable=False, default="source", index=True)  # source/entity/concept/rule/overview
+    status = Column(String(30), nullable=False, default="draft", index=True)  # draft/published/archived
+    knowledge_scope = Column(String(30), nullable=False, default="production", index=True)
+    summary = Column(Text, nullable=False, default="")
+    content_md = Column(Text, nullable=False, default="")
+    checksum = Column(String(80), nullable=False, default="", index=True)
+    confidence = Column(Float, nullable=False, default=0.0)
+    created_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    sources = relationship("WikiPageSource", cascade="all, delete-orphan", back_populates="page")
+    outgoing_links = relationship("WikiPageLink", cascade="all, delete-orphan", foreign_keys="WikiPageLink.source_page_id", back_populates="source_page")
+
+
+class WikiPageSource(Base):
+    __tablename__ = "wiki_page_sources"
+    id = Column(String, primary_key=True)
+    page_id = Column(String, ForeignKey("wiki_pages.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    chunk_id = Column(String, ForeignKey("document_chunks.id", ondelete="SET NULL"), nullable=True, index=True)
+    page_number = Column(Integer, nullable=True)
+    source_order = Column(Integer, nullable=False, default=0)
+    quote = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    page = relationship("WikiPage", back_populates="sources")
+    document = relationship("Document")
+    chunk = relationship("DocumentChunk")
+
+
+class WikiPageLink(Base):
+    __tablename__ = "wiki_page_links"
+    __table_args__ = (
+        UniqueConstraint("source_page_id", "target_page_id", "link_type", name="ux_wiki_page_links_unique"),
+    )
+    id = Column(String, primary_key=True)
+    source_page_id = Column(String, ForeignKey("wiki_pages.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_page_id = Column(String, ForeignKey("wiki_pages.id", ondelete="CASCADE"), nullable=False, index=True)
+    link_type = Column(String(50), nullable=False, default="wikilink", index=True)
+    anchor_text = Column(String(255), nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    source_page = relationship("WikiPage", foreign_keys=[source_page_id], back_populates="outgoing_links")
+    target_page = relationship("WikiPage", foreign_keys=[target_page_id])
+
+
+class WikiCompileStatus(Base):
+    __tablename__ = "wiki_compile_status"
+    document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
+    status = Column(String(30), nullable=False, default="not_started", index=True)  # not_started/ready/failed/stale
+    message = Column(Text, nullable=False, default="")
+    page_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    document = relationship("Document")
+
+
 class BackgroundTask(Base):
     __tablename__ = "background_tasks"
     id = Column(String, primary_key=True)

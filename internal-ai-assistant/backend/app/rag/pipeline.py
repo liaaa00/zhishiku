@@ -14,6 +14,7 @@ from ..document_metadata import (
 from ..document_routing_config import allowed_kinds_for_query_topic_config
 from ..models import Document, DocumentChunk, User
 from ..settings_service import get_embedding_config
+from ..wiki.search import retrieve_wiki_contexts
 from .evidence_checker import check_evidence
 from .query_analyzer import analyze_query
 from .retrieval_router import select_route
@@ -283,6 +284,43 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
     analysis = analyze_query(question)
     route = select_route(analysis)
     scope = normalize_document_scope(knowledge_scope, "production")
+
+    wiki_contexts: list[dict[str, Any]] = []
+    wiki_meta: dict[str, Any] = {"enabled": True, "used": False, "reason": "wiki_skipped_for_table_route"}
+    if route.name != "table":
+        wiki_contexts, wiki_meta = retrieve_wiki_contexts(db, question, user, top_k=max(top_k, 5), knowledge_scope=scope)
+    if wiki_meta.get("used") and wiki_contexts:
+        wiki_contexts = enrich_context_metadata(db, wiki_contexts)
+        evidence = check_evidence(wiki_contexts, analysis, route)
+        route_meta = {
+            "name": "wiki",
+            "intent": analysis.intent,
+            "confidence": max(float(analysis.confidence or 0.0), float(wiki_meta.get("best_score") or 0.0)),
+            "reason": "wiki_first_compiled_page",
+        }
+        meta = {
+            "rag_router_version": "wiki_first_v1",
+            "query_analysis": analysis.to_dict(),
+            "retrieval_route": route_meta,
+            "original_retrieval_route": route.to_dict(),
+            "knowledge_scope": scope,
+            "wiki_first": wiki_meta,
+            "embedding_quality": _embedding_quality_meta(db),
+            "evidence_check": evidence.to_dict(),
+            "graph_retrieval": {"checked": False, "matched": False, "context_count": 0, "merged_into_contexts": False, "direct_answer": False},
+        }
+        note = "; ".join(
+            part
+            for part in [
+                "wiki_first=used",
+                f"wiki_candidates={wiki_meta.get('candidate_count', 0)}",
+                "route=wiki",
+                f"evidence={evidence.reason}",
+            ]
+            if part
+        )
+        return wiki_contexts, "wiki", note, int(wiki_meta.get("candidate_count") or len(wiki_contexts)), meta
+
     result = _retrieve_by_route(db, question, user, top_k, analysis, route, scope)
 
     graph_checked = _should_check_graph(question, route.name)
@@ -332,6 +370,7 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
     meta.update(
         {
             "rag_router_version": "phase1_rules",
+            "wiki_first": wiki_meta,
             "query_analysis": analysis.to_dict(),
             "retrieval_route": route_meta,
             "original_retrieval_route": original_route,

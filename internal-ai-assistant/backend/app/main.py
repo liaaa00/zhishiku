@@ -21,6 +21,7 @@ from .routers.admin_table_schema import router as admin_table_schema_router
 from .routers.admin_tasks import router as admin_tasks_router
 from .routers.admin_users import router as admin_users_router
 from .routers.admin_vector import router as admin_vector_router
+from .routers.admin_wiki import router as admin_wiki_router
 from .routers.auth import router as auth_router
 from .routers.chat import router as chat_router
 from .routers.chat_api import router as chat_api_router
@@ -56,6 +57,7 @@ app.include_router(admin_model_router)
 app.include_router(admin_operations_router)
 app.include_router(admin_routing_rules_router)
 app.include_router(admin_vector_router)
+app.include_router(admin_wiki_router)
 app.include_router(admin_table_schema_router)
 app.include_router(admin_quality_router)
 app.include_router(admin_tasks_router)
