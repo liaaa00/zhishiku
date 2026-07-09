@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.models import Document, DocumentChunk, DocumentProcessingStatus, User, WikiPage, WikiPageSource
+from app.models import Document, DocumentChunk, DocumentProcessingStatus, User, WikiPage, WikiPageLink, WikiPageSource
 from app.rag.pipeline import retrieve_contexts
 from app.wiki.compiler import compile_document_to_wiki
 from app.wiki.context_budget import apply_context_budget
@@ -63,11 +63,22 @@ def test_compiled_wiki_page_becomes_primary_answer_context() -> None:
         db.commit()
 
         assert result["ok"] is True
-        assert result["compiler_version"] == "deterministic-source-v2"
-        page = db.query(WikiPage).one()
-        assert "[S1]" in page.content_md
-        assert "关键事实" in page.content_md
-        assert "来源索引" in page.content_md
+        assert result["compiler_version"] == "deterministic-wiki-v2"
+        assert result["page_count"] >= 2
+        assert result["derived_page_count"] >= 1
+        pages = db.query(WikiPage).order_by(WikiPage.page_type.asc()).all()
+        page_types = {page.page_type for page in pages}
+        assert "source" in page_types
+        assert {"process", "rule", "entity"} & page_types
+        source_page = next(page for page in pages if page.page_type == "source")
+        assert "[S1]" in source_page.content_md
+        assert "关键事实" in source_page.content_md
+        assert "来源索引" in source_page.content_md
+        assert "Wiki 编译器 v2 生成页" in source_page.content_md
+        derived_page = next(page for page in pages if page.page_type != "source")
+        assert "相关 Wiki 页面" in derived_page.content_md
+        assert f"[[{source_page.title}|{source_page.slug}]]" in derived_page.content_md
+        assert db.query(WikiPageLink).count() >= result["derived_page_count"]
 
         contexts, backend, note, candidate_count, meta = retrieve_contexts(
             db,
@@ -89,10 +100,36 @@ def test_compiled_wiki_page_becomes_primary_answer_context() -> None:
         assert contexts[0]["wiki_context_pack"] == "matched_snippets_v3_budgeted"
         assert contexts[0]["wiki_context_char_count"] <= 3600
         assert contexts[0]["source_quotes"]
-        assert "结构化笔记" in contexts[0]["content"]
+        assert "[S1]" in contexts[0]["content"]
+        assert "电子劳动合同" in contexts[0]["content"]
     finally:
         db.close()
 
+
+def test_wiki_compiler_v2_removes_stale_derived_pages_on_recompile() -> None:
+    Session = make_session()
+    db = Session()
+    try:
+        admin, doc, chunk = _seed_esign_document(db)
+
+        first = compile_document_to_wiki(db, doc.id, publish=True)
+        db.commit()
+
+        assert first["derived_page_count"] >= 1
+        assert db.query(WikiPage).filter(WikiPage.page_type != "source").count() >= 1
+        assert db.query(WikiPageLink).count() >= 1
+
+        chunk.content = "alpha beta gamma."
+        second = compile_document_to_wiki(db, doc.id, publish=True)
+        db.commit()
+
+        assert second["derived_page_count"] == 0
+        assert second["stale_deleted_count"] >= 1
+        assert db.query(WikiPage).filter(WikiPage.page_type != "source").count() == 0
+        assert db.query(WikiPageLink).count() == 0
+        assert db.query(WikiPage).filter(WikiPage.page_type == "source").count() == 1
+    finally:
+        db.close()
 
 def test_wiki_search_does_not_expose_sourceless_page_to_non_admin() -> None:
     Session = make_session()
