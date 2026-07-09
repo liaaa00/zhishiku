@@ -10,13 +10,48 @@ services:
   backend:
     build: ./backend
     env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://internal_ai:${POSTGRES_PASSWORD:-internal-ai-change-me}@postgres:5432/internal_ai_assistant}
     expose:
       - "8000"
     volumes:
-      - ./backend/data:/app/data
       - ./backend/data/uploads:/app/data/uploads
+      - ./backend/data/pageindex:/app/data/pageindex
     depends_on:
-      - qdrant
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+
+  migrate-sqlite-to-postgres:
+    build: ./backend
+    env_file: .env
+    profiles: ["migration"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://internal_ai:${POSTGRES_PASSWORD:-internal-ai-change-me}@postgres:5432/internal_ai_assistant}
+    volumes:
+      - ./backend/data/app.db:/app/data/app.db:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "scripts/migrate_sqlite_to_postgres.py", "--drop-target", "--reset-target"]
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-internal_ai_assistant}
+      POSTGRES_USER: ${POSTGRES_USER:-internal_ai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-internal-ai-change-me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     restart: unless-stopped
 
   qdrant:
@@ -29,4 +64,5 @@ services:
       - qdrant_storage:/qdrant/storage
 
 volumes:
+  postgres_data:
   qdrant_storage:

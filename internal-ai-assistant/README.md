@@ -85,3 +85,22 @@ npm run build
 ## 说明
 
 如果你后面希望我继续把前端做得更像公司内部助手，我可以再简化 UI。
+
+## PostgreSQL migration
+
+Docker Compose now uses PostgreSQL as the primary application database. Configure these variables in `.env` before first startup:
+
+```env
+POSTGRES_DB=internal_ai_assistant
+POSTGRES_USER=internal_ai
+POSTGRES_PASSWORD=replace-with-strong-postgres-password
+DATABASE_URL=postgresql+psycopg://internal_ai:replace-with-strong-postgres-password@postgres:5432/internal_ai_assistant
+```
+
+To copy the existing SQLite `backend/data/app.db` into PostgreSQL, run after backing up the SQLite database:
+
+```bash
+docker compose --profile migration run --rm --build migrate-sqlite-to-postgres
+```
+
+The migration service mounts `backend/data/app.db` read-only, drops/recreates the PostgreSQL schema, and imports rows using the current SQLAlchemy models. After migration, use PostgreSQL as the source of truth; keep the SQLite backup only for rollback.

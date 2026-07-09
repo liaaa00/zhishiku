@@ -3,16 +3,15 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 from .config import DATABASE_URL
 
-connect_args = {"check_same_thread": False}
-if DATABASE_URL.startswith("sqlite"):
-    connect_args["timeout"] = 30
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
+connect_args = {"check_same_thread": False, "timeout": 30} if IS_SQLITE else {}
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=not IS_SQLITE)
 
 
 @event.listens_for(engine, "connect")
 def configure_sqlite_connection(dbapi_connection, _connection_record):
-    if not DATABASE_URL.startswith("sqlite"):
+    if not IS_SQLITE:
         return
     cursor = dbapi_connection.cursor()
     try:

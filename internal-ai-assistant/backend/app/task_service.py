@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .ai_client import image_to_text
 from .config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME, GRAPH_EXTRACTION_ENABLED, PDF_OCR_MAX_PAGES, PDF_OCR_MIN_TEXT_CHARS, PDF_OCR_ZOOM
-from .database import SessionLocal, engine
+from .database import IS_SQLITE, SessionLocal, engine
 from .document_index import add_chunks
 from .document_metadata import infer_document_kind
 from .document_routing_config import ensure_default_document_routing_config, infer_document_kind_from_config
@@ -338,6 +338,8 @@ def start_task_worker():
 
 
 def initialize_runtime_schema():
+    if not IS_SQLITE:
+        return
     # SQLite 无迁移工具时做最小兼容：给旧库补新增列，新表仍由 create_all 创建。
     def add_column_if_missing(conn, table: str, column: str, ddl: str):
         cols = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}

@@ -10,3 +10,4 @@ passlib[bcrypt]==1.7.4
 PyJWT==2.10.1
 python-multipart==0.0.19
 pytest==8.4.2
+psycopg[c]==3.2.3

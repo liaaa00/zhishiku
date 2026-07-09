@@ -82,7 +82,7 @@ class DocumentTableRow(Base):
     document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False)
     sheet_name = Column(String(120), nullable=False, default="")
     row_number = Column(Integer, nullable=True)
-    row_key = Column(String(200), nullable=False, default="")
+    row_key = Column(Text, nullable=False, default="")
     row_json = Column(Text, nullable=False)
     row_text = Column(Text, nullable=False)
     is_header = Column(Boolean, nullable=False, default=False)
