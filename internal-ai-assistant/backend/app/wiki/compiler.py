@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from ..models import Document, DocumentChunk, DocumentProcessingStatus, WikiCompileStatus, WikiPage, WikiPageSource
 
 MAX_WIKI_SOURCE_CHUNKS = 24
-MAX_EXTRACT_CHARS = 9000
+MAX_FACT_BULLETS = 12
+COMPILER_VERSION = "deterministic-source-v2"
+PROMPT_VERSION = "no-llm-v1"
+DEFAULT_SOURCE_CONFIDENCE = 0.74
 
 
 def _new_id() -> str:
@@ -21,6 +24,11 @@ def _new_id() -> str:
 
 def _compact_spaces(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _yaml_scalar(value: Any) -> str:
+    text = str(value or "")
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _slugify_title(title: str, fallback: str) -> str:
@@ -46,30 +54,62 @@ def _wiki_checksum(doc: Document, chunks: list[DocumentChunk]) -> str:
     return digest.hexdigest()
 
 
+def document_wiki_checksum(doc: Document, chunks: list[DocumentChunk]) -> str:
+    """Public checksum helper used by wiki health checks."""
+
+    return _wiki_checksum(doc, chunks)
+
+
 def _sentence_candidates(text: str, limit: int = 6) -> list[str]:
     normalized = re.sub(r"\s+", " ", text or "").strip()
     if not normalized:
         return []
-    pieces = re.split(r"(?<=[。！？!?；;\.])\s*", normalized)
+    pieces = re.split(r"(?<=[。！？；.!?;])\s*", normalized)
     cleaned: list[str] = []
     for piece in pieces:
         item = piece.strip(" -\t\r\n")
         if len(item) < 12:
             continue
-        cleaned.append(item[:240])
+        cleaned.append(item[:260])
         if len(cleaned) >= limit:
             break
     if cleaned:
         return cleaned
-    return [normalized[:240]]
+    return [normalized[:260]]
 
 
-def _extractive_summary(chunks: list[DocumentChunk]) -> str:
-    text = "\n".join((chunk.content or "") for chunk in chunks[:8])[:MAX_EXTRACT_CHARS]
-    bullets = _sentence_candidates(text, limit=5)
-    if not bullets:
-        return ""
-    return "\n".join(f"- {item}" for item in bullets)
+def _summary_sentences(chunks: list[DocumentChunk], limit: int = 5) -> list[tuple[str, int]]:
+    selected: list[tuple[str, int]] = []
+    for order, chunk in enumerate(chunks[:MAX_WIKI_SOURCE_CHUNKS]):
+        for sentence in _sentence_candidates(chunk.content or "", limit=3):
+            selected.append((sentence, order))
+            if len(selected) >= limit:
+                return selected
+    return selected
+
+
+def _extractive_summary(chunks: list[DocumentChunk]) -> tuple[str, str]:
+    candidates = _summary_sentences(chunks, limit=5)
+    if not candidates:
+        return "", ""
+    summary_md = "\n".join(f"- {sentence} [S{order + 1}]" for sentence, order in candidates)
+    summary_text = " ".join(sentence for sentence, _ in candidates)[:1200]
+    return summary_md, summary_text
+
+
+def _fact_bullets(chunks: list[DocumentChunk]) -> str:
+    bullets: list[str] = []
+    seen: set[str] = set()
+    for order, chunk in enumerate(chunks[:MAX_WIKI_SOURCE_CHUNKS]):
+        for sentence in _sentence_candidates(chunk.content or "", limit=4):
+            key = _compact_spaces(sentence)[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            bullets.append(f"- {sentence} [S{order + 1}]")
+            if len(bullets) >= MAX_FACT_BULLETS:
+                return "\n".join(bullets)
+    return "\n".join(bullets)
 
 
 def _source_excerpt(chunk: DocumentChunk, max_chars: int = 700) -> str:
@@ -79,55 +119,95 @@ def _source_excerpt(chunk: DocumentChunk, max_chars: int = 700) -> str:
     return text[:max_chars].rstrip() + "…"
 
 
-def build_document_wiki_markdown(doc: Document, chunks: list[DocumentChunk]) -> tuple[str, str]:
-    """Compile one source document into a stable Markdown wiki page.
+def _page_label(chunk: DocumentChunk) -> str:
+    return f"第 {chunk.page_number} 页" if chunk.page_number else "未标页码"
 
-    This first compiler is intentionally deterministic: it does not call an LLM, so
-    ingestion stays reliable. Later passes can replace the extractive sections with
-    LLM-written entity/concept/rule pages while keeping the same storage contract.
+
+def _confidence_for_chunks(chunks: list[DocumentChunk]) -> float:
+    # Deterministic source pages are less risky than free-form LLM pages, but
+    # confidence should still reflect source coverage instead of pretending all
+    # compiled pages are perfect.
+    coverage_boost = min(0.12, max(0, len(chunks) - 1) * 0.01)
+    return round(min(0.86, DEFAULT_SOURCE_CONFIDENCE + coverage_boost), 2)
+
+
+def build_document_wiki_markdown(doc: Document, chunks: list[DocumentChunk]) -> tuple[str, str]:
+    """Compile one source document into a stable, cited Markdown wiki page.
+
+    This compiler is intentionally deterministic: it does not call an LLM, so
+    ingestion stays reliable. It still follows the LLM-Wiki safety contract we
+    borrowed from the reference projects: every generated claim is traceable to
+    a numbered source chunk, and the page records compiler/prompt provenance.
+    Later LLM passes can generate entity/concept/rule pages on top of the same
+    source index without replacing this auditable source page.
     """
 
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     title = doc.title or doc.filename or "Untitled document"
-    summary = _extractive_summary(chunks)
+    scope = getattr(doc, "knowledge_scope", "production") or "production"
+    summary_md, summary_text = _extractive_summary(chunks)
+    fact_bullets = _fact_bullets(chunks)
+    confidence = _confidence_for_chunks(chunks)
     body_parts: list[str] = [
         "---",
-        f"title: {title}",
+        f"title: {_yaml_scalar(title)}",
         "type: source",
-        f"source_document_id: {doc.id}",
-        f"knowledge_scope: {getattr(doc, 'knowledge_scope', 'production') or 'production'}",
-        f"compiled_at: {now}",
+        f"source_document_id: {_yaml_scalar(doc.id)}",
+        f"knowledge_scope: {_yaml_scalar(scope)}",
+        f"compiler_version: {_yaml_scalar(COMPILER_VERSION)}",
+        f"prompt_version: {_yaml_scalar(PROMPT_VERSION)}",
+        f"confidence: {confidence}",
+        f"source_chunk_count: {len(chunks)}",
+        f"compiled_at: {_yaml_scalar(now)}",
         "---",
         "",
         f"# {title}",
         "",
+        "> 本页由系统从原始文档确定性编译生成。正文中的 [S1]、[S2] 等编号对应下方“来源索引”，用于核验每条事实。",
+        "",
         "## 编译摘要",
-        summary or "- 暂无足够文本生成摘要。",
+        summary_md or "- 暂无足够文本生成摘要。",
+        "",
+        "## 关键事实（带来源编号）",
+        fact_bullets or "- 暂无可抽取事实。",
         "",
         "## 结构化笔记",
-        "这是一页由系统从原始文档自动编译的 Wiki 源文档页。问答优先使用本页，再按引用回到原始材料核验。",
+        f"- 页面类型：source（原始文档摘要页）",
+        f"- 原始文档：{title}",
+        f"- 知识范围：{scope}",
+        f"- 编译器版本：{COMPILER_VERSION}",
+        f"- 引用规则：回答时优先使用带来源编号的事实；无法由来源编号支持的内容必须标记为资料不足。",
         "",
         "## 关键原文摘录",
     ]
-    for chunk in chunks[:MAX_WIKI_SOURCE_CHUNKS]:
-        page = f"第 {chunk.page_number} 页" if chunk.page_number else "未标页码"
+    for order, chunk in enumerate(chunks[:MAX_WIKI_SOURCE_CHUNKS], start=1):
         body_parts.extend(
             [
                 "",
-                f"### 片段 {chunk.chunk_index} · {page}",
+                f"### [S{order}] 片段 {chunk.chunk_index} · {_page_label(chunk)}",
                 _source_excerpt(chunk),
             ]
         )
     body_parts.extend(
         [
             "",
+            "## 来源索引",
+        ]
+    )
+    for order, chunk in enumerate(chunks[:MAX_WIKI_SOURCE_CHUNKS], start=1):
+        body_parts.append(
+            f"- [S{order}] 原始文档：{title}；文档 ID：`{doc.id}`；chunk：`{chunk.id}`；页码：{_page_label(chunk)}。"
+        )
+    body_parts.extend(
+        [
+            "",
             "## 原始证据",
-            f"- 原始文档：{doc.title or doc.filename}",
+            f"- 原始文档：{title}",
             f"- 文档 ID：`{doc.id}`",
             f"- 文件名：`{doc.filename}`",
         ]
     )
-    return "\n".join(body_parts).strip() + "\n", summary
+    return "\n".join(body_parts).strip() + "\n", summary_text
 
 
 def _set_compile_status(db: Session, doc_id: str, status: str, message: str = "", page_count: int = 0, error_message: str = "") -> WikiCompileStatus:
@@ -170,7 +250,7 @@ def compile_document_to_wiki(db: Session, document_id: str, *, publish: bool = T
     page.summary = summary
     page.content_md = content_md
     page.checksum = checksum
-    page.confidence = 0.72
+    page.confidence = _confidence_for_chunks(chunks)
     page.updated_at = datetime.utcnow()
 
     db.flush()
@@ -187,9 +267,18 @@ def compile_document_to_wiki(db: Session, document_id: str, *, publish: bool = T
                 quote=_source_excerpt(chunk, max_chars=360),
             )
         )
-    _set_compile_status(db, doc.id, "ready", "compiled source wiki page", 1, "")
+    _set_compile_status(db, doc.id, "ready", f"compiled source wiki page with {COMPILER_VERSION}", 1, "")
     db.flush()
-    return {"ok": True, "status": "ready", "document_id": doc.id, "page_id": page.id, "slug": page.slug, "page_count": 1}
+    return {
+        "ok": True,
+        "status": "ready",
+        "document_id": doc.id,
+        "page_id": page.id,
+        "slug": page.slug,
+        "page_count": 1,
+        "checksum": checksum,
+        "compiler_version": COMPILER_VERSION,
+    }
 
 
 def compile_ready_documents(db: Session, *, knowledge_scope: str = "production", limit: int = 50, publish: bool = True) -> dict[str, Any]:

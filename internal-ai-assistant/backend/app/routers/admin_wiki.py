@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Document, User, WikiCompileStatus, WikiPage
 from ..wiki.compiler import compile_document_to_wiki, compile_ready_documents
+from ..wiki.health import evaluate_wiki_health
 from ..wiki.search import retrieve_wiki_contexts
 from .deps import audit, require_admin
 
@@ -91,16 +92,34 @@ def compile_all_ready_documents(
 
 
 @router.get("/api/admin/wiki/status")
-def wiki_status(db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    pages = db.execute(select(WikiPage)).scalars().all()
+def wiki_status(
+    knowledge_scope: str = Query("production"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    pages = db.execute(select(WikiPage).where(WikiPage.knowledge_scope == knowledge_scope)).scalars().all()
     statuses = db.execute(select(WikiCompileStatus)).scalars().all()
+    health = evaluate_wiki_health(db, knowledge_scope=knowledge_scope, include_findings=False)
     return {
+        "knowledge_scope": knowledge_scope,
         "page_count": len(pages),
         "compiled_document_count": sum(1 for item in statuses if item.status == "ready"),
         "failed_document_count": sum(1 for item in statuses if item.status == "failed"),
         "draft_count": sum(1 for item in pages if item.status == "draft"),
         "published_count": sum(1 for item in pages if item.status == "published"),
+        "health_score": health["score"],
+        "health_finding_count": health["finding_count"],
+        "health_rule_counts": health["rule_counts"],
     }
+
+
+@router.get("/api/admin/wiki/health")
+def wiki_health(
+    knowledge_scope: str = Query("production"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    return evaluate_wiki_health(db, knowledge_scope=knowledge_scope, include_findings=True)
 
 
 @router.get("/api/admin/wiki/search-test")
