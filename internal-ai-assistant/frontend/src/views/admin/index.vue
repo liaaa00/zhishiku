@@ -56,6 +56,7 @@
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'feedback' }]" @click="jumpToTab('feedback')">反馈管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'evaluation' }]" @click="jumpToTab('evaluation')">评测面板</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'operations' }]" @click="jumpToTab('operations')">运营中心</button>
+        <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'wiki' }]" @click="jumpToTab('wiki')">Wiki管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'wikiGraph' }]" @click="jumpToTab('wikiGraph')">Wiki图谱</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'graph' }]" @click="jumpToTab('graph')">图谱管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'tasks' }]" @click="jumpToTab('tasks')">任务中心</button>
@@ -1455,6 +1456,186 @@
         </section>
       </el-tab-pane>
 
+      <el-tab-pane label="Wiki管理" name="wiki">
+        <section class="admin-panel-card admin-graph-panel">
+          <header class="admin-section-header">
+            <div>
+              <h3>Wiki-first 管理</h3>
+              <p>统一查看生产 Wiki 编译结果、健康检查、引用来源和 Wiki 检索命中，用于判断真实提问能否被可靠回答。</p>
+            </div>
+            <div class="admin-row-actions">
+              <el-button :disabled="loadingWikiAdmin" @click="loadWikiAdminData(true)">
+                {{ loadingWikiAdmin ? '刷新中...' : '刷新Wiki' }}
+              </el-button>
+              <el-button type="primary" :loading="compilingWiki" @click="compileAllWiki">编译生产Wiki</el-button>
+            </div>
+          </header>
+
+          <div class="admin-stat-grid admin-graph-stat-grid">
+            <article class="admin-stat-card">
+              <span>Wiki页面</span>
+              <strong>{{ wikiStatus?.page_count || 0 }}</strong>
+              <small>已发布 {{ wikiStatus?.published_count || 0 }} · 草稿 {{ wikiStatus?.draft_count || 0 }}</small>
+            </article>
+            <article class="admin-stat-card">
+              <span>已编译文档</span>
+              <strong>{{ wikiStatus?.compiled_document_count || 0 }}</strong>
+              <small>生产范围：{{ wikiStatus?.knowledge_scope || 'production' }}</small>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (wikiStatus?.failed_document_count || 0) > 0 }">
+              <span>编译失败</span>
+              <strong>{{ wikiStatus?.failed_document_count || 0 }}</strong>
+              <small>失败文档会影响可回答范围</small>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (wikiStatus?.health_finding_count || 0) > 0 }">
+              <span>健康评分</span>
+              <strong>{{ wikiStatus?.health_score ?? '-' }}</strong>
+              <small>发现 {{ wikiStatus?.health_finding_count || 0 }} 个问题</small>
+            </article>
+          </div>
+
+          <div class="admin-list-toolbar">
+            <label class="admin-search-box">
+              <span>搜索Wiki页面</span>
+              <el-input v-model="wikiPageSearch" clearable placeholder="按标题、摘要、slug 搜索" class="admin-input-lg" />
+            </label>
+            <label class="admin-search-box">
+              <span>页面状态</span>
+              <el-select v-model="wikiPageStatusFilter" class="admin-select-md">
+                <el-option label="全部" value="all" />
+                <el-option label="已发布" value="published" />
+                <el-option label="草稿" value="draft" />
+                <el-option label="已归档" value="archived" />
+              </el-select>
+            </label>
+            <div class="admin-list-summary">当前显示 {{ filteredWikiPages.length }} / {{ wikiPages.length }} 个 Wiki 页面</div>
+          </div>
+
+          <div class="admin-graph-columns">
+            <section>
+              <h4>Wiki页面列表</h4>
+              <div v-if="loadingWikiAdmin && !wikiPages.length" class="admin-dialog-empty">正在加载 Wiki 页面...</div>
+              <div v-else-if="filteredWikiPages.length" class="admin-feedback-list">
+                <article v-for="page in filteredWikiPages" :key="page.id" :class="['admin-feedback-card', wikiPageStatusClass(page.status)]">
+                  <div class="admin-feedback-card-main">
+                    <div class="admin-feedback-head">
+                      <strong>{{ page.title || page.slug }}</strong>
+                      <div class="admin-feedback-head-tags">
+                        <span :class="['admin-feedback-status', wikiPageStatusClass(page.status)]">{{ wikiPageStatusLabel(page.status) }}</span>
+                        <span class="admin-feedback-cause has-cause">{{ wikiPageTypeLabel(page.page_type) }}</span>
+                      </div>
+                    </div>
+                    <p class="admin-feedback-content">{{ page.summary || '暂无摘要' }}</p>
+                    <p class="admin-model-helper">{{ page.slug }} · 来源 {{ page.source_count || 0 }} · 置信度 {{ formatRetrievalScore(page.confidence) }} · 更新 {{ formatDateTime(page.updated_at) }}</p>
+                  </div>
+                  <aside class="admin-feedback-card-side">
+                    <button type="button" @click="loadWikiPageDetail(page, true)">查看详情</button>
+                  </aside>
+                </article>
+              </div>
+              <div v-else class="admin-dialog-empty">暂无匹配的 Wiki 页面。可以先点击“编译生产Wiki”。</div>
+            </section>
+
+            <section>
+              <h4>页面详情与来源</h4>
+              <div v-if="wikiPageDetailLoading" class="admin-dialog-empty">正在加载 Wiki 页面详情...</div>
+              <div v-else-if="wikiSelectedPage" class="admin-quality-stack">
+                <section class="admin-search-context-preview">
+                  <header>
+                    <div>
+                      <span>{{ wikiPageTypeLabel(wikiSelectedPage.page_type) }} · {{ wikiPageStatusLabel(wikiSelectedPage.status) }}</span>
+                      <strong>{{ wikiSelectedPage.title || wikiSelectedPage.slug }}</strong>
+                    </div>
+                    <div>
+                      <button type="button" @click="jumpToTab('wikiGraph')">查看图谱</button>
+                    </div>
+                  </header>
+                  <pre>{{ wikiSelectedPage.content_md || '暂无正文' }}</pre>
+                </section>
+                <section class="admin-quality-section">
+                  <h4>引用来源</h4>
+                  <div v-if="wikiSelectedPage.sources?.length" class="admin-search-source-list">
+                    <article v-for="source in wikiSelectedPage.sources" :key="`${source.document_id}-${source.chunk_id}-${source.source_order}`" class="admin-search-source-card">
+                      <header>
+                        <strong>{{ source.document_title || source.document_id || '未知文档' }}</strong>
+                        <span>S{{ source.source_order || '-' }} · 页码 {{ source.page_number || '未知' }}</span>
+                      </header>
+                      <p class="admin-search-source-preview">{{ source.quote || '暂无摘录' }}</p>
+                    </article>
+                  </div>
+                  <div v-else class="admin-dialog-empty">该 Wiki 页面暂无来源映射，回答时可信度会下降。</div>
+                </section>
+              </div>
+              <div v-else class="admin-dialog-empty">请选择一个 Wiki 页面查看详情。</div>
+            </section>
+          </div>
+
+          <div class="admin-graph-columns">
+            <section class="admin-quality-section">
+              <h4>Wiki健康检查</h4>
+              <div v-if="wikiHealth" class="admin-search-test-result">
+                <div class="admin-search-test-meta-grid">
+                  <div><span>来源覆盖</span><strong>{{ formatPercent(wikiHealth.source_coverage) }}</strong></div>
+                  <div><span>引用覆盖</span><strong>{{ formatPercent(wikiHealth.citation_coverage) }}</strong></div>
+                  <div><span>WikiLink</span><strong>{{ wikiHealth.wikilink_count || 0 }}</strong></div>
+                  <div><span>断链</span><strong>{{ wikiHealth.broken_wikilink_count || 0 }}</strong></div>
+                </div>
+                <div v-if="wikiHealthFindings.length" class="admin-feedback-list">
+                  <article v-for="item in wikiHealthFindings.slice(0, 10)" :key="`${item.rule}-${item.page_id || item.document_id || item.message}`" :class="['admin-feedback-card', wikiHealthSeverityClass(item.severity)]">
+                    <div class="admin-feedback-card-main">
+                      <div class="admin-feedback-head">
+                        <strong>{{ item.title || item.slug || item.document_id || wikiHealthRuleLabel(item.rule) }}</strong>
+                        <span :class="['admin-feedback-status', wikiHealthSeverityClass(item.severity)]">{{ wikiHealthSeverityLabel(item.severity) }}</span>
+                      </div>
+                      <p class="admin-feedback-content">{{ wikiHealthRuleLabel(item.rule) }}：{{ item.message }}</p>
+                      <p class="admin-model-helper" v-if="item.target">目标：{{ item.target }}</p>
+                    </div>
+                  </article>
+                </div>
+                <div v-else class="admin-dialog-empty">Wiki 健康检查暂未发现问题。</div>
+              </div>
+              <div v-else class="admin-dialog-empty">暂无 Wiki 健康检查数据。</div>
+            </section>
+
+            <section class="admin-quality-section">
+              <h4>Wiki检索测试</h4>
+              <div class="admin-list-toolbar">
+                <label class="admin-search-box">
+                  <span>真实问题</span>
+                  <el-input v-model="wikiSearchForm.question" clearable placeholder="例如：电子劳动合同怎么操作？" class="admin-input-lg" @keyup.enter="runWikiSearchTest" />
+                </label>
+                <el-select v-model="wikiSearchForm.knowledge_scope" class="admin-select-md">
+                  <el-option label="生产" value="production" />
+                  <el-option label="测试" value="test" />
+                </el-select>
+                <el-input-number v-model="wikiSearchForm.top_k" :min="1" :max="20" />
+                <el-button type="primary" :loading="wikiSearchLoading" @click="runWikiSearchTest">测试Wiki命中</el-button>
+              </div>
+              <div v-if="wikiSearchResult" class="admin-search-result">
+                <div class="admin-search-result-head">
+                  <span>候选 <strong>{{ wikiSearchResult.meta?.candidate_count ?? 0 }}</strong></span>
+                  <span>上下文 <strong>{{ wikiSearchResult.meta?.context_count ?? 0 }}</strong></span>
+                  <span>强命中 <strong>{{ wikiSearchResult.meta?.strong_count ?? 0 }}</strong></span>
+                  <span>最佳分 <strong>{{ formatRetrievalScore(wikiSearchResult.meta?.best_score) }}</strong></span>
+                </div>
+                <p class="admin-model-helper">{{ wikiSearchResult.meta?.reason || 'wiki_search' }} · {{ wikiSearchResult.meta?.context_pack || '-' }}</p>
+                <div v-if="wikiSearchContexts.length" class="admin-search-source-list">
+                  <article v-for="item in wikiSearchContexts" :key="item.wiki_page_id || item.chunk_id || item.document_id" class="admin-search-source-card">
+                    <header>
+                      <strong>{{ item.wiki_title || item.document_title || 'Wiki页面' }}</strong>
+                      <span>分数 {{ formatRetrievalScore(item.score) }} · 来源 {{ item.wiki_source_count || 0 }}</span>
+                    </header>
+                    <p class="admin-search-source-preview">{{ item.content || '暂无上下文' }}</p>
+                    <small>{{ (item.match_terms || []).join('、') }}</small>
+                  </article>
+                </div>
+                <div v-else class="admin-dialog-empty">Wiki 暂未命中。可检查页面标题、摘要、来源引用或重新编译 Wiki。</div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </el-tab-pane>
+
       <el-tab-pane label="Wiki图谱" name="wikiGraph">
         <section class="admin-panel-card admin-graph-panel">
           <header class="admin-section-header">
@@ -2129,6 +2310,11 @@ const graphSearchResult = ref<any | null>(null)
 const wikiGraph = ref<any | null>(null)
 const wikiGraphChartRef = ref<HTMLDivElement | null>(null)
 const wikiGraphSelectedNode = ref<string>('')
+const wikiStatus = ref<any | null>(null)
+const wikiPages = ref<any[]>([])
+const wikiSelectedPage = ref<any | null>(null)
+const wikiHealth = ref<any | null>(null)
+const wikiSearchResult = ref<any | null>(null)
 const documentQualityMap = ref<Record<string, any>>({})
 const docGroupMap = reactive<Record<string, string[]>>({})
 const groupName = ref('')
@@ -2140,6 +2326,7 @@ const approvalForm = reactive({ group_ids: [] as string[], is_admin: false, note
 const evaluationForm = reactive({ question: '', top_k: 8 })
 const evaluationNewCase = reactive({ id: '', category: '后台维护', question: '', why: '', top_k: 8 })
 const graphSearchForm = reactive({ question: '', top_k: 8 })
+const wikiSearchForm = reactive({ question: '', top_k: 5, knowledge_scope: 'production' })
 
 type DocStatusFilter = 'all' | 'ready' | 'processing' | 'waiting' | 'failed'
 type DocQualityFilter = 'all' | 'good' | 'needs_review' | 'poor' | 'blocked' | 'unknown'
@@ -2149,6 +2336,7 @@ type TaskTypeFilter = 'all' | 'document_parse' | 'document_reparse' | 'chat_atta
 type FeedbackStatusFilter = 'all' | 'new' | 'reviewed' | 'resolved' | 'ignored'
 type FeedbackRootCause = '' | 'answer_quality' | 'retrieval_miss' | 'insufficient_source' | 'document_quality' | 'permission_scope' | 'unclear_question' | 'other'
 type FeedbackRootCauseFilter = 'all' | FeedbackRootCause
+type WikiPageStatusFilter = 'all' | 'published' | 'draft' | 'archived'
 type EditableChunk = { id: string; page_number?: number | null; chunk_index?: number | string | null; content: string }
 type UploadSummary = { docId: string; taskId?: string | null; title?: string; filename?: string; status?: string; message?: string; error?: string; searchable?: boolean }
 
@@ -2201,11 +2389,17 @@ const taskSearch = ref('')
 const feedbackStatusFilter = ref<FeedbackStatusFilter>('all')
 const feedbackRootCauseFilter = ref<FeedbackRootCauseFilter>('all')
 const feedbackSearch = ref('')
+const wikiPageSearch = ref('')
+const wikiPageStatusFilter = ref<WikiPageStatusFilter>('all')
 const loadingFeedback = ref(false)
 const loadingEvaluation = ref(false)
 const loadingOperations = ref(false)
 const loadingGraph = ref(false)
 const loadingWikiGraph = ref(false)
+const loadingWikiAdmin = ref(false)
+const wikiPageDetailLoading = ref(false)
+const wikiSearchLoading = ref(false)
+const compilingWiki = ref(false)
 const graphSearchLoading = ref(false)
 const evaluationSuiteRunning = ref(false)
 const evaluationCaseRunning = ref(false)
@@ -2312,6 +2506,18 @@ const feedbackCompareSummary = computed(() => {
 const evaluationCases = computed(() => Array.isArray(evaluationOverview.value?.cases) ? evaluationOverview.value.cases : [])
 const evaluationCaseSources = computed(() => Array.isArray(evaluationCaseResult.value?.source_diagnostics) ? evaluationCaseResult.value.source_diagnostics : [])
 const evaluationCasePromptTemplate = computed(() => evaluationCaseResult.value?.prompt_template || evaluationCaseResult.value?.retrieval_meta?.prompt_template || {})
+const wikiHealthFindings = computed(() => Array.isArray(wikiHealth.value?.findings) ? wikiHealth.value.findings : [])
+const wikiSearchContexts = computed(() => Array.isArray(wikiSearchResult.value?.contexts) ? wikiSearchResult.value.contexts : [])
+const filteredWikiPages = computed(() => {
+  const query = normalizeText(wikiPageSearch.value)
+  return wikiPages.value.filter((page: any) => {
+    const status = normalizeText(page?.status || '')
+    if (wikiPageStatusFilter.value !== 'all' && status !== wikiPageStatusFilter.value) return false
+    if (!query) return true
+    const haystack = normalizeText([page?.title, page?.slug, page?.summary, page?.page_type].filter(Boolean).join(' '))
+    return haystack.includes(query)
+  })
+})
 const graphSearchContexts = computed(() => Array.isArray(graphSearchResult.value?.contexts) ? graphSearchResult.value.contexts : [])
 const graphVisibleRelations = computed(() => graphPreviewRelations.value.filter((item: any) => item?.status !== 'ignored'))
 const graphTypePalette = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#dc2626', '#0891b2', '#4f46e5', '#65a30d']
@@ -2903,6 +3109,31 @@ function toggleSearchSourceExpanded(item: any) {
   expandedSearchSources.value = { ...expandedSearchSources.value, [key]: !expandedSearchSources.value[key] }
 }
 
+async function copyText(text: string) {
+  const content = String(text || '')
+  if (!content.trim()) {
+    ElMessage.warning('没有可复制的内容')
+    return
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(content)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = content
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      textarea.remove()
+    }
+    ElMessage.success('已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动选择内容复制')
+  }
+}
+
 async function copySearchPromptContext() {
   await copyText(String(promptContextPreview.value?.text || ''))
 }
@@ -3098,6 +3329,60 @@ function formatDateTime(value?: string | null) {
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date)
 }
 
+function wikiPageTypeLabel(type?: string) {
+  return ({ source: '来源页', concept: '概念页', rule: '规则页', entity: '实体页', workflow: '流程页', faq: '问答页', document: '文档页' } as Record<string, string>)[normalizeText(type || '')] || type || 'Wiki页面'
+}
+
+function wikiPageStatusLabel(status?: string) {
+  return ({ published: '已发布', draft: '草稿', archived: '已归档' } as Record<string, string>)[normalizeText(status || '')] || status || '未知'
+}
+
+function wikiPageStatusClass(status?: string) {
+  const value = normalizeText(status || '')
+  if (value === 'published') return 'resolved'
+  if (value === 'draft') return 'reviewed'
+  if (value === 'archived') return 'ignored'
+  return 'new'
+}
+
+function wikiHealthSeverityLabel(severity?: string) {
+  return ({ error: '错误', warning: '警告', info: '提示' } as Record<string, string>)[normalizeText(severity || '')] || severity || '提示'
+}
+
+function wikiHealthSeverityClass(severity?: string) {
+  const value = normalizeText(severity || '')
+  if (value === 'error') return 'new'
+  if (value === 'warning') return 'reviewed'
+  return 'resolved'
+}
+
+function wikiHealthRuleLabel(rule?: string) {
+  return ({
+    'missing-source': '缺少来源',
+    'missing-summary': '缺少摘要',
+    'empty-page': '页面过短',
+    'low-confidence': '低置信度',
+    'stale-page': '页面过期',
+    'source-marker-out-of-range': '来源编号越界',
+    'low-citation-coverage': '引用覆盖不足',
+    'broken-wikilink': 'WikiLink断链',
+    'duplicate-title': '标题重复',
+    'compile-failed': '编译失败',
+  } as Record<string, string>)[String(rule || '')] || rule || '健康检查'
+}
+
+function wikiCompileMessage(result: any) {
+  const compiled = result?.compiled_count ?? result?.success_count ?? result?.ready_count ?? result?.page_count
+  const skipped = result?.skipped_count ?? result?.unchanged_count
+  const failed = result?.failed_count ?? result?.error_count
+  const parts = [
+    compiled !== undefined ? `编译 ${compiled}` : '',
+    skipped !== undefined ? `跳过 ${skipped}` : '',
+    failed !== undefined ? `失败 ${failed}` : '',
+  ].filter(Boolean)
+  return parts.length ? `Wiki编译完成：${parts.join('，')}` : 'Wiki编译任务已完成'
+}
+
 function feedbackStatusKind(item: any): FeedbackStatusFilter {
   const status = normalizeText(item?.status || 'new')
   if (status === 'reviewed' || status === 'resolved' || status === 'ignored') return status as FeedbackStatusFilter
@@ -3181,6 +3466,7 @@ async function load() {
     await loadEvaluationOverview(false)
     await loadOperationsOverview(false)
     await loadPromptTemplates(false)
+    await loadWikiAdminData(false)
     await loadWikiGraphData(false)
     await loadGraphData(false)
     await loadPageIndexStatus()
@@ -3305,11 +3591,13 @@ async function pollTasks() {
 
 function jumpToTab(name: string) {
   adminTabIndex.value = name
+  if (name === 'wiki' && !wikiPages.value.length) void loadWikiAdminData(false)
   if (name === 'graph') renderGraphChart()
   if (name === 'wikiGraph') renderWikiGraphChart()
 }
 
 watch(adminTabIndex, (name) => {
+  if (name === 'wiki' && !wikiPages.value.length) void loadWikiAdminData(false)
   if (name === 'graph') renderGraphChart()
   if (name === 'wikiGraph') renderWikiGraphChart()
 })
@@ -4166,6 +4454,89 @@ function disposeWikiGraphChart() {
   wikiGraphResizeObserver = null
   wikiGraphChart?.dispose()
   wikiGraphChart = null
+}
+
+async function loadWikiPageDetail(page: any, showMessage = false) {
+  const id = String(page?.id || page || '')
+  if (!id) return
+  wikiPageDetailLoading.value = true
+  try {
+    wikiSelectedPage.value = (await http.get(`/admin/wiki/pages/${id}`)).data || null
+    if (showMessage) ElMessage.success('Wiki页面详情已加载')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载Wiki页面详情失败')
+  } finally {
+    wikiPageDetailLoading.value = false
+  }
+}
+
+async function loadWikiAdminData(showMessage = true) {
+  loadingWikiAdmin.value = true
+  try {
+    const [statusResp, pagesResp, healthResp] = await Promise.all([
+      http.get('/admin/wiki/status', { params: { knowledge_scope: 'production' } }),
+      http.get('/admin/wiki/pages', { params: { knowledge_scope: 'production', limit: 300 } }),
+      http.get('/admin/wiki/health', { params: { knowledge_scope: 'production' } }),
+    ])
+    wikiStatus.value = statusResp.data || null
+    wikiPages.value = Array.isArray(pagesResp.data?.items) ? pagesResp.data.items : []
+    wikiHealth.value = healthResp.data || null
+    const currentId = String(wikiSelectedPage.value?.id || '')
+    const nextPage = (currentId && wikiPages.value.find((item: any) => String(item?.id) === currentId)) || wikiPages.value[0]
+    if (nextPage) await loadWikiPageDetail(nextPage, false)
+    else wikiSelectedPage.value = null
+    if (showMessage) ElMessage.success('Wiki管理数据已刷新')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '加载Wiki管理数据失败')
+  } finally {
+    loadingWikiAdmin.value = false
+  }
+}
+
+async function compileAllWiki() {
+  try {
+    await ElMessageBox.confirm('将把生产范围内可编译文档重新生成 Wiki 页面，并刷新健康检查与图谱。确定继续？', '编译生产Wiki', {
+      confirmButtonText: '开始编译',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  compilingWiki.value = true
+  try {
+    const { data } = await http.post('/admin/wiki/compile-all', null, { params: { knowledge_scope: 'production', limit: 100 } })
+    ElMessage.success(wikiCompileMessage(data || {}))
+    await loadWikiAdminData(false)
+    await loadWikiGraphData(false)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || 'Wiki编译失败')
+  } finally {
+    compilingWiki.value = false
+  }
+}
+
+async function runWikiSearchTest() {
+  const question = wikiSearchForm.question.trim()
+  if (!question) {
+    ElMessage.warning('请输入要测试的 Wiki 问题')
+    return
+  }
+  wikiSearchLoading.value = true
+  wikiSearchResult.value = null
+  try {
+    wikiSearchResult.value = (await http.get('/admin/wiki/search-test', {
+      params: {
+        q: question,
+        top_k: Number(wikiSearchForm.top_k) || 5,
+        knowledge_scope: wikiSearchForm.knowledge_scope || 'production',
+      },
+    })).data || null
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || 'Wiki检索测试失败')
+  } finally {
+    wikiSearchLoading.value = false
+  }
 }
 
 async function loadWikiGraphData(showMessage = true) {
