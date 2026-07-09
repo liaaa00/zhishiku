@@ -327,3 +327,62 @@ def test_wiki_graph_builds_weighted_wikilink_network_with_insights() -> None:
         assert any(gap["type"] == "broken-link" for gap in graph["insights"]["knowledge_gaps"])
     finally:
         db.close()
+
+
+def test_wiki_graph_links_pages_by_title_and_topic_mentions_without_explicit_wikilinks() -> None:
+    Session = make_session()
+    db = Session()
+    try:
+        page_deadline = WikiPage(
+            id="wiki-deadline",
+            slug="beitun-deadline",
+            title="北仑派单截止时间",
+            page_type="source",
+            status="published",
+            knowledge_scope="test",
+            summary="北仑社保、医保、公积金派单截止时间和操作规则，可结合北仑分公司开设进度判断账户状态。",
+            content_md="# 北仑派单截止时间\n\n表格包含北仑社保公积金派单截止时间，并提到北仑分公司开设进度。",
+            confidence=0.8,
+        )
+        page_progress = WikiPage(
+            id="wiki-progress",
+            slug="beitun-progress",
+            title="北仑分公司开设进度",
+            page_type="source",
+            status="published",
+            knowledge_scope="test",
+            summary="北仑分公司银行账户、社保公积金账户开设进度。",
+            content_md="# 北仑分公司开设进度\n\n当前进度包含社保公积金账户是否开具完成。",
+            confidence=0.8,
+        )
+        unrelated = WikiPage(
+            id="wiki-contract",
+            slug="esign-contract",
+            title="电子劳动合同操作指南",
+            page_type="source",
+            status="published",
+            knowledge_scope="test",
+            summary="电子劳动合同签署、实名认证和归档流程。",
+            content_md="# 电子劳动合同操作指南\n\n员工完成实名认证后签署合同。",
+            confidence=0.8,
+        )
+        db.add_all([page_deadline, page_progress, unrelated])
+        db.commit()
+
+        graph = build_wiki_graph(db, knowledge_scope="test")
+
+        assert graph["node_count"] == 3
+        assert graph["edge_count"] == 1
+        edge = graph["edges"][0]
+        assert edge["relation_type"] == "title_mention"
+        assert edge["mentions"] == 0
+        assert edge["title_mentions"] >= 1
+        assert edge["signals"]["title_mention"] > 0
+        assert {edge["source"], edge["target"]} == {"beitun-deadline", "beitun-progress"}
+        assert any(term in edge["title_mention_terms"] for term in ["北仑", "开设", "进度", "北仑分公司开设进度"])
+        nodes = {node["slug"]: node for node in graph["nodes"]}
+        assert nodes["beitun-deadline"]["link_count"] == 1
+        assert nodes["beitun-progress"]["link_count"] == 1
+        assert nodes["esign-contract"]["link_count"] == 0
+    finally:
+        db.close()

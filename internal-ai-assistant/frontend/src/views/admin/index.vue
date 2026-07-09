@@ -1702,9 +1702,9 @@
                       <em>wikilink</em>
                       <span>{{ edge.target_title }}</span>
                     </div>
-                    <p>{{ wikiGraphStrengthLabel(edge.strength) }} · 权重 {{ formatWikiGraphWeight(edge.weight) }} · 出现 {{ edge.mentions || 1 }} 次</p>
+                    <p>{{ wikiGraphStrengthLabel(edge.strength) }} · 权重 {{ formatWikiGraphWeight(edge.weight) }} · 显式链接 {{ edge.mentions || 0 }} 次 · 标题提及 {{ edge.title_mentions || 0 }} 次</p>
                     <small>{{ wikiGraphSignalsText(edge) }}</small>
-                    <small>{{ edge.source }} ↔ {{ edge.target }} · 共同来源 {{ edge.shared_source_count || 0 }}</small>
+                    <small>{{ edge.source }} ↔ {{ edge.target }} · 共同来源 {{ edge.shared_source_count || 0 }}<template v-if="edge.title_mention_terms?.length"> · 匹配：{{ edge.title_mention_terms.slice(0, 4).join('、') }}</template></small>
                   </article>
                 </div>
               </aside>
@@ -3259,6 +3259,7 @@ function wikiGraphSignalsText(edge: any) {
   const parts = [
     `直接链接 ${formatWikiGraphWeight(signals.direct_link || 0)}`,
     `共同来源 ${formatWikiGraphWeight(signals.source_overlap || 0)}`,
+    `标题提及 ${formatWikiGraphWeight(signals.title_mention || 0)}`,
     `共同邻居 ${formatWikiGraphWeight(signals.common_neighbor || 0)}`,
     `类型亲和 ${formatWikiGraphWeight(signals.type_affinity || 0)}`,
   ]
@@ -4388,7 +4389,8 @@ function renderWikiGraphChart() {
           if (params.dataType === 'edge') {
             const edge = params.data?.edge || {}
             const rawTargets = Array.isArray(edge.raw_targets) ? edge.raw_targets.join('、') : ''
-            return `<div class="admin-graph-tooltip"><strong>${escapeHtml(wikiGraphStrengthLabel(edge.strength))} · 权重 ${escapeHtml(formatWikiGraphWeight(edge.weight))}</strong><br/>${escapeHtml(edge.source_title || edge.source)} ↔ ${escapeHtml(edge.target_title || edge.target)}<br/><small>出现 ${escapeHtml(edge.mentions || 1)} 次 · 共同来源 ${escapeHtml(edge.shared_source_count || 0)}${rawTargets ? ' · ' + escapeHtml(rawTargets) : ''}<br/>${escapeHtml(wikiGraphSignalsText(edge))}</small></div>`
+            const mentionTerms = Array.isArray(edge.title_mention_terms) ? edge.title_mention_terms.slice(0, 6).join('、') : ''
+            return `<div class="admin-graph-tooltip"><strong>${escapeHtml(wikiGraphStrengthLabel(edge.strength))} · 权重 ${escapeHtml(formatWikiGraphWeight(edge.weight))}</strong><br/>${escapeHtml(edge.source_title || edge.source)} ↔ ${escapeHtml(edge.target_title || edge.target)}<br/><small>显式链接 ${escapeHtml(edge.mentions || 0)} 次 · 标题提及 ${escapeHtml(edge.title_mentions || 0)} 次 · 共同来源 ${escapeHtml(edge.shared_source_count || 0)}${rawTargets ? ' · ' + escapeHtml(rawTargets) : ''}${mentionTerms ? ' · 匹配：' + escapeHtml(mentionTerms) : ''}<br/>${escapeHtml(wikiGraphSignalsText(edge))}</small></div>`
           }
           const page = params.data?.page || {}
           return `<div class="admin-graph-tooltip"><strong>${escapeHtml(params.data?.name || 'Wiki页面')}</strong><br/><small>${escapeHtml(params.data?.category || 'Wiki页面')} · ${escapeHtml(page.community_label || '社区 1')} · 连接 ${escapeHtml(params.data?.value || 0)} · 来源 ${escapeHtml(page.source_count || 0)}</small></div>`

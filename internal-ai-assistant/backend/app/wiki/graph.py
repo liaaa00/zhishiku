@@ -15,8 +15,47 @@ from .compiler import _slugify_title
 SIGNAL_WEIGHTS = {
     "direct_link": 3.0,
     "source_overlap": 4.0,
+    "title_mention": 2.0,
     "common_neighbor": 1.5,
     "type_affinity": 1.0,
+}
+
+STOP_TOPIC_TOKENS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "doc",
+    "source",
+    "image",
+    "pdf",
+    "xlsx",
+    "docx",
+    "操作",
+    "指南",
+    "流程",
+    "文档",
+    "系统",
+    "开发",
+    "需求",
+    "最新",
+    "进度",
+    "时间",
+    "平台",
+    "员工",
+    "公司",
+    "服务",
+    "完成",
+    "对应",
+    "类型",
+    "信息",
+    "账号",
+    "有限",
+    "有限公司",
+    "s1",
+    "s2",
+    "v1",
+    "v2",
 }
 
 TYPE_AFFINITY: dict[str, dict[str, float]] = {
@@ -33,6 +72,70 @@ STRUCTURAL_PAGE_TYPES = {"overview"}
 
 def _compact_title(value: str) -> str:
     return re.sub(r"\s+", "", value or "").lower()
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip().lower()
+
+
+def _topic_tokens(value: str) -> set[str]:
+    """Extract stable topic tokens for lightweight Wiki relation hints.
+
+    The compiled source pages do not always contain explicit `[[wikilink]]` yet.
+    This tokenization gives the live graph a deterministic bridge signal when a
+    page title or summary clearly mentions another page's topic, without calling
+    an LLM or inventing facts.
+    """
+
+    text = _normalize_text(value)
+    tokens: set[str] = set()
+    for raw in re.findall(r"[0-9a-zA-Z]{2,}|[\u4e00-\u9fff]{2,}", text):
+        token = raw.strip().lower()
+        if not token or token in STOP_TOPIC_TOKENS:
+            continue
+        if token.isdigit() and len(token) < 4:
+            continue
+        if re.fullmatch(r"[a-z]+", token) and len(token) < 4:
+            continue
+        if re.fullmatch(r"[a-z]+\d*", token) and token.rstrip("0123456789") in {"page", "doc", "wiki"}:
+            continue
+        if len(token) > 18:
+            # Long Chinese title strings are often whole sentences. Keep shorter
+            # meaningful substrings from the same text instead of over-linking.
+            continue
+        tokens.add(token)
+    for cjk in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+        for size in (2, 3, 4):
+            for idx in range(0, max(0, len(cjk) - size + 1)):
+                gram = cjk[idx : idx + size]
+                if gram not in STOP_TOPIC_TOKENS:
+                    tokens.add(gram)
+    return tokens
+
+
+def _page_relation_text(page: WikiPage) -> str:
+    return " ".join(str(part or "") for part in (page.title, page.summary, page.content_md))
+
+
+def _title_mention_signal(source: WikiPage, target: WikiPage) -> tuple[int, list[str]]:
+    if source.id == target.id:
+        return 0, []
+    source_text = _normalize_text(_page_relation_text(source))
+    source_compact = _compact_title(source_text)
+    target_title = str(target.title or "").strip()
+    target_compact = _compact_title(target_title)
+    matched: list[str] = []
+    if target_title and len(target_compact) >= 4 and target_compact in source_compact:
+        matched.append(target_title)
+    target_title_tokens = _topic_tokens(target.title or "")
+    for token in sorted(target_title_tokens):
+        if token in source_text or token in source_compact:
+            matched.append(token)
+    deduped = list(dict.fromkeys(matched))
+    strong_matches = [token for token in deduped if len(token) >= 4 or re.search(r"[0-9]", token)]
+    if target_title not in deduped and len(strong_matches) < 1 and len(deduped) < 2:
+        return 0, []
+    return min(len(deduped), 8), deduped[:8]
 
 
 def _strip_anchor(value: str) -> str:
@@ -118,16 +221,23 @@ def _edge_payload(
     mentions: int,
     raw_targets: list[str],
     directions: set[tuple[str, str]],
+    title_mentions: int,
+    title_mention_terms: list[str],
     adjacency: dict[str, set[str]],
     source_ids_by_slug: dict[str, set[str]],
 ) -> dict[str, Any]:
     edge_key = (left.slug, right.slug)
     direction_count = len(directions)
+    explicit_mentions = direction_count + max(0, mentions - direction_count)
     shared_source_count = len(source_ids_by_slug.get(left.slug, set()) & source_ids_by_slug.get(right.slug, set()))
     common_neighbor_count, common_neighbor_score = _adamic_adar(edge_key, adjacency)
+    relation_type = "wikilink" if explicit_mentions else "title_mention"
+    if explicit_mentions and title_mentions:
+        relation_type = "wikilink+title_mention"
     signals = {
-        "direct_link": round(direction_count * SIGNAL_WEIGHTS["direct_link"] + max(0, mentions - direction_count) * 0.25, 4),
+        "direct_link": round(direction_count * SIGNAL_WEIGHTS["direct_link"] + max(0, explicit_mentions - direction_count) * 0.25, 4),
         "source_overlap": round(shared_source_count * SIGNAL_WEIGHTS["source_overlap"], 4),
+        "title_mention": round(min(title_mentions, 5) * SIGNAL_WEIGHTS["title_mention"], 4),
         "common_neighbor": round(common_neighbor_score * SIGNAL_WEIGHTS["common_neighbor"], 4),
         "type_affinity": round(_type_affinity(left.page_type, right.page_type) * SIGNAL_WEIGHTS["type_affinity"], 4),
     }
@@ -140,8 +250,11 @@ def _edge_payload(
         "target_page_id": right.id,
         "source_title": left.title,
         "target_title": right.title,
-        "relation_type": "wikilink",
-        "mentions": mentions,
+        "relation_type": relation_type,
+        "mentions": explicit_mentions,
+        "explicit_mentions": explicit_mentions,
+        "title_mentions": title_mentions,
+        "title_mention_terms": sorted(set(title_mention_terms))[:12],
         "raw_targets": sorted(set(raw_targets))[:12],
         "directed": False,
         "direction_count": direction_count,
@@ -353,8 +466,8 @@ def build_wiki_graph(
 
     The graph follows the LLM Wiki design at an architecture level: Wiki pages
     are nodes, `[[wikilink]]` references are graph edges, and each edge receives
-    a multi-signal relevance weight from direct links, shared source documents,
-    common neighbors and page-type affinity. It is computed from database state
+    a multi-signal relevance weight from direct links, title/topic mentions,
+    shared source documents, common neighbors and page-type affinity. It is computed from database state
     so the admin UI always reflects the latest compiled Wiki rather than the old
     entity-extraction graph.
     """
@@ -378,6 +491,8 @@ def build_wiki_graph(
     edge_mentions: Counter[tuple[str, str]] = Counter()
     edge_raw_targets: dict[tuple[str, str], list[str]] = defaultdict(list)
     edge_directions: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
+    edge_title_mentions: Counter[tuple[str, str]] = Counter()
+    edge_title_terms: dict[tuple[str, str], list[str]] = defaultdict(list)
     broken_links: list[dict[str, Any]] = []
     outgoing_targets: dict[str, set[str]] = defaultdict(set)
     incoming_sources: dict[str, set[str]] = defaultdict(set)
@@ -424,6 +539,21 @@ def build_wiki_graph(
             if source and target:
                 record_edge(source, target, link.anchor_text or link.link_type or "wikilink")
 
+    for source in pages:
+        for target in pages:
+            if source.id == target.id:
+                continue
+            title_mentions, terms = _title_mention_signal(source, target)
+            if title_mentions <= 0:
+                continue
+            left_slug, right_slug = sorted([str(source.slug), str(target.slug)])
+            edge_key = (left_slug, right_slug)
+            edge_mentions.setdefault(edge_key, 0)
+            edge_title_mentions[edge_key] += title_mentions
+            edge_title_terms[edge_key].extend(terms)
+            outgoing_targets[str(source.slug)].add(str(target.slug))
+            incoming_sources[str(target.slug)].add(str(source.slug))
+
     adjacency: dict[str, set[str]] = {str(page.slug): set() for page in pages}
     for left_slug, right_slug in edge_mentions:
         adjacency[left_slug].add(right_slug)
@@ -444,6 +574,8 @@ def build_wiki_graph(
                 mentions=mentions,
                 raw_targets=edge_raw_targets[edge_key],
                 directions=edge_directions[edge_key],
+                title_mentions=edge_title_mentions[edge_key],
+                title_mention_terms=edge_title_terms[edge_key],
                 adjacency=adjacency,
                 source_ids_by_slug=source_ids_by_slug,
             )
