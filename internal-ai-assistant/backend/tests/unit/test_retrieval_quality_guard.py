@@ -6,6 +6,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app import retrieval
 from app.database import Base
 from app.models import Document, DocumentChunk, DocumentProcessingStatus
 from app.retrieval import apply_document_quality_signals, rerank_contexts
@@ -55,3 +56,11 @@ def test_retrieval_quality_guard_penalizes_low_quality_document(tmp_path: Path) 
         assert ranked[1]["document_id"] == poor_doc.id
     finally:
         db.close()
+
+
+def test_pageindex_supplement_stays_off_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(retrieval, "PAGEINDEX_ENABLED", False)
+
+    contexts = retrieval.retrieve_pageindex_contexts(None, "报销流程", None, [])
+
+    assert contexts == []

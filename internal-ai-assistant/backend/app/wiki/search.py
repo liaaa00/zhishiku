@@ -235,12 +235,11 @@ def _context_for_page(page: WikiPage, score: float, hits: list[str], sources: li
 
 
 def retrieve_wiki_contexts(db: Session, question: str, user: User, top_k: int = 5, knowledge_scope: str = "production") -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    query = select(WikiPage).where(WikiPage.status == "published")
+    if knowledge_scope != "all":
+        query = query.where(WikiPage.knowledge_scope == knowledge_scope)
     pages = db.execute(
-        select(WikiPage)
-        .where(WikiPage.status == "published")
-        .where(WikiPage.knowledge_scope == knowledge_scope)
-        .order_by(WikiPage.updated_at.desc())
-        .limit(MAX_SCAN_PAGES)
+        query.order_by(WikiPage.updated_at.desc()).limit(MAX_SCAN_PAGES)
     ).scalars().all()
     scored: list[tuple[float, WikiPage, list[str], list[WikiPageSource]]] = []
     skipped_for_access = 0

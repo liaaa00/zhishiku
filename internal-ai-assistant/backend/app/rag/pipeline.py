@@ -15,7 +15,7 @@ from ..document_routing_config import allowed_kinds_for_query_topic_config
 from ..models import Document, DocumentChunk, User
 from ..settings_service import get_embedding_config
 from ..wiki.search import retrieve_wiki_contexts
-from .evidence_checker import check_evidence
+from .evidence_checker import check_evidence, check_wiki_evidence
 from .query_analyzer import analyze_query
 from .retrieval_router import select_route
 from .retrievers import metadata_retriever, summary_retriever, table_retriever, text_retriever
@@ -287,39 +287,46 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
 
     wiki_contexts: list[dict[str, Any]] = []
     wiki_meta: dict[str, Any] = {"enabled": True, "used": False, "reason": "wiki_skipped_for_table_route"}
+    wiki_gate = None
     if route.name != "table":
         wiki_contexts, wiki_meta = retrieve_wiki_contexts(db, question, user, top_k=max(top_k, 5), knowledge_scope=scope)
     if wiki_meta.get("used") and wiki_contexts:
         wiki_contexts = enrich_context_metadata(db, wiki_contexts)
-        evidence = check_evidence(wiki_contexts, analysis, route)
-        route_meta = {
-            "name": "wiki",
-            "intent": analysis.intent,
-            "confidence": max(float(analysis.confidence or 0.0), float(wiki_meta.get("best_score") or 0.0)),
-            "reason": "wiki_first_compiled_page",
+        wiki_gate = check_wiki_evidence(wiki_contexts, analysis, wiki_meta)
+        wiki_meta = {
+            **wiki_meta,
+            "direct_return": wiki_gate.sufficient,
+            "evidence_gate": wiki_gate.to_dict(),
         }
-        meta = {
-            "rag_router_version": "wiki_first_v1",
-            "query_analysis": analysis.to_dict(),
-            "retrieval_route": route_meta,
-            "original_retrieval_route": route.to_dict(),
-            "knowledge_scope": scope,
-            "wiki_first": wiki_meta,
-            "embedding_quality": _embedding_quality_meta(db),
-            "evidence_check": evidence.to_dict(),
-            "graph_retrieval": {"checked": False, "matched": False, "context_count": 0, "merged_into_contexts": False, "direct_answer": False},
-        }
-        note = "; ".join(
-            part
-            for part in [
-                "wiki_first=used",
-                f"wiki_candidates={wiki_meta.get('candidate_count', 0)}",
-                "route=wiki",
-                f"evidence={evidence.reason}",
-            ]
-            if part
-        )
-        return wiki_contexts, "wiki", note, int(wiki_meta.get("candidate_count") or len(wiki_contexts)), meta
+        if wiki_gate.sufficient:
+            route_meta = {
+                "name": "wiki",
+                "intent": analysis.intent,
+                "confidence": max(float(analysis.confidence or 0.0), float(wiki_meta.get("best_score") or 0.0)),
+                "reason": "wiki_first_evidence_sufficient",
+            }
+            meta = {
+                "rag_router_version": "wiki_first_v2_evidence_gated",
+                "query_analysis": analysis.to_dict(),
+                "retrieval_route": route_meta,
+                "original_retrieval_route": route.to_dict(),
+                "knowledge_scope": scope,
+                "wiki_first": wiki_meta,
+                "embedding_quality": _embedding_quality_meta(db),
+                "evidence_check": wiki_gate.to_dict(),
+                "graph_retrieval": {"checked": False, "matched": False, "context_count": 0, "merged_into_contexts": False, "direct_answer": False},
+            }
+            note = "; ".join(
+                part
+                for part in [
+                    "wiki_first=direct",
+                    f"wiki_candidates={wiki_meta.get('candidate_count', 0)}",
+                    "route=wiki",
+                    f"evidence={wiki_gate.reason}",
+                ]
+                if part
+            )
+            return wiki_contexts, "wiki", note, int(wiki_meta.get("candidate_count") or len(wiki_contexts)), meta
 
     result = _retrieve_by_route(db, question, user, top_k, analysis, route, scope)
 
@@ -332,6 +339,25 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
     backend = result.backend
     note_parts = [result.note]
     route_meta = route.to_dict()
+    if wiki_gate is not None and wiki_contexts:
+        from ..retrieval import rerank_contexts
+
+        mixed_limit = max(top_k, len(contexts), 8)
+        mixed_contexts = _merge_contexts(wiki_contexts, contexts, mixed_limit * 2, extra_first=True)
+        contexts, _wiki_selected = rerank_contexts(
+            question,
+            mixed_contexts,
+            mixed_limit,
+            (result.meta or {}).get("query_profile"),
+        )
+        backend = f"{backend}+wiki" if backend else "wiki_fallback"
+        note_parts.append(f"wiki_fallback={wiki_gate.reason}")
+        wiki_meta = {
+            **wiki_meta,
+            "direct_return": False,
+            "fallback_merged": True,
+            "fallback_context_count": len(wiki_contexts),
+        }
     if graph_checked:
         note_parts.append(f"graph_checked={len(graph_contexts)}")
     if graph_contexts and graph_primary_query:
@@ -369,7 +395,7 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
     meta = dict(result.meta or {})
     meta.update(
         {
-            "rag_router_version": "phase1_rules",
+            "rag_router_version": "wiki_first_v2_hybrid_fallback" if wiki_gate is not None else "phase1_rules",
             "wiki_first": wiki_meta,
             "query_analysis": analysis.to_dict(),
             "retrieval_route": route_meta,
@@ -392,4 +418,5 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
         }
     )
     note = "; ".join(part for part in [*note_parts, f"route={route_meta.get('name') or route.name}", f"evidence={evidence.reason}"] if part)
-    return contexts, backend, note, result.candidate_count + len(graph_contexts), meta
+    wiki_candidate_count = int(wiki_meta.get("candidate_count") or 0) if wiki_gate is not None else 0
+    return contexts, backend, note, result.candidate_count + len(graph_contexts) + wiki_candidate_count, meta

@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .ai_client import embed_texts
+from .config import PAGEINDEX_ENABLED
 from .document_metadata import (
     document_matches_scope,
     enrich_context_metadata,
@@ -1559,6 +1560,8 @@ def retrieve_pageindex_contexts(
     max_contexts: int = PAGEINDEX_SUPPLEMENT_MAX,
     knowledge_scope: str = "production",
 ) -> list[dict]:
+    if not PAGEINDEX_ENABLED:
+        return []
     question_terms = relevance_terms(question)
     if not question_terms or max_contexts <= 0:
         return []

@@ -52,7 +52,7 @@ def test_document_quality_report_detects_missing_text_chunks_for_pdf(tmp_path: P
         assert report["chunks"]["count"] == 0
         assert report["quality"]["grade"] == "blocked"
         assert any(issue["code"] == "no_chunks" and issue["severity"] == "critical" for issue in report["issues"])
-        assert any(issue["code"] == "page_index_missing" for issue in report["issues"])
+        assert not any(issue["code"] == "page_index_missing" for issue in report["issues"])
     finally:
         db.close()
 

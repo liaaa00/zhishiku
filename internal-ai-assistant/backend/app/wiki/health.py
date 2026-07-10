@@ -65,7 +65,8 @@ def _page_stale(db: Session, page: WikiPage) -> bool:
     ).scalars().all()
     if not chunks:
         return False
-    return bool(page.checksum and page.checksum != document_wiki_checksum(first_doc, chunks))
+    stored_checksum = (page.checksum or "").split(":", 1)[0]
+    return bool(stored_checksum and stored_checksum != document_wiki_checksum(first_doc, chunks))
 
 
 def _strip_wikilink_anchor(value: str) -> str:

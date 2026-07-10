@@ -59,6 +59,10 @@ class EvidenceCheck:
     document_count: int
     required_evidence: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    best_score: float = 0.0
+    matched_term_count: int = 0
+    source_quote_count: int = 0
+    missing_terms: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

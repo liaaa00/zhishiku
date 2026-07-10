@@ -4,11 +4,7 @@
       <div>
         <span class="admin-eyebrow">Knowledge Admin</span>
         <h2>后台管理</h2>
-        <p>管理岗位组、员工账号、文档权限、后台任务、模型配置和高级索引状态。</p>
-      </div>
-      <div class="admin-hero-status">
-        <span>PageIndex</span>
-        <strong>{{ pageIndexEngineText }}</strong>
+        <p>管理岗位组、员工账号、文档权限、后台任务和模型配置。</p>
       </div>
     </header>
 
@@ -33,10 +29,7 @@
         <span>后台任务</span>
         <strong>{{ tasks.length }}</strong>
       </article>
-      <article class="admin-stat-card wide">
-        <span>高级索引状态</span>
-        <strong>{{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</strong>
-      </article>
+
       <article class="admin-stat-card wide" :class="{ 'admin-stat-card-warning': vectorStatus?.degraded }">
         <span>向量库状态</span>
         <strong>{{ vectorStatusLabel }}</strong>
@@ -51,7 +44,7 @@
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'groups' }]" @click="jumpToTab('groups')">岗位组</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'users' }]" @click="jumpToTab('users')">员工</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'docs' }]" @click="jumpToTab('docs')">文档与权限</button>
-        <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'routing' }]" @click="jumpToTab('routing')">文档分类</button>
+
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'model' }]" @click="jumpToTab('model')">模型配置</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'feedback' }]" @click="jumpToTab('feedback')">反馈管理</button>
         <button type="button" :class="['admin-quickbar-btn', { active: adminTabIndex === 'evaluation' }]" @click="jumpToTab('evaluation')">评测面板</button>
@@ -201,7 +194,7 @@
 
           <div class="admin-upload-note">
             <span>支持 PDF / Markdown / Word / Excel / PPT / CSV / TXT / 图片</span>
-            <span>上传后显示解析和 PageIndex 状态。</span>
+            <span>上传后自动解析、分类并写入 Wiki 与向量索引。</span>
           </div>
           <div class="admin-form-row admin-form-row-wrap">
             <label class="admin-search-box">
@@ -211,16 +204,8 @@
                 <el-option label="测试库（仅诊断/评测使用）" value="test" />
               </el-select>
             </label>
-            <label class="admin-search-box">
-              <span>上传分类</span>
-              <el-select v-model="uploadDocumentKind" class="admin-select-md">
-                <el-option label="自动识别（推荐）" value="auto" />
-                <el-option v-for="item in routingDocumentKindOptions" :key="item.value" :label="item.label" :value="item.value" />
-              </el-select>
-            </label>
-            <span class="admin-model-helper">不确定分类就选“自动识别”；一次可选择多个文件，系统会按队列上传。</span>
+            <span class="admin-model-helper">文档类型由系统自动识别；只有低置信度文档需要人工复核。</span>
           </div>
-          <div class="admin-index-note">高级索引：{{ pageIndexEngineText }} · {{ pageIndexStatus?.status_detail || '正在读取 PageIndex 状态' }}</div>
 
           <section v-if="lastUploadSummary" class="admin-upload-result-card">
             <div class="admin-upload-result-head">
@@ -330,10 +315,7 @@
                   <span>片段 {{ doc.chunks || 0 }} · {{ doc.searchable ? '可检索' : '未检索' }}</span>
                   <span>知识库：{{ knowledgeScopeLabel(doc.knowledge_scope) }}</span>
                   <span>文档类型：{{ documentKindLabel(doc.document_kind) }}</span>
-                  <span :class="['admin-doc-kind-review', documentKindReviewClass(doc)]">分类：{{ documentKindStatusLabel(doc) }}</span>
-                  <span>分类置信度：{{ formatPercent(doc.document_kind_confidence ?? 0) }}</span>
-                  <span v-if="doc.document_kind_reason">分类原因：{{ doc.document_kind_reason }}</span>
-                  <span>高级索引：{{ pageIndexStatusText(doc.page_index) }}</span>
+                  <span v-if="String(doc.document_kind_status || '') === 'needs_review'" class="admin-doc-kind-review needs-review">分类待复核</span>
                 </div>
               </div>
               <aside class="admin-doc-card-side">
@@ -349,7 +331,7 @@
                     <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
                   </el-select>
                 </label>
-                <label class="admin-doc-permission-box">
+                <label v-if="String(doc.document_kind_status || '') === 'needs_review'" class="admin-doc-permission-box">
                   <span>确认文档类型</span>
                   <el-select :model-value="doc.document_kind || 'general'" class="admin-full-select" @change="(value) => updateDocumentClassification(doc, value)">
                     <el-option v-for="item in routingDocumentKindOptions" :key="item.value" :label="item.label" :value="item.value" />
@@ -359,17 +341,13 @@
                   <el-button link type="primary" :disabled="openingDocId === doc.id" @click="openAdminDocument(doc)">
                     {{ openingDocId === doc.id ? '打开中…' : '打开原文' }}
                   </el-button>
-                  <el-button link type="primary" @click="openDocumentPageIndex(doc)">查看结构树</el-button>
                   <el-button link type="primary" @click="openDocumentQuality(doc)">文件体检</el-button>
                   <el-button link type="primary" @click="openDocumentDiagnostics(doc)">诊断详情</el-button>
                   <el-button link @click="openChunkEditor(doc)">修改索引片段</el-button>
-                  <el-button link :disabled="deletingDocId === doc.id || rebuildingPageIndexDocId === doc.id || reparsingDocId === doc.id" @click="reparseDocument(doc)">
+                  <el-button link :disabled="deletingDocId === doc.id || reparsingDocId === doc.id" @click="reparseDocument(doc)">
                     {{ reparsingDocId === doc.id ? '解析中…' : '重新解析' }}
                   </el-button>
-                  <el-button link :disabled="deletingDocId === doc.id || rebuildingPageIndexDocId === doc.id || reparsingDocId === doc.id" @click="rebuildDocumentPageIndex(doc)">
-                    {{ rebuildingPageIndexDocId === doc.id ? '重建中…' : '重建高级索引' }}
-                  </el-button>
-                  <el-button link class="admin-danger-link" :disabled="deletingDocId === doc.id || rebuildingPageIndexDocId === doc.id || reparsingDocId === doc.id" @click="deleteDocument(doc)">
+                  <el-button link class="admin-danger-link" :disabled="deletingDocId === doc.id || reparsingDocId === doc.id" @click="deleteDocument(doc)">
                     {{ deletingDocId === doc.id ? '删除中…' : '删除文档' }}
                   </el-button>
                 </div>
@@ -379,185 +357,13 @@
         </section>
       </el-tab-pane>
 
-      <el-tab-pane label="文档分类" name="routing">
-        <section class="admin-panel-card admin-routing-panel">
-          <header class="admin-section-header">
-            <div>
-              <h3>文档分类规则</h3>
-              <p>这个页面只做一件事：告诉系统“哪些文档算一类”。上传或重分类时，系统会按关键词自动判断文档类型。</p>
-            </div>
-            <div class="admin-row-actions">
-              <el-button :disabled="savingRoutingRules" @click="loadRoutingConfig">刷新规则</el-button>
-              <el-button type="primary" :disabled="savingRoutingRules" @click="saveRoutingConfig">{{ savingRoutingRules ? '保存中…' : '保存规则' }}</el-button>
-            </div>
-          </header>
-
-          <section class="admin-routing-steps" aria-label="文档分类使用步骤">
-            <article>
-              <strong>1. 维护类型</strong>
-              <p>例如：财务制度、合同模板、员工指南。</p>
-            </article>
-            <article>
-              <strong>2. 填关键词</strong>
-              <p>例如：报销、发票、付款审批。命中越准，自动分类越准。</p>
-            </article>
-            <article>
-              <strong>3. 重新分类</strong>
-              <p>上传一批文档后点“一键重分类”，再去检索诊断测试。</p>
-            </article>
-          </section>
-
-          <section class="admin-routing-editor-card">
-            <header class="admin-routing-editor-head">
-              <div>
-                <h4>文档类型和识别关键词</h4>
-                <p>业务人员主要维护这里。关键词可用逗号、顿号或换行分隔；不用填写系统标识。</p>
-              </div>
-              <el-button type="primary" plain @click="addRoutingKind">新增文档类型</el-button>
-            </header>
-            <el-table :data="routingKindRows" class="admin-table admin-routing-table">
-              <el-table-column label="文档类型名称" min-width="200">
-                <template #default="scope">
-                  <el-input v-model="scope.row.label" placeholder="例如：财务制度" @input="syncRoutingConfigTextFromForm" />
-                </template>
-              </el-table-column>
-              <el-table-column label="自动识别关键词" min-width="420">
-                <template #default="scope">
-                  <el-input v-model="scope.row.markersText" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" placeholder="例如：报销、发票、付款审批" @input="syncRoutingConfigTextFromForm" />
-                </template>
-              </el-table-column>
-              <el-table-column label="状态" width="120">
-                <template #default="scope">
-                  <el-tag :type="scope.row.disabled ? 'info' : 'success'">{{ scope.row.disabled ? '已停用' : '启用中' }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="190">
-                <template #default="scope">
-                  <el-button link type="primary" :disabled="scope.row.value === 'general'" @click="toggleRoutingKind(scope.$index)">{{ scope.row.disabled ? '启用' : '停用' }}</el-button>
-                  <el-button link type="danger" :disabled="scope.row.builtin" @click="removeRoutingKind(scope.$index)">{{ scope.row.builtin ? '内置' : '删除' }}</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </section>
-
-          <div class="admin-model-grid admin-routing-bottom-grid">
-            <section class="admin-model-form-card">
-              <span>保存规则</span>
-              <strong>改完类型或关键词后，先保存规则</strong>
-              <p>保存后，新上传文档会按新规则自动分类；已有文档需要点右侧“一键重分类”。</p>
-              <div class="admin-model-actions">
-                <el-button type="primary" :disabled="savingRoutingRules" @click="saveRoutingConfig">保存规则</el-button>
-                <el-button :disabled="savingRoutingRules" @click="resetRoutingConfig">恢复默认</el-button>
-              </div>
-            </section>
-
-            <aside class="admin-model-info-card">
-              <span>一键重分类</span>
-              <strong>{{ routingDocumentKindOptions.length }} 类文档类型</strong>
-              <p>按当前规则重新识别已有后台文档；不会删除文档，也不会重建索引。</p>
-              <label class="admin-model-field">
-                <span>处理范围</span>
-                <el-select v-model="reclassifyScope" class="admin-full-select">
-                  <el-option label="全部后台文档" value="all" />
-                  <el-option label="正式库" value="production" />
-                  <el-option label="测试库" value="test" />
-                </el-select>
-              </label>
-              <el-checkbox v-model="reclassifyOnlyLowConfidence">只处理自动/待复核文档</el-checkbox>
-              <div class="admin-model-actions">
-                <el-button type="warning" :disabled="reclassifyingDocuments" @click="reclassifyDocuments">{{ reclassifyingDocuments ? '重分类中…' : '一键重分类' }}</el-button>
-              </div>
-              <div v-if="routingReclassifyResult" class="admin-model-test-result" :class="routingReclassifyResult.needs_review ? 'failed' : 'ok'">
-                已处理 {{ routingReclassifyResult.total || 0 }} 份，变更 {{ routingReclassifyResult.changed || 0 }} 份，待复核 {{ routingReclassifyResult.needs_review || 0 }} 份。
-              </div>
-            </aside>
-          </div>
-
-          <section class="admin-routing-editor-card">
-            <div class="admin-routing-advanced-head">
-              <div>
-                <h4>高级设置</h4>
-                <p>一般不用打开。这里是问题路由、文件后缀和 JSON 配置，留给技术人员或 AI 维护。</p>
-              </div>
-              <el-switch v-model="showRoutingAdvancedJson" active-text="显示" inactive-text="隐藏" />
-            </div>
-
-            <div v-if="showRoutingAdvancedJson" class="admin-routing-advanced-body">
-              <section>
-                <header class="admin-routing-editor-head compact">
-                  <div>
-                    <h4>文件后缀识别</h4>
-                    <p>可选项，例如 Excel/CSV 默认识别为表格数据。</p>
-                  </div>
-                </header>
-                <el-table :data="routingKindRows" class="admin-table admin-routing-table">
-                  <el-table-column label="文档类型" min-width="180">
-                    <template #default="scope">{{ scope.row.label }}</template>
-                  </el-table-column>
-                  <el-table-column label="文件后缀" min-width="260">
-                    <template #default="scope">
-                      <el-input v-model="scope.row.extensionsText" placeholder="例如：xlsx, csv" @input="syncRoutingConfigTextFromForm" />
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="系统标识" min-width="220">
-                    <template #default="scope">{{ scope.row.value }}</template>
-                  </el-table-column>
-                </el-table>
-              </section>
-
-              <section>
-                <header class="admin-routing-editor-head compact">
-                  <div>
-                    <h4>问题路由规则</h4>
-                    <p>用于限制某类问题只能命中指定文档类型，通常由技术人员维护。</p>
-                  </div>
-                  <el-button type="primary" plain @click="addRoutingRule">新增规则</el-button>
-                </header>
-                <el-table :data="routingRuleRows" class="admin-table admin-routing-table">
-                  <el-table-column label="问题类型" min-width="220">
-                    <template #default="scope">
-                      <el-select v-model="scope.row.topic" clearable filterable placeholder="通用/不限" class="admin-full-select" @change="syncRoutingConfigTextFromForm">
-                        <el-option v-for="item in routingTopicOptions" :key="item.value" :label="item.label" :value="item.value" />
-                      </el-select>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="检索通道" min-width="160">
-                    <template #default="scope">
-                      <el-select v-model="scope.row.route" clearable placeholder="不限" class="admin-full-select" @change="syncRoutingConfigTextFromForm">
-                        <el-option v-for="item in routingRouteOptions" :key="item.value" :label="item.label" :value="item.value" />
-                      </el-select>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="允许命中的文档类型" min-width="320">
-                    <template #default="scope">
-                      <el-select v-model="scope.row.allowed_kinds" multiple filterable placeholder="选择文档类型" class="admin-full-select" @change="syncRoutingConfigTextFromForm">
-                        <el-option v-for="item in routingDocumentKindOptions" :key="item.value" :label="item.label" :value="item.value" />
-                      </el-select>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="100">
-                    <template #default="scope">
-                      <el-button link type="danger" @click="removeRoutingRule(scope.$index)">删除</el-button>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </section>
-
-              <label class="admin-model-field">
-                <span>高级 JSON</span>
-                <el-input v-model="routingConfigText" type="textarea" :autosize="{ minRows: 8, maxRows: 18 }" placeholder="高级配置 JSON" />
-              </label>
-            </div>
-          </section>
-        </section>
-      </el-tab-pane>
 
       <el-tab-pane label="任务中心" name="tasks">
         <section class="admin-panel-card admin-task-panel">
           <header class="admin-section-header">
             <div>
               <h3>任务中心</h3>
-              <p>查看文档解析、重新解析、PageIndex 构建等后台任务状态，并对失败任务进行重试。</p>
+              <p>查看文档解析、图谱抽取和 OCR 等后台任务状态，并对失败任务进行重试。</p>
             </div>
             <div class="admin-row-actions admin-task-header-actions">
               <span v-if="taskPolling" class="admin-auto-refresh-hint">自动刷新中</span>
@@ -583,8 +389,7 @@
               <button :class="{ active: taskTypeFilter === 'document_parse' }" type="button" @click="taskTypeFilter = 'document_parse'">文档解析 {{ taskTypeCount('document_parse') }}</button>
               <button :class="{ active: taskTypeFilter === 'document_reparse' }" type="button" @click="taskTypeFilter = 'document_reparse'">重新解析 {{ taskTypeCount('document_reparse') }}</button>
               <button :class="{ active: taskTypeFilter === 'chat_attachment_parse' }" type="button" @click="taskTypeFilter = 'chat_attachment_parse'">聊天附件 {{ taskTypeCount('chat_attachment_parse') }}</button>
-              <button :class="{ active: taskTypeFilter === 'page_index' }" type="button" @click="taskTypeFilter = 'page_index'">高级索引 {{ taskTypeCount('page_index') }}</button>
-              <button :class="{ active: taskTypeFilter === 'page_index_rebuild' }" type="button" @click="taskTypeFilter = 'page_index_rebuild'">重建索引 {{ taskTypeCount('page_index_rebuild') }}</button>
+
               <button :class="{ active: taskTypeFilter === 'graph_extract' }" type="button" @click="taskTypeFilter = 'graph_extract'">图谱抽取 {{ taskTypeCount('graph_extract') }}</button>
               <button :class="{ active: taskTypeFilter === 'graph_rebuild' }" type="button" @click="taskTypeFilter = 'graph_rebuild'">重建图谱 {{ taskTypeCount('graph_rebuild') }}</button>
               <button :class="{ active: taskTypeFilter === 'ocr' }" type="button" @click="taskTypeFilter = 'ocr'">OCR {{ taskTypeCount('ocr') }}</button>
@@ -743,7 +548,7 @@
           <header class="admin-section-header">
             <div>
               <h3>检索诊断</h3>
-              <p>用管理员权限测试一次问题的召回、过滤、PageIndex 补充和 rerank 结果。</p>
+              <p>用管理员权限测试一次问题的 Wiki、向量、图谱召回和 rerank 结果。</p>
             </div>
             <el-button :disabled="searchTesting" @click="runSearchTest">
               {{ searchTesting ? '测试中…' : '运行检索测试' }}
@@ -1494,7 +1299,7 @@
               <small>发现 {{ wikiStatus?.health_finding_count || 0 }} 个问题</small>
             </article>
             <article class="admin-stat-card">
-              <span>Index页面</span>
+              <span>页面网络</span>
               <strong>{{ wikiIndex?.count || 0 }}</strong>
               <small>社区 {{ wikiIndexSummary.community_count || 0 }} · 关系 {{ wikiIndexSummary.edge_count || 0 }}</small>
             </article>
@@ -2088,30 +1893,6 @@
       </template>
     </el-dialog>
 
-    <el-drawer
-      v-model="pageIndexDialogVisible"
-      title="高级结构索引"
-      direction="rtl"
-      size="min(760px, calc(100vw - 32px))"
-      class="admin-pageindex-drawer"
-    >
-      <div v-if="pageIndexLoading" class="admin-dialog-empty">正在加载高级索引…</div>
-      <div v-else class="admin-pageindex-drawer-body">
-        <div class="admin-pageindex-drawer-meta">
-          <span>当前文档</span>
-          <strong>{{ docTitle(pageIndexDoc) }}</strong>
-          <p>{{ docFilename(pageIndexDoc) }}</p>
-        </div>
-        <p class="admin-index-note dialog-note">{{ pageIndexStatusText(pageIndexPayload?.page_index) }}</p>
-        <div class="admin-tree-stack">
-          <el-card v-for="node in pageIndexFlatNodes" :key="node.key" class="source-card admin-tree-card">
-            <strong>{{ node.indent }}{{ node.title }}</strong>
-            <p>{{ node.summary || '暂无摘要' }}</p>
-          </el-card>
-        </div>
-        <div v-if="!pageIndexFlatNodes.length" class="admin-dialog-empty">暂无结构树。可点击“重建高级索引”。</div>
-      </div>
-    </el-drawer>
 
     <el-drawer
       v-model="documentDiagnosticsVisible"
@@ -2214,11 +1995,7 @@
               <strong>{{ documentQualityReport.table?.data_rows || 0 }}</strong>
               <p>{{ documentQualityReport.table?.sheet_count || 0 }} 个 Sheet · {{ documentQualityReport.table?.column_count || 0 }} 列</p>
             </div>
-            <div>
-              <span>高级索引</span>
-              <strong>{{ pageIndexStatusText(documentQualityReport.page_index) }}</strong>
-              <p>{{ documentQualityReport.page_index?.node_count || 0 }} 节点</p>
-            </div>
+
             <div>
               <span>处理诊断</span>
               <strong>{{ documentQualityReport.processing?.ocr_triggered ? '已触发 OCR' : '普通解析' }}</strong>
@@ -2276,7 +2053,7 @@
           <strong>{{ docTitle(chunkEditorDoc) }}</strong>
           <p>{{ docFilename(chunkEditorDoc) }}</p>
         </div>
-        <p class="admin-index-note dialog-note">修改普通索引片段后，系统会同步更新向量；如果 PageIndex 已构建，会提示你重建高级索引。</p>
+        <p class="admin-index-note dialog-note">修改索引片段后，系统会同步更新向量。</p>
         <div v-if="chunkEditorChunks.length" class="admin-chunk-editor-list">
           <article v-for="chunk in chunkEditorChunks" :key="chunk.id" class="admin-chunk-editor-card">
             <div class="admin-chunk-editor-head">
@@ -2319,7 +2096,6 @@ echarts.use([GraphChart, GridComponent, LegendComponent, TitleComponent, Tooltip
 const groups = ref<any[]>([])
 const users = ref<any[]>([])
 const docs = ref<any[]>([])
-const pageIndexStatus = ref<any | null>(null)
 const vectorStatus = ref<any | null>(null)
 const modelConfig = ref<any>({
   base_url: 'https://api.deepseek.com',
@@ -2378,7 +2154,7 @@ type DocStatusFilter = 'all' | 'ready' | 'processing' | 'waiting' | 'failed'
 type DocQualityFilter = 'all' | 'good' | 'needs_review' | 'poor' | 'blocked' | 'unknown'
 type UserRoleFilter = 'all' | 'admin' | 'member' | 'unassigned' | 'pending' | 'inactive'
 type TaskStatusFilter = 'all' | 'pending' | 'running' | 'done' | 'failed'
-type TaskTypeFilter = 'all' | 'document_parse' | 'document_reparse' | 'chat_attachment_parse' | 'page_index' | 'page_index_rebuild' | 'graph_extract' | 'graph_rebuild' | 'ocr' | 'other'
+type TaskTypeFilter = 'all' | 'document_parse' | 'document_reparse' | 'chat_attachment_parse' | 'graph_extract' | 'graph_rebuild' | 'ocr' | 'other'
 type FeedbackStatusFilter = 'all' | 'new' | 'reviewed' | 'resolved' | 'ignored'
 type FeedbackRootCause = '' | 'answer_quality' | 'retrieval_miss' | 'insufficient_source' | 'document_quality' | 'permission_scope' | 'unclear_question' | 'other'
 type FeedbackRootCauseFilter = 'all' | FeedbackRootCause
@@ -2387,10 +2163,6 @@ type EditableChunk = { id: string; page_number?: number | null; chunk_index?: nu
 type UploadSummary = { docId: string; taskId?: string | null; title?: string; filename?: string; status?: string; message?: string; error?: string; searchable?: boolean }
 
 const adminTabIndex = ref('groups')
-const pageIndexDialogVisible = ref(false)
-const pageIndexLoading = ref(false)
-const pageIndexPayload = ref<any | null>(null)
-const pageIndexDoc = ref<any | null>(null)
 const documentQualityVisible = ref(false)
 const documentQualityLoading = ref(false)
 const documentQualityDoc = ref<any | null>(null)
@@ -2417,11 +2189,9 @@ const reparsingDocId = ref<string | null>(null)
 const bulkReparsingQualityDocs = ref(false)
 const deletingDocId = ref<string | null>(null)
 const deletingGroupId = ref<string | null>(null)
-const rebuildingPageIndexDocId = ref<string | null>(null)
 const uploadingDoc = ref(false)
 const uploadQueue = ref<any[]>([])
 const uploadKnowledgeScope = ref<'production' | 'test'>('production')
-const uploadDocumentKind = ref('auto')
 const lastUploadSummary = ref<UploadSummary | null>(null)
 const groupSearch = ref('')
 const userSearch = ref('')
@@ -2470,19 +2240,7 @@ let statusPollDeadline = 0
 const STATUS_POLL_INTERVAL_MS = 3000
 const STATUS_POLL_TIMEOUT_MS = 5 * 60 * 1000
 const TASK_POLL_INTERVAL_MS = 5000
-const routingBuiltinKindValues = new Set(['policy', 'employee_guide', 'workorder', 'form', 'table', 'contract', 'finance', 'hr', 'project', 'training', 'general'])
-const routingTopicOptions = [
-  { value: 'form_fields', label: '表单字段/信息表问题' },
-  { value: 'employee_portal', label: '员工入口/平台操作问题' },
-  { value: 'employee_esign', label: '电子签署/实名认证问题' },
-  { value: 'workorder', label: '工单/内部流程问题' },
-]
-const routingRouteOptions = [
-  { value: 'text', label: '文本问答' },
-  { value: 'table', label: '表格查询' },
-  { value: 'metadata', label: '文档信息' },
-  { value: 'summary', label: '汇总总结' },
-]
+
 const feedbackRootCauseOptions: Array<{ value: FeedbackRootCause; label: string }> = [
   { value: '', label: '未归因' },
   { value: 'answer_quality', label: '回答组织问题' },
@@ -2510,17 +2268,7 @@ const testingModel = ref(false)
 const modelTestMessage = ref('')
 const modelTestStatus = ref<'idle' | 'ok' | 'failed'>('idle')
 const searchTestForm = reactive({ question: '', top_k: 8, knowledge_scope: 'production' })
-const routingConfig = ref<any | null>(null)
-const routingConfigText = ref('')
-const routingKindRows = ref<Array<{ value: string; label: string; markersText: string; extensionsText: string; disabled?: boolean; builtin?: boolean }>>([])
-const routingRuleRows = ref<Array<{ topic: string; route: string; allowed_kinds: string[] }>>([])
 const routingDocumentKindOptions = ref<Array<{ value: string; label: string }>>([])
-const showRoutingAdvancedJson = ref(false)
-const savingRoutingRules = ref(false)
-const reclassifyingDocuments = ref(false)
-const reclassifyScope = ref<'all' | 'production' | 'test'>('all')
-const reclassifyOnlyLowConfidence = ref(false)
-const routingReclassifyResult = ref<any | null>(null)
 const searchTesting = ref(false)
 const searchContextPreviewOpen = ref(false)
 const expandedSearchSources = ref<Record<string, boolean>>({})
@@ -2805,11 +2553,7 @@ const flattenedRetrievalMeta = computed(() => {
   return meta
 })
 
-const pageIndexEngineText = computed(() => {
-  if (!pageIndexStatus.value?.enabled) return '已关闭'
-  if (pageIndexStatus.value?.official_available && !pageIndexStatus.value?.forced_lightweight) return '官方 PageIndex'
-  return '轻量结构树兜底'
-})
+
 const vectorStatusLabel = computed(() => {
   if (!vectorStatus.value) return '读取中'
   if (vectorStatus.value.degraded) return 'SQLite 回退中'
@@ -2832,7 +2576,6 @@ const vectorStatusImpact = computed(() => {
   if (vectorStatus.value.qdrant_ready) return `Qdrant 正常，集合 ${vectorStatus.value.collection || '默认集合'} 可用。`
   return '当前使用 SQLite 本地向量检索。'
 })
-const pageIndexFlatNodes = computed(() => flattenPageIndexNodes(pageIndexPayload.value?.structure || []))
 
 const lastRefreshLabel = computed(() => {
   if (!lastRefreshAt.value) return '未刷新'
@@ -2886,7 +2629,7 @@ const filteredDocs = computed(() => {
       docGroupsText(doc),
       statusText(doc.status),
       stageText(doc.stage),
-      pageIndexStatusText(doc.page_index),
+
     ].join(' '))
     return haystack.includes(keyword)
   })
@@ -3217,8 +2960,6 @@ function taskTypeKind(task: any): TaskTypeFilter {
   if (type === 'document_parse') return 'document_parse'
   if (type === 'document_reparse') return 'document_reparse'
   if (type === 'chat_attachment_parse') return 'chat_attachment_parse'
-  if (type === 'page_index') return 'page_index'
-  if (type === 'page_index_rebuild') return 'page_index_rebuild'
   if (type === 'graph_extract') return 'graph_extract'
   if (type === 'graph_rebuild') return 'graph_rebuild'
   if (type === 'ocr') return 'ocr'
@@ -3253,7 +2994,7 @@ function taskTypeCount(type: TaskTypeFilter) {
 }
 
 function taskTypeLabel(type?: string) {
-  return ({ document_parse: '文档解析', document_reparse: '重新解析', chat_attachment_parse: '聊天附件解析', page_index: '高级索引', page_index_rebuild: '重建高级索引', graph_extract: '图谱抽取', graph_rebuild: '重建图谱', ocr: 'OCR 识别' } as Record<string, string>)[String(type || '')] || type || '后台任务'
+  return ({ document_parse: '文档解析', document_reparse: '重新解析', chat_attachment_parse: '聊天附件解析', page_index: '历史结构索引', page_index_rebuild: '历史结构索引重建', graph_extract: '图谱抽取', graph_rebuild: '重建图谱', ocr: 'OCR 识别' } as Record<string, string>)[String(type || '')] || type || '后台任务'
 }
 
 function graphEntityKey(relation: any, role: 'source' | 'target') {
@@ -3539,7 +3280,7 @@ async function load() {
   try {
     groups.value = (await http.get('/admin/groups')).data || []
     users.value = (await http.get('/admin/users')).data || []
-    await loadRoutingConfig(false)
+    await loadRoutingConfig()
     docs.value = (await http.get('/admin/documents')).data || []
     docs.value.forEach((d: any) => {
       docGroupMap[d.id] = (d.groups || []).map((g: any) => g.id)
@@ -3553,7 +3294,6 @@ async function load() {
     await loadWikiAdminData(false)
     await loadWikiGraphData(false)
     await loadGraphData(false)
-    await loadPageIndexStatus()
     await loadVectorStatus()
     await loadDocumentQualityMap()
     lastRefreshAt.value = new Date()
@@ -3579,7 +3319,6 @@ async function loadDocumentStatus() {
   })
   await loadTasks(false)
   await loadGraphData(false)
-  await loadPageIndexStatus()
   await loadVectorStatus()
   await loadDocumentQualityMap()
   await loadOperationsOverview(false)
@@ -3597,11 +3336,7 @@ function removeDocumentFromLocalState(documentId: string) {
   delete documentQualityMap.value[id]
   delete docGroupMap[id]
   if (lastUploadSummary.value?.docId && String(lastUploadSummary.value.docId) === id) lastUploadSummary.value = null
-  if (pageIndexDoc.value?.id && String(pageIndexDoc.value.id) === id) {
-    pageIndexDialogVisible.value = false
-    pageIndexDoc.value = null
-    pageIndexPayload.value = null
-  }
+
   if (chunkEditorDoc.value?.id && String(chunkEditorDoc.value.id) === id) {
     chunkEditorVisible.value = false
     chunkEditorDoc.value = null
@@ -3694,13 +3429,6 @@ watch(wikiGraphNetworkData, () => {
   if (adminTabIndex.value === 'wikiGraph') renderWikiGraphChart()
 })
 
-async function loadPageIndexStatus() {
-  try {
-    pageIndexStatus.value = (await http.get('/admin/page-index/status')).data || null
-  } catch {
-    pageIndexStatus.value = { enabled: false, status_detail: 'PageIndex 状态读取失败' }
-  }
-}
 
 async function loadVectorStatus() {
   try {
@@ -3710,179 +3438,16 @@ async function loadVectorStatus() {
   }
 }
 
-function splitRoutingValues(value: any) {
-  return String(value || '')
-    .split(/[，,\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function makeRoutingKindValue(label = 'custom') {
-  const base = String(label || 'custom').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '')
-  return `${base || 'custom'}_${Date.now().toString(36)}`
-}
-
-function syncRoutingFormFromConfig(config: any, options?: Array<{ value: string; label: string }>) {
-  const safeConfig = config || {}
-  const kinds = Array.isArray(safeConfig.document_kinds) ? safeConfig.document_kinds : []
-  routingKindRows.value = kinds.map((item: any) => ({
-    value: String(item?.value || makeRoutingKindValue(item?.label || 'custom')),
-    label: String(item?.label || item?.value || '未命名类型'),
-    markersText: Array.isArray(item?.markers) ? item.markers.join('，') : '',
-    extensionsText: Array.isArray(item?.extensions) ? item.extensions.join(', ') : '',
-    disabled: Boolean(item?.disabled) && String(item?.value || '') !== 'general',
-    builtin: routingBuiltinKindValues.has(String(item?.value || '')),
-  }))
-  const rules = Array.isArray(safeConfig.route_rules) ? safeConfig.route_rules : []
-  routingRuleRows.value = rules.map((item: any) => ({
-    topic: String(item?.topic || ''),
-    route: String(item?.route || ''),
-    allowed_kinds: Array.isArray(item?.allowed_kinds) ? item.allowed_kinds.map((kind: any) => String(kind || '')).filter(Boolean) : [],
-  }))
-  routingDocumentKindOptions.value = Array.isArray(options) && options.length
-    ? options
-    : routingKindRows.value.filter((item) => !item.disabled).map((item) => ({ value: item.value, label: item.label }))
-  syncRoutingConfigTextFromForm()
-}
-
-function buildRoutingConfigFromForm() {
-  const kindValues = new Set<string>()
-  const documentKinds = routingKindRows.value.map((row) => {
-    let value = String(row.value || '').trim()
-    if (!value) value = makeRoutingKindValue(row.label)
-    row.value = value
-    kindValues.add(value)
-    return {
-      value,
-      label: String(row.label || value).trim() || value,
-      markers: splitRoutingValues(row.markersText),
-      extensions: splitRoutingValues(row.extensionsText).map((item) => item.replace(/^\./, '').toLowerCase()),
-      disabled: Boolean(row.disabled) && value !== 'general',
-    }
-  })
-  const routeRules = routingRuleRows.value
-    .map((row) => ({
-      topic: String(row.topic || '').trim(),
-      route: String(row.route || '').trim(),
-      allowed_kinds: (row.allowed_kinds || []).filter((kind) => kindValues.has(String(kind)) && !routingKindRows.value.find((item) => item.value === String(kind))?.disabled),
-    }))
-    .filter((row) => (row.topic || row.route) && row.allowed_kinds.length)
-  return {
-    version: Number(routingConfig.value?.version || 1),
-    document_kinds: documentKinds,
-    route_rules: routeRules,
-    classification: routingConfig.value?.classification || { low_confidence_threshold: 0.55 },
-  }
-}
-
-function syncRoutingConfigTextFromForm() {
-  const config = buildRoutingConfigFromForm()
-  routingConfig.value = config
-  routingDocumentKindOptions.value = routingKindRows.value.filter((item) => !item.disabled).map((item) => ({ value: item.value, label: item.label || item.value }))
-  routingConfigText.value = JSON.stringify(config, null, 2)
-}
-
-function addRoutingKind() {
-  const value = makeRoutingKindValue('custom')
-  routingKindRows.value.push({ value, label: '新文档类型', markersText: '', extensionsText: '', disabled: false, builtin: false })
-  syncRoutingConfigTextFromForm()
-}
-
-function toggleRoutingKind(index: number) {
-  const row = routingKindRows.value[index]
-  if (!row || row.value === 'general') return
-  row.disabled = !row.disabled
-  if (row.disabled) {
-    routingRuleRows.value.forEach((rule) => {
-      rule.allowed_kinds = rule.allowed_kinds.filter((kind) => kind !== row.value)
-    })
-  }
-  syncRoutingConfigTextFromForm()
-}
-
-function removeRoutingKind(index: number) {
-  const row = routingKindRows.value[index]
-  if (!row || row.builtin) return
-  const value = row.value
-  routingKindRows.value.splice(index, 1)
-  routingRuleRows.value.forEach((rule) => {
-    rule.allowed_kinds = rule.allowed_kinds.filter((kind) => kind !== value)
-  })
-  syncRoutingConfigTextFromForm()
-}
-
-function addRoutingRule() {
-  routingRuleRows.value.push({ topic: '', route: 'text', allowed_kinds: [] })
-  syncRoutingConfigTextFromForm()
-}
-
-function removeRoutingRule(index: number) {
-  routingRuleRows.value.splice(index, 1)
-  syncRoutingConfigTextFromForm()
-}
-
-async function loadRoutingConfig(showMessage = true) {
+async function loadRoutingConfig() {
   try {
     const data = (await http.get('/admin/document-routing/config')).data || {}
-    routingConfig.value = data.config || null
-    syncRoutingFormFromConfig(data.config || {}, Array.isArray(data.document_kind_options) ? data.document_kind_options : [])
-    if (showMessage) ElMessage.success('路由规则已重新读取')
+    const options = Array.isArray(data.document_kind_options) ? data.document_kind_options : []
+    const configuredKinds = Array.isArray(data.config?.document_kinds) ? data.config.document_kinds : []
+    routingDocumentKindOptions.value = options.length
+      ? options
+      : configuredKinds.filter((item: any) => !item?.disabled).map((item: any) => ({ value: String(item?.value || ''), label: String(item?.label || item?.value || '') })).filter((item: any) => item.value)
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.detail || '加载路由规则失败')
-  }
-}
-
-async function saveRoutingConfig() {
-  savingRoutingRules.value = true
-  try {
-    const parsed = showRoutingAdvancedJson.value ? JSON.parse(routingConfigText.value || '{}') : buildRoutingConfigFromForm()
-    const data = (await http.put('/admin/document-routing/config', { config: parsed })).data || {}
-    routingConfig.value = data.config || null
-    syncRoutingFormFromConfig(data.config || {}, Array.isArray(data.document_kind_options) ? data.document_kind_options : [])
-    ElMessage.success('路由规则已保存')
-  } catch (err: any) {
-    ElMessage.error(err instanceof SyntaxError ? '规则 JSON 格式不正确' : (err?.response?.data?.detail || '保存路由规则失败'))
-  } finally {
-    savingRoutingRules.value = false
-  }
-}
-
-async function resetRoutingConfig() {
-  await ElMessageBox.confirm('确定恢复默认文档类型和路由规则吗？当前自定义规则会被覆盖。', '恢复默认规则', {
-    confirmButtonText: '恢复默认',
-    cancelButtonText: '取消',
-    type: 'warning',
-  })
-  savingRoutingRules.value = true
-  try {
-    const data = (await http.post('/admin/document-routing/reset')).data || {}
-    routingConfig.value = data.config || null
-    syncRoutingFormFromConfig(data.config || {}, Array.isArray(data.document_kind_options) ? data.document_kind_options : [])
-    ElMessage.success('已恢复默认规则')
-  } catch (err: any) {
-    ElMessage.error(err?.response?.data?.detail || '恢复默认规则失败')
-  } finally {
-    savingRoutingRules.value = false
-  }
-}
-
-async function reclassifyDocuments() {
-  await ElMessageBox.confirm('确定按当前规则重新识别文档类型吗？该操作会更新文档分类字段，但不会删除文档或重建索引。', '一键重分类', {
-    confirmButtonText: '开始重分类',
-    cancelButtonText: '取消',
-    type: 'warning',
-  })
-  reclassifyingDocuments.value = true
-  routingReclassifyResult.value = null
-  try {
-    const data = (await http.post('/admin/document-routing/reclassify', { knowledge_scope: reclassifyScope.value, only_low_confidence: reclassifyOnlyLowConfidence.value })).data || {}
-    routingReclassifyResult.value = data
-    ElMessage.success(`重分类完成：处理 ${data.total || 0} 份，变更 ${data.changed || 0} 份`)
-    await loadDocumentStatus()
-  } catch (err: any) {
-    ElMessage.error(err?.response?.data?.detail || '一键重分类失败')
-  } finally {
-    reclassifyingDocuments.value = false
+    ElMessage.error(err?.response?.data?.detail || '加载文档类型失败')
   }
 }
 
@@ -4967,7 +4532,7 @@ async function uploadSingleDocument(rawFile: any) {
   const fd = new FormData()
   fd.append('file', rawFile)
   fd.append('knowledge_scope', uploadKnowledgeScope.value)
-  fd.append('document_kind', uploadDocumentKind.value || 'auto')
+  fd.append('document_kind', 'auto')
   try {
     const data = (await http.post('/admin/documents', fd, { headers: { 'Content-Type': 'multipart/form-data' } })).data || {}
     lastUploadSummary.value = {
@@ -4986,10 +4551,10 @@ async function uploadSingleDocument(rawFile: any) {
         filename: rawFile.name,
         source_type: rawFile.name.split('.').pop() || 'file',
         knowledge_scope: data.knowledge_scope || uploadKnowledgeScope.value,
-        document_kind: data.document_kind || (uploadDocumentKind.value === 'auto' ? 'general' : uploadDocumentKind.value) || 'general',
+        document_kind: data.document_kind || 'general',
         document_kind_confidence: data.document_kind_confidence ?? 1,
         document_kind_reason: data.document_kind_reason || '',
-        document_kind_status: data.document_kind_status || (uploadDocumentKind.value === 'auto' ? 'auto' : 'confirmed'),
+        document_kind_status: data.document_kind_status || 'auto',
         groups: [],
         status: data.status || 'pending',
         stage: 'queued',
@@ -5166,34 +4731,7 @@ async function deleteDocument(doc: any) {
   }
 }
 
-function pageIndexStatusText(pageIndex?: any) {
-  const status = pageIndex?.status || 'not_built'
-  const label = ({ ready: '已构建', processing: '构建中', pending: '等待构建', failed: '构建失败', not_built: '未构建' } as Record<string, string>)[status] || status
-  const stats = [pageIndex?.node_count ? `${pageIndex.node_count} 个节点` : '', pageIndex?.page_count ? `${pageIndex.page_count} 页/行` : ''].filter(Boolean).join(' · ')
-  return stats ? `${label} · ${stats}` : label
-}
-function flattenPageIndexNodes(nodes: any[], depth = 0, prefix = ''): any[] {
-  const result: any[] = []
-  ;(nodes || []).forEach((node: any, index: number) => {
-    const key = String(node.node_id || `${prefix}${index}`)
-    result.push({ key: `${prefix}${key}`, title: node.title || '未命名节点', indent: '　'.repeat(depth), summary: node.summary || node.prefix_summary || '' })
-    if (Array.isArray(node.nodes) && node.nodes.length) result.push(...flattenPageIndexNodes(node.nodes, depth + 1, `${prefix}${key}-`))
-  })
-  return result
-}
-async function openDocumentPageIndex(doc: any) {
-  pageIndexDoc.value = doc
-  pageIndexDialogVisible.value = true
-  pageIndexLoading.value = true
-  pageIndexPayload.value = null
-  try {
-    pageIndexPayload.value = (await http.get(`/admin/documents/${doc.id}/page-index`)).data || null
-  } catch (err: any) {
-    ElMessage.error(err?.response?.data?.detail || '加载高级索引失败')
-  } finally {
-    pageIndexLoading.value = false
-  }
-}
+
 async function openDocumentQuality(doc: any) {
   if (!doc?.id) return
   documentQualityDoc.value = doc
@@ -5224,21 +4762,7 @@ async function openDocumentDiagnostics(doc: any) {
   }
 }
 
-async function rebuildDocumentPageIndex(doc: any) {
-  if (!doc?.id) return
-  rebuildingPageIndexDocId.value = doc.id
-  try {
-    await http.post(`/admin/documents/${doc.id}/page-index/rebuild`)
-    ElMessage.success('高级索引已重建')
-    if (pageIndexDialogVisible.value && pageIndexDoc.value?.id === doc.id) await openDocumentPageIndex(doc)
-    await load()
-  } catch (err: any) {
-    if (err?.response?.status === 404) removeDocumentFromLocalState(String(doc.id))
-    ElMessage.error(requestErrorDetail(err, '重建高级索引失败'))
-  } finally {
-    rebuildingPageIndexDocId.value = null
-  }
-}
+
 async function openChunkEditor(doc: any) {
   chunkEditorDoc.value = doc
   chunkEditorVisible.value = true

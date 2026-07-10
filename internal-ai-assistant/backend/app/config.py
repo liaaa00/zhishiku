@@ -28,7 +28,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "") or None
 CHAT_MODEL = os.getenv("CHAT_MODEL", "deepseek-chat")
 
-PAGEINDEX_ENABLED = os.getenv("PAGEINDEX_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
+PAGEINDEX_ENABLED = os.getenv("PAGEINDEX_ENABLED", "0").lower() not in {"0", "false", "no", "off"}
 PAGEINDEX_MIN_CHARS = int(os.getenv("PAGEINDEX_MIN_CHARS", "1"))
 PAGEINDEX_REPO_PATH = os.getenv("PAGEINDEX_REPO_PATH", "").strip()
 

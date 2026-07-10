@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .config import PAGEINDEX_ENABLED
 from .models import Document, DocumentChunk, DocumentPageIndex, DocumentProcessingStatus, DocumentTableRow
 from .table_schema import infer_column_semantics, semantic_columns_debug
 
@@ -263,13 +264,14 @@ def _build_issues(doc: Document, status: DocumentProcessingStatus | None, page_i
             if table_stats["sparse_rows"]:
                 issues.append(_issue("info", "sparse_table_rows", f"存在 {table_stats['sparse_rows']} 行字段过少。", "建议过滤说明行、合计行或空行。"))
 
-    if page_index:
-        if page_index.status == "failed":
-            issues.append(_issue("warning", "page_index_failed", f"高级索引构建失败：{page_index.error_message[:160]}", "可在后台重建高级索引。"))
-        elif page_index.status == "stale":
-            issues.append(_issue("info", "page_index_stale", "高级索引已过期。", "请重建高级索引以同步最新切片。"))
-    else:
-        issues.append(_issue("info", "page_index_missing", "尚未构建高级结构索引。", "如需章节级检索，可构建 PageIndex。"))
+    if PAGEINDEX_ENABLED:
+        if page_index:
+            if page_index.status == "failed":
+                issues.append(_issue("warning", "page_index_failed", f"高级索引构建失败：{page_index.error_message[:160]}", "可在后台重建高级索引。"))
+            elif page_index.status == "stale":
+                issues.append(_issue("info", "page_index_stale", "高级索引已过期。", "请重建高级索引以同步最新切片。"))
+        else:
+            issues.append(_issue("info", "page_index_missing", "尚未构建高级结构索引。", "如需章节级检索，可构建 PageIndex。"))
 
     return sorted(issues, key=lambda item: _severity_rank(item.get("severity", "")), reverse=True)
 
@@ -280,7 +282,7 @@ def build_document_quality_report(db: Session, document_id: str) -> dict[str, An
         raise ValueError("document_not_found")
 
     status = db.get(DocumentProcessingStatus, doc.id)
-    page_index = db.get(DocumentPageIndex, doc.id)
+    page_index = db.get(DocumentPageIndex, doc.id) if PAGEINDEX_ENABLED else None
     chunks = db.execute(select(DocumentChunk).where(DocumentChunk.document_id == doc.id).order_by(DocumentChunk.chunk_index.asc())).scalars().all()
     table_rows = db.execute(select(DocumentTableRow).where(DocumentTableRow.document_id == doc.id).order_by(DocumentTableRow.sheet_name.asc(), DocumentTableRow.row_number.asc())).scalars().all()
 

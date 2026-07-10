@@ -8,12 +8,12 @@ Optional fixture mode:
 
 Real knowledge-base mode:
     python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_real_cases.json
-    python tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_real_cases.json --explain
+    python tests/qa_retrieval_eval_runner.py --real-db --pipeline --cases tests/retrieval_eval_real_cases.json --explain
 
-The runner executes app.retrieval.adaptive_retrieve_contexts and validates expected /
-forbidden documents, backend, query_profile and evidence terms. In fixture mode
-it builds an isolated SQLite database from retrieval_eval_cases.json. In real-db
-mode it reads the current backend/data/app.db without modifying it.
+The runner uses app.retrieval.adaptive_retrieve_contexts by default. With
+--pipeline it exercises the production app.rag.pipeline.retrieve_contexts entry.
+Fixture mode builds an isolated SQLite database. Real mode respects an existing
+DATABASE_URL and otherwise falls back to backend/data/app.db.
 """
 from __future__ import annotations
 
@@ -42,11 +42,11 @@ REAL_DB_PATH = DATA_DIR / "app.db"
 DEFAULT_CASES_PATH = ROOT / "tests" / "retrieval_eval_cases.json"
 DEFAULT_REAL_CASES_PATH = ROOT / "tests" / "retrieval_eval_real_cases.json"
 
-# Must be set before importing app.* modules. The value is overridden in main()
-# for --real-db, before any app modules are imported by this script.
+# Must be set before importing app.* modules.
+DATABASE_URL_WAS_CONFIGURED = bool(os.environ.get("DATABASE_URL"))
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{DB_PATH.as_posix()}")
-os.environ["VECTOR_BACKEND"] = "local"
-os.environ["EMBEDDING_PROVIDER"] = "local"
+os.environ.setdefault("VECTOR_BACKEND", "local")
+os.environ.setdefault("EMBEDDING_PROVIDER", "local")
 os.environ.setdefault("DEFAULT_ADMIN_USERNAME", "eval_admin")
 os.environ.setdefault("DEFAULT_ADMIN_PASSWORD", "eval_admin_password")
 
@@ -293,7 +293,7 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
-def validate_case(case: dict[str, Any], contexts: list[dict], backend: str, meta: dict[str, Any]) -> list[str]:
+def validate_case(case: dict[str, Any], contexts: list[dict], backend: str, meta: dict[str, Any], *, pipeline: bool = False) -> list[str]:
     errors: list[str] = []
     expected = case.get("expected") or {}
     ranked_ids = doc_ids(contexts)
@@ -353,19 +353,20 @@ def validate_case(case: dict[str, Any], contexts: list[dict], backend: str, meta
         top_score = max(float(context.get("rerank_score") or context.get("score") or 0) for context in contexts[:1])
         require(top_score <= max_top_score, f"expected top score <= {max_top_score}, got {top_score}", errors)
 
-    profile_expected = expected.get("query_profile") or {}
-    profile = meta.get("query_profile") or {}
-    for key, value in profile_expected.items():
-        require(profile.get(key) == value, f"query_profile.{key} expected {value!r}, got {profile.get(key)!r}; profile={profile}", errors)
+    if not pipeline:
+        profile_expected = expected.get("query_profile") or {}
+        profile = meta.get("query_profile") or {}
+        for key, value in profile_expected.items():
+            require(profile.get(key) == value, f"query_profile.{key} expected {value!r}, got {profile.get(key)!r}; profile={profile}", errors)
 
-    positive_required = expected.get("must_have_positive_signals") or []
-    if positive_required:
-        signals: list[str] = []
-        for context in contexts:
-            ranking = context.get("intent_ranking") or {}
-            signals.extend(str(item) for item in ranking.get("positive_signals") or [])
-        for signal in positive_required:
-            require(str(signal) in signals, f"positive signal {signal!r} missing; got {signals}", errors)
+        positive_required = expected.get("must_have_positive_signals") or []
+        if positive_required:
+            signals: list[str] = []
+            for context in contexts:
+                ranking = context.get("intent_ranking") or {}
+                signals.extend(str(item) for item in ranking.get("positive_signals") or [])
+            for signal in positive_required:
+                require(str(signal) in signals, f"positive signal {signal!r} missing; got {signals}", errors)
 
     return errors
 
@@ -415,12 +416,13 @@ def explain_context(context: dict, index: int) -> dict[str, Any]:
     }
 
 
-def run_eval(payload: dict[str, Any], *, real_db: bool = False) -> tuple[int, list[dict[str, Any]]]:
+def run_eval(payload: dict[str, Any], *, real_db: bool = False, pipeline: bool = False) -> tuple[int, list[dict[str, Any]]]:
     if real_db:
         database, models = load_real_database()
     else:
         database, models = build_fixture(payload)
-    retrieval = importlib.import_module("app.retrieval")
+    retrieval = importlib.import_module("app.rag.pipeline" if pipeline else "app.retrieval")
+    retrieve_contexts = getattr(retrieval, "retrieve_contexts" if pipeline else "adaptive_retrieve_contexts")
     defaults = payload.get("defaults") or {}
     results: list[dict[str, Any]] = []
     failures = 0
@@ -430,8 +432,8 @@ def run_eval(payload: dict[str, Any], *, real_db: bool = False) -> tuple[int, li
         for case in payload.get("cases") or []:
             user = resolve_user(db, models, case, defaults, real_db=real_db)
             top_k = int(case.get("top_k") or defaults.get("top_k") or 8)
-            contexts, backend, note, candidate_count, meta = retrieval.adaptive_retrieve_contexts(db, str(case["question"]), user, top_k=top_k, knowledge_scope=str(case.get("knowledge_scope") or defaults.get("knowledge_scope") or "all"))
-            errors = validate_case(case, contexts, backend, meta)
+            contexts, backend, note, candidate_count, meta = retrieve_contexts(db, str(case["question"]), user, top_k=top_k, knowledge_scope=str(case.get("knowledge_scope") or defaults.get("knowledge_scope") or "all"))
+            errors = validate_case(case, contexts, backend, meta, pipeline=pipeline)
             failed = bool(errors)
             failures += 1 if failed else 0
             result = {
@@ -481,7 +483,8 @@ def print_summary(results: list[dict[str, Any]], failures: int, *, explain: bool
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run retrieval evaluation cases.")
     parser.add_argument("--cases", default=None, help="Path to retrieval eval JSON. Defaults to fixture or real template by mode.")
-    parser.add_argument("--real-db", action="store_true", help="Run against current backend/data/app.db instead of isolated fixture DB")
+    parser.add_argument("--real-db", action="store_true", help="Run against configured DATABASE_URL, falling back to backend/data/app.db")
+    parser.add_argument("--pipeline", action="store_true", help="Exercise the production RAG pipeline instead of legacy retrieval directly")
     parser.add_argument("--json", action="store_true", help="Print full JSON results")
     parser.add_argument("--explain", action="store_true", help="Print top-context explanation details")
     parser.add_argument("--keep-db", action="store_true", help="Keep isolated SQLite DB and uploaded fixture files for debugging")
@@ -489,13 +492,16 @@ def main() -> None:
 
     cases_path = Path(args.cases) if args.cases else (DEFAULT_REAL_CASES_PATH if args.real_db else DEFAULT_CASES_PATH)
     if args.real_db:
-        os.environ["DATABASE_URL"] = f"sqlite:///{REAL_DB_PATH.as_posix()}"
+        if not DATABASE_URL_WAS_CONFIGURED:
+            os.environ["DATABASE_URL"] = f"sqlite:///{REAL_DB_PATH.as_posix()}"
     else:
         os.environ["DATABASE_URL"] = f"sqlite:///{DB_PATH.as_posix()}"
+        os.environ["VECTOR_BACKEND"] = "local"
+        os.environ["EMBEDDING_PROVIDER"] = "local"
         reset_storage()
 
     payload = load_cases(cases_path)
-    failures, results = run_eval(payload, real_db=args.real_db)
+    failures, results = run_eval(payload, real_db=args.real_db, pipeline=args.pipeline)
 
     if args.json:
         print(json.dumps({"failures": failures, "results": results}, ensure_ascii=False, indent=2))

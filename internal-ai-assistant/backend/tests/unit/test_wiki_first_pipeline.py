@@ -4,9 +4,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app import retrieval as legacy_retrieval
 from app.database import Base
 from app.models import AuditLog, Document, DocumentChunk, DocumentProcessingStatus, User, WikiPage, WikiPageLink, WikiPageSource
+from app.rag import pipeline as rag_pipeline
+from app.rag.evidence_checker import check_wiki_evidence
 from app.rag.pipeline import retrieve_contexts
+from app.rag.schemas import QueryAnalysis, RetrievalResult, RetrievalRoute
 from app.routers.admin_wiki import wiki_lint, wiki_logs, wiki_search_test
 from app.wiki.compiler import compile_document_to_wiki
 from app.wiki.context_budget import apply_context_budget
@@ -55,11 +59,188 @@ def _seed_esign_document(db):
     return admin, doc, chunk
 
 
+def test_wiki_evidence_gate_accepts_high_score_cited_context() -> None:
+    gate = check_wiki_evidence(
+        [
+            {
+                "document_id": "doc-esign",
+                "content": "电子劳动合同需要实名认证后发起签署。",
+                "match_terms": ["电子劳动合同", "实名认证", "签署"],
+                "source_quotes": ["员工完成实名认证后发起电子劳动合同签署。"],
+                "wiki_source_count": 1,
+            }
+        ],
+        QueryAnalysis(
+            query="电子劳动合同如何签署？",
+            intent="text_qa",
+            confidence=0.9,
+            route_hint="wiki",
+        ),
+        {"best_score": 0.72},
+    )
+
+    assert gate.sufficient is True
+    assert gate.reason == "wiki_evidence_sufficient"
+    assert gate.best_score == 0.72
+    assert gate.matched_term_count == 3
+    assert gate.source_quote_count == 1
+
+
+def test_wiki_evidence_gate_rejects_score_below_direct_threshold() -> None:
+    gate = check_wiki_evidence(
+        [
+            {
+                "document_id": "doc-esign",
+                "content": "电子劳动合同需要实名认证后发起签署。",
+                "match_terms": ["电子劳动合同", "实名认证", "签署"],
+                "source_quotes": ["员工完成实名认证后发起电子劳动合同签署。"],
+                "wiki_source_count": 1,
+            }
+        ],
+        QueryAnalysis(
+            query="电子劳动合同如何签署？",
+            intent="text_qa",
+            confidence=0.9,
+            route_hint="wiki",
+        ),
+        {"best_score": 0.55},
+    )
+
+    assert gate.sufficient is False
+    assert gate.reason == "wiki_score_below_direct_threshold"
+    assert gate.best_score == 0.55
+    assert gate.required_evidence == ["Wiki 最佳分数至少 0.60"]
+
+
+def test_wiki_evidence_gate_rejects_weak_secondary_document() -> None:
+    gate = check_wiki_evidence(
+        [
+            {
+                "document_id": "doc-esign",
+                "content": "电子劳动合同需要实名认证后发起签署。",
+                "score": 0.80,
+                "match_terms": ["电子劳动合同", "签署"],
+                "source_quotes": ["实名认证后发起签署。"],
+                "wiki_source_count": 1,
+            },
+            {
+                "document_id": "doc-form",
+                "content": "员工入职信息表。",
+                "score": 0.38,
+                "match_terms": ["员工"],
+                "source_quotes": ["员工填写入职信息。"],
+                "wiki_source_count": 1,
+            },
+        ],
+        QueryAnalysis(
+            query="员工怎么签署电子劳动合同？",
+            intent="text_qa",
+            confidence=0.9,
+            route_hint="wiki",
+        ),
+        {"best_score": 0.80, "threshold": 0.42},
+    )
+
+    assert gate.sufficient is False
+    assert gate.reason == "wiki_mixed_document_confidence"
+    assert gate.required_evidence == ["每份 Wiki 文档的最佳分数至少 0.42"]
+
+
+def test_low_score_wiki_contexts_fall_back_to_legacy_and_rerank(monkeypatch) -> None:
+    analysis = QueryAnalysis(
+        query="电子劳动合同如何签署？",
+        intent="text_qa",
+        confidence=0.9,
+        route_hint="text",
+    )
+    route = RetrievalRoute(
+        name="text",
+        intent="text_qa",
+        confidence=0.9,
+        reason="test_route",
+    )
+    wiki_context = {
+        "document_id": "doc-wiki",
+        "chunk_id": "wiki-chunk",
+        "content": "Wiki 摘录：完成实名认证后签署。",
+        "match_terms": ["电子劳动合同", "实名认证", "签署"],
+        "source_quotes": ["完成实名认证后发起电子劳动合同签署。"],
+        "wiki_source_count": 1,
+        "retrieval_channel": "wiki",
+    }
+    legacy_context = {
+        "document_id": "doc-legacy",
+        "chunk_id": "legacy-chunk",
+        "content": "原始文档：员工确认后完成合同归档。",
+        "retrieval_channel": "semantic",
+    }
+    rerank_inputs: list[dict] = []
+
+    def fake_rerank(_question, contexts, limit, _query_profile=None):
+        rerank_inputs.extend(contexts)
+        return list(contexts[:limit]), False
+
+    monkeypatch.setattr(rag_pipeline, "analyze_query", lambda _question: analysis)
+    monkeypatch.setattr(rag_pipeline, "select_route", lambda _analysis: route)
+    monkeypatch.setattr(
+        rag_pipeline,
+        "retrieve_wiki_contexts",
+        lambda *_args, **_kwargs: ([wiki_context], {"used": True, "best_score": 0.55, "candidate_count": 1}),
+    )
+    monkeypatch.setattr(rag_pipeline, "enrich_context_metadata", lambda _db, contexts: contexts)
+    monkeypatch.setattr(
+        rag_pipeline,
+        "_retrieve_by_route",
+        lambda *_args, **_kwargs: RetrievalResult(
+            contexts=[legacy_context],
+            backend="local",
+            note="legacy_retrieval",
+            candidate_count=2,
+            meta={"query_profile": {}},
+        ),
+    )
+    monkeypatch.setattr(rag_pipeline, "_should_check_graph", lambda *_args: False)
+    monkeypatch.setattr(rag_pipeline, "_explicit_title_match_document_ids", lambda *_args: set())
+    monkeypatch.setattr(rag_pipeline, "allowed_kinds_for_query_topic_config", lambda *_args: set())
+    monkeypatch.setattr(rag_pipeline, "filter_contexts_by_allowed_kinds", lambda contexts, _allowed: (contexts, 0))
+    monkeypatch.setattr(rag_pipeline, "_embedding_quality_meta", lambda _db: {})
+    monkeypatch.setattr(legacy_retrieval, "rerank_contexts", fake_rerank)
+
+    contexts, backend, note, candidate_count, meta = rag_pipeline.retrieve_contexts(
+        object(),
+        analysis.query,
+        object(),
+        top_k=5,
+        knowledge_scope="test",
+    )
+
+    assert {context["document_id"] for context in rerank_inputs} == {"doc-wiki", "doc-legacy"}
+    assert {context["document_id"] for context in contexts} == {"doc-wiki", "doc-legacy"}
+    assert backend == "local+wiki"
+    assert "wiki_fallback=wiki_score_below_direct_threshold" in note
+    assert candidate_count == 3
+    assert meta["rag_router_version"] == "wiki_first_v2_hybrid_fallback"
+    assert meta["wiki_first"]["direct_return"] is False
+    assert meta["wiki_first"]["fallback_merged"] is True
+    assert meta["wiki_first"]["evidence_gate"]["best_score"] == 0.55
+
+
 def test_compiled_wiki_page_becomes_primary_answer_context() -> None:
     Session = make_session()
     db = Session()
     try:
         admin, doc, _chunk = _seed_esign_document(db)
+        db.add(
+            DocumentChunk(
+                id="chunk-esign-rule",
+                document_id=doc.id,
+                chunk_index=1,
+                page_number=2,
+                content="规则要求必须在截止日前完成。",
+                embedding_json="[]",
+            )
+        )
+        db.commit()
 
         result = compile_document_to_wiki(db, doc.id, publish=True)
         db.commit()
@@ -81,20 +262,27 @@ def test_compiled_wiki_page_becomes_primary_answer_context() -> None:
         assert "相关 Wiki 页面" in derived_page.content_md
         assert f"[[{source_page.title}|{source_page.slug}]]" in derived_page.content_md
         assert db.query(WikiPageLink).count() >= result["derived_page_count"]
+        health = evaluate_wiki_health(db, knowledge_scope="test")
+        health_rules = {finding["rule"] for finding in health["findings"]}
+        assert "stale-page" not in health_rules
+        assert "source-marker-out-of-range" not in health_rules
 
         contexts, backend, note, candidate_count, meta = retrieve_contexts(
             db,
             "电子劳动合同流程是什么？",
             admin,
             top_k=5,
-            knowledge_scope="test",
+            knowledge_scope="all",
         )
 
         assert backend == "wiki"
         assert candidate_count >= 1
-        assert "wiki_first=used" in note
+        assert "wiki_first=direct" in note
+        assert meta["rag_router_version"] == "wiki_first_v2_evidence_gated"
         assert meta["retrieval_route"]["name"] == "wiki"
         assert meta["wiki_first"]["used"] is True
+        assert meta["wiki_first"]["direct_return"] is True
+        assert meta["wiki_first"]["evidence_gate"]["reason"] == "wiki_evidence_sufficient"
         assert meta["wiki_first"]["context_pack"] == "matched_snippets_v3_budgeted"
         assert meta["wiki_first"]["budget"]["requested_tokens"] > 0
         assert contexts[0]["retrieval_channel"] == "wiki"
@@ -378,6 +566,8 @@ def test_wiki_context_budget_trims_context_pack_without_mutating_input() -> None
     assert "source_quotes" in meta["trimmed_sections"]
     assert "content" in meta["trimmed_sections"]
     assert packed[0]["content"].endswith("...")
+    assert len(packed[0]["source_quotes"]) == 1
+    assert packed[0]["source_quotes"][0].endswith("...")
     assert len(contexts[0]["source_quotes"]) == 2
     assert contexts[0]["content"] == "A" * 2600
 

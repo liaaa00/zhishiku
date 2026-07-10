@@ -224,7 +224,6 @@ def _link_line(title: str, slug: str) -> str:
 
 def build_derived_wiki_markdown(
     doc: Document,
-    all_chunks: list[DocumentChunk],
     spec: dict[str, Any],
     *,
     source_title: str,
@@ -238,7 +237,7 @@ def build_derived_wiki_markdown(
     facts: list[str] = []
     summary_sentences: list[str] = []
     for chunk in selected:
-        source_no = _source_marker_for_chunk(all_chunks, chunk)
+        source_no = _source_marker_for_chunk(selected, chunk)
         for sentence in _sentence_candidates(chunk.content or "", limit=2):
             if sentence not in summary_sentences:
                 summary_sentences.append(sentence)
@@ -284,7 +283,7 @@ def build_derived_wiki_markdown(
         ]
     )
     for chunk in selected:
-        source_no = _source_marker_for_chunk(all_chunks, chunk)
+        source_no = _source_marker_for_chunk(selected, chunk)
         body_parts.append(
             f"- [S{source_no}] 原始文档：{source_title}；文档 ID：`{doc.id}`；chunk：`{chunk.id}`；页码：{_page_label(chunk)}。"
         )
@@ -498,7 +497,6 @@ def compile_document_to_wiki(db: Session, document_id: str, *, publish: bool = T
         page = _upsert_wiki_page(db, slug=str(spec["slug"]), scope=scope)
         derived_md, derived_summary = build_derived_wiki_markdown(
             doc,
-            chunks,
             spec,
             source_title=source_page.title,
             source_slug=source_page.slug,

@@ -51,7 +51,6 @@ def list_documents(
     result = []
     for d in docs:
         st = db.get(DocumentProcessingStatus, d.id)
-        pi = db.get(DocumentPageIndex, d.id)
         result.append(
             {
                 "id": d.id,
@@ -70,7 +69,6 @@ def list_documents(
                 "message": st.message if st else "文档已上传，等待后台解析。",
                 "chunks": st.chunks if st else 0,
                 "searchable": st.searchable if st else False,
-                "page_index": pageindex_admin_summary(pi),
                 "created_at": d.created_at.isoformat(),
             }
         )
@@ -139,7 +137,6 @@ def upload_document(
 def get_document_diagnostics(document_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     doc = ensure_admin_document(db, document_id)
     st = db.get(DocumentProcessingStatus, doc.id)
-    pi = db.get(DocumentPageIndex, doc.id)
     chunks = db.execute(
         select(DocumentChunk).where(DocumentChunk.document_id == doc.id).order_by(DocumentChunk.chunk_index.asc()).limit(5)
     ).scalars().all()
@@ -179,7 +176,6 @@ def get_document_diagnostics(document_id: str, db: Session = Depends(get_db), _:
             "searchable": st.searchable if st else False,
         },
         "quality": quality_report,
-        "page_index": pageindex_admin_summary(pi),
         "chunk_preview": [
             {"id": c.id, "page_number": c.page_number, "chunk_index": c.chunk_index, "content": (c.content or "")[:700]}
             for c in chunks
@@ -188,7 +184,6 @@ def get_document_diagnostics(document_id: str, db: Session = Depends(get_db), _:
             item for item in [
                 "分类置信度较低，建议管理员确认文档类型。" if float(getattr(doc, "document_kind_confidence", 1.0) or 0.0) < 0.55 else "",
                 "文档尚不可检索，请检查解析任务或重新解析。" if not (st and st.searchable) else "",
-                "高级索引未就绪，可在需要结构化阅读时重建 PageIndex。" if pageindex_admin_summary(pi).get("status") not in {"ready", "stale"} else "",
             ]
             if item
         ],

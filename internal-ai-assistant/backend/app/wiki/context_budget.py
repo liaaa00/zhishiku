@@ -70,9 +70,15 @@ def _trim_source_quotes(contexts: list[dict[str, Any]], budget: int, trimmed: se
         quotes = contexts[index].get("source_quotes")
         if not isinstance(quotes, list):
             continue
-        while quotes and not _fits(contexts, budget):
+        minimum_quotes = 1 if index == 0 else 0
+        while len(quotes) > minimum_quotes and not _fits(contexts, budget):
             quotes.pop()
             trimmed.add("source_quotes")
+        if index == 0 and quotes and not _fits(contexts, budget):
+            quote = str(quotes[0])
+            if len(quote) > 360:
+                quotes[0] = quote[:357].rstrip() + TRUNCATION_SUFFIX
+                trimmed.add("source_quotes")
         if _fits(contexts, budget):
             return
 
