@@ -1467,6 +1467,7 @@
               <el-button :disabled="loadingWikiAdmin" @click="loadWikiAdminData(true)">
                 {{ loadingWikiAdmin ? '刷新中...' : '刷新Wiki' }}
               </el-button>
+              <el-button :loading="wikiLintLoading" @click="runWikiLint">运行Lint并记录</el-button>
               <el-button type="primary" :loading="compilingWiki" @click="compileAllWiki">编译生产Wiki</el-button>
             </div>
           </header>
@@ -1491,6 +1492,16 @@
               <span>健康评分</span>
               <strong>{{ wikiStatus?.health_score ?? '-' }}</strong>
               <small>发现 {{ wikiStatus?.health_finding_count || 0 }} 个问题</small>
+            </article>
+            <article class="admin-stat-card">
+              <span>Index页面</span>
+              <strong>{{ wikiIndex?.count || 0 }}</strong>
+              <small>社区 {{ wikiIndexSummary.community_count || 0 }} · 关系 {{ wikiIndexSummary.edge_count || 0 }}</small>
+            </article>
+            <article class="admin-stat-card" :class="{ 'admin-stat-card-warning': (wikiIndexSummary.orphan_page_count || 0) > 0 }">
+              <span>孤页</span>
+              <strong>{{ wikiIndexSummary.orphan_page_count || 0 }}</strong>
+              <small>无反链 {{ wikiIndexSummary.no_backlink_page_count || 0 }} · 断链 {{ wikiIndexSummary.broken_link_count || 0 }}</small>
             </article>
           </div>
 
@@ -1523,10 +1534,12 @@
                       <div class="admin-feedback-head-tags">
                         <span :class="['admin-feedback-status', wikiPageStatusClass(page.status)]">{{ wikiPageStatusLabel(page.status) }}</span>
                         <span class="admin-feedback-cause has-cause">{{ wikiPageTypeLabel(page.page_type) }}</span>
+                        <span v-if="wikiIndexForPage(page)?.health?.finding_count" class="admin-feedback-status reviewed">体检 {{ wikiIndexForPage(page)?.health?.finding_count }}</span>
                       </div>
                     </div>
                     <p class="admin-feedback-content">{{ page.summary || '暂无摘要' }}</p>
-                    <p class="admin-model-helper">{{ page.slug }} · 来源 {{ page.source_count || 0 }} · 置信度 {{ formatRetrievalScore(page.confidence) }} · 更新 {{ formatDateTime(page.updated_at) }}</p>
+                    <p class="admin-model-helper">{{ page.slug }} · 来源 {{ page.source_count || 0 }} · 连接 {{ wikiIndexForPage(page)?.graph?.link_count ?? 0 }} · 入链 {{ wikiIndexForPage(page)?.graph?.incoming_link_count ?? 0 }} · 出链 {{ wikiIndexForPage(page)?.graph?.outgoing_link_count ?? 0 }} · 置信度 {{ formatRetrievalScore(page.confidence) }} · 更新 {{ formatDateTime(page.updated_at) }}</p>
+                    <p v-if="wikiIndexForPage(page)?.recommendations?.length" class="admin-model-helper">建议：{{ wikiIndexForPage(page)?.recommendations?.join('；') }}</p>
                   </div>
                   <aside class="admin-feedback-card-side">
                     <button type="button" @click="loadWikiPageDetail(page, true)">查看详情</button>
@@ -1572,13 +1585,21 @@
 
           <div class="admin-graph-columns">
             <section class="admin-quality-section">
-              <h4>Wiki健康检查</h4>
+              <header class="admin-routing-editor-head compact">
+                <div>
+                  <h4>Wiki健康检查</h4>
+                  <p>Lint 会记录到 Wiki 操作日志，用于观察知识库健康趋势。</p>
+                </div>
+                <el-button size="small" :loading="wikiLintLoading" @click="runWikiLint">运行Lint</el-button>
+              </header>
               <div v-if="wikiHealth" class="admin-search-test-result">
                 <div class="admin-search-test-meta-grid">
                   <div><span>来源覆盖</span><strong>{{ formatPercent(wikiHealth.source_coverage) }}</strong></div>
                   <div><span>引用覆盖</span><strong>{{ formatPercent(wikiHealth.citation_coverage) }}</strong></div>
                   <div><span>WikiLink</span><strong>{{ wikiHealth.wikilink_count || 0 }}</strong></div>
-                  <div><span>断链</span><strong>{{ wikiHealth.broken_wikilink_count || 0 }}</strong></div>
+                  <div><span>断链</span><strong>{{ wikiHealth.broken_link_count ?? wikiHealth.broken_wikilink_count ?? 0 }}</strong></div>
+                  <div><span>孤页</span><strong>{{ wikiHealth.orphan_page_count || 0 }}</strong></div>
+                  <div><span>无反链</span><strong>{{ wikiHealth.no_backlink_page_count || 0 }}</strong></div>
                 </div>
                 <div v-if="wikiHealthFindings.length" class="admin-feedback-list">
                   <article v-for="item in wikiHealthFindings.slice(0, 10)" :key="`${item.rule}-${item.page_id || item.document_id || item.message}`" :class="['admin-feedback-card', wikiHealthSeverityClass(item.severity)]">
@@ -1633,6 +1654,29 @@
               </div>
             </section>
           </div>
+
+          <section class="admin-quality-section">
+            <header class="admin-routing-editor-head compact">
+              <div>
+                <h4>Wiki操作日志</h4>
+                <p>记录编译、Lint 和检索测试操作，便于追踪 Wiki 自生长闭环。</p>
+              </div>
+              <el-button size="small" :disabled="loadingWikiAdmin" @click="loadWikiAdminData(false)">刷新日志</el-button>
+            </header>
+            <div v-if="wikiLogItems.length" class="admin-feedback-list">
+              <article v-for="item in wikiLogItems.slice(0, 8)" :key="item.id" class="admin-feedback-card reviewed">
+                <div class="admin-feedback-card-main">
+                  <div class="admin-feedback-head">
+                    <strong>{{ wikiLogActionLabel(item.action) }}</strong>
+                    <span class="admin-feedback-status reviewed">{{ item.actor_username || 'system' }}</span>
+                  </div>
+                  <p class="admin-feedback-content">{{ wikiLogDetailSummary(item) }}</p>
+                  <p class="admin-model-helper">{{ item.knowledge_scope || 'production' }} · {{ formatDateTime(item.created_at) }}</p>
+                </div>
+              </article>
+            </div>
+            <div v-else class="admin-dialog-empty">暂无 Wiki 操作日志。运行 Lint、编译或检索测试后会出现在这里。</div>
+          </section>
         </section>
       </el-tab-pane>
 
@@ -2314,6 +2358,8 @@ const wikiStatus = ref<any | null>(null)
 const wikiPages = ref<any[]>([])
 const wikiSelectedPage = ref<any | null>(null)
 const wikiHealth = ref<any | null>(null)
+const wikiIndex = ref<any | null>(null)
+const wikiLogsPayload = ref<any | null>(null)
 const wikiSearchResult = ref<any | null>(null)
 const documentQualityMap = ref<Record<string, any>>({})
 const docGroupMap = reactive<Record<string, string[]>>({})
@@ -2399,6 +2445,7 @@ const loadingWikiGraph = ref(false)
 const loadingWikiAdmin = ref(false)
 const wikiPageDetailLoading = ref(false)
 const wikiSearchLoading = ref(false)
+const wikiLintLoading = ref(false)
 const compilingWiki = ref(false)
 const graphSearchLoading = ref(false)
 const evaluationSuiteRunning = ref(false)
@@ -2507,6 +2554,17 @@ const evaluationCases = computed(() => Array.isArray(evaluationOverview.value?.c
 const evaluationCaseSources = computed(() => Array.isArray(evaluationCaseResult.value?.source_diagnostics) ? evaluationCaseResult.value.source_diagnostics : [])
 const evaluationCasePromptTemplate = computed(() => evaluationCaseResult.value?.prompt_template || evaluationCaseResult.value?.retrieval_meta?.prompt_template || {})
 const wikiHealthFindings = computed(() => Array.isArray(wikiHealth.value?.findings) ? wikiHealth.value.findings : [])
+const wikiIndexItems = computed(() => Array.isArray(wikiIndex.value?.items) ? wikiIndex.value.items : [])
+const wikiIndexSummary = computed(() => wikiIndex.value?.summary || {})
+const wikiLogItems = computed(() => Array.isArray(wikiLogsPayload.value?.items) ? wikiLogsPayload.value.items : [])
+const wikiIndexBySlug = computed(() => {
+  const result: Record<string, any> = {}
+  wikiIndexItems.value.forEach((item: any) => {
+    const slug = String(item?.slug || '')
+    if (slug) result[slug] = item
+  })
+  return result
+})
 const wikiSearchContexts = computed(() => Array.isArray(wikiSearchResult.value?.contexts) ? wikiSearchResult.value.contexts : [])
 const filteredWikiPages = computed(() => {
   const query = normalizeText(wikiPageSearch.value)
@@ -3367,9 +3425,34 @@ function wikiHealthRuleLabel(rule?: string) {
     'source-marker-out-of-range': '来源编号越界',
     'low-citation-coverage': '引用覆盖不足',
     'broken-wikilink': 'WikiLink断链',
+    'broken-page-link': '持久化链接断链',
+    'orphan-page': '孤页',
+    'no-backlink': '无反链',
     'duplicate-title': '标题重复',
     'compile-failed': '编译失败',
   } as Record<string, string>)[String(rule || '')] || rule || '健康检查'
+}
+
+function wikiIndexForPage(page: any) {
+  return wikiIndexBySlug.value[String(page?.slug || '')] || null
+}
+
+function wikiLogActionLabel(action?: string) {
+  return ({
+    'wiki.compile.document': '编译单文档',
+    'wiki.compile.all': '批量编译',
+    'wiki.lint': '运行 Lint',
+    'wiki.search_test': '检索测试',
+  } as Record<string, string>)[String(action || '')] || action || 'Wiki操作'
+}
+
+function wikiLogDetailSummary(item: any) {
+  const detail = item?.detail || {}
+  if (item?.action === 'wiki.lint') return `评分 ${detail.score ?? '-'} · 问题 ${detail.finding_count ?? 0} · 孤页 ${detail.orphan_page_count ?? 0}`
+  if (item?.action === 'wiki.search_test') return `问题：${detail.query || '-'} · 命中 ${detail.context_count ?? 0}/${detail.candidate_count ?? 0} · ${detail.reason || '-'}`
+  if (item?.action === 'wiki.compile.all') return `文档 ${detail.document_count ?? detail.compiled_count ?? '-'} · 编译 ${detail.compiled_count ?? '-'} 页/批次`
+  if (item?.action === 'wiki.compile.document') return `文档 ${item?.resource_id || '-'} · 页面 ${detail.page_count ?? '-'} · derived ${detail.derived_page_count ?? '-'}`
+  return item?.resource_id || '-'
 }
 
 function wikiCompileMessage(result: any) {
@@ -4475,14 +4558,18 @@ async function loadWikiPageDetail(page: any, showMessage = false) {
 async function loadWikiAdminData(showMessage = true) {
   loadingWikiAdmin.value = true
   try {
-    const [statusResp, pagesResp, healthResp] = await Promise.all([
+    const [statusResp, pagesResp, healthResp, indexResp, logsResp] = await Promise.all([
       http.get('/admin/wiki/status', { params: { knowledge_scope: 'production' } }),
       http.get('/admin/wiki/pages', { params: { knowledge_scope: 'production', limit: 300 } }),
       http.get('/admin/wiki/health', { params: { knowledge_scope: 'production' } }),
+      http.get('/admin/wiki/index', { params: { knowledge_scope: 'production', status: 'published', limit: 500 } }),
+      http.get('/admin/wiki/logs', { params: { knowledge_scope: 'production', limit: 50 } }),
     ])
     wikiStatus.value = statusResp.data || null
     wikiPages.value = Array.isArray(pagesResp.data?.items) ? pagesResp.data.items : []
     wikiHealth.value = healthResp.data || null
+    wikiIndex.value = indexResp.data || null
+    wikiLogsPayload.value = logsResp.data || null
     const currentId = String(wikiSelectedPage.value?.id || '')
     const nextPage = (currentId && wikiPages.value.find((item: any) => String(item?.id) === currentId)) || wikiPages.value[0]
     if (nextPage) await loadWikiPageDetail(nextPage, false)
@@ -4492,6 +4579,24 @@ async function loadWikiAdminData(showMessage = true) {
     ElMessage.error(err?.response?.data?.detail || '加载Wiki管理数据失败')
   } finally {
     loadingWikiAdmin.value = false
+  }
+}
+
+async function runWikiLint() {
+  wikiLintLoading.value = true
+  try {
+    wikiHealth.value = (await http.get('/admin/wiki/lint', { params: { knowledge_scope: 'production' } })).data || null
+    const [indexResp, logsResp] = await Promise.all([
+      http.get('/admin/wiki/index', { params: { knowledge_scope: 'production', status: 'published', limit: 500 } }),
+      http.get('/admin/wiki/logs', { params: { knowledge_scope: 'production', limit: 50 } }),
+    ])
+    wikiIndex.value = indexResp.data || null
+    wikiLogsPayload.value = logsResp.data || null
+    ElMessage.success('Wiki Lint 已完成并记录到操作日志')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '运行 Wiki Lint 失败')
+  } finally {
+    wikiLintLoading.value = false
   }
 }
 
@@ -4534,6 +4639,7 @@ async function runWikiSearchTest() {
         knowledge_scope: wikiSearchForm.knowledge_scope || 'production',
       },
     })).data || null
+    wikiLogsPayload.value = (await http.get('/admin/wiki/logs', { params: { knowledge_scope: wikiSearchForm.knowledge_scope || 'production', limit: 50 } })).data || null
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || 'Wiki检索测试失败')
   } finally {
