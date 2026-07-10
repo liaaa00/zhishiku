@@ -11,6 +11,7 @@ from ..models import AuditLog, Document, User, WikiCompileStatus, WikiPage
 from ..wiki.compiler import compile_document_to_wiki, compile_ready_documents
 from ..wiki.graph import build_wiki_graph
 from ..wiki.health import evaluate_wiki_health
+from ..wiki.index import build_wiki_index
 from ..wiki.search import retrieve_wiki_contexts
 from .deps import audit, require_admin
 
@@ -183,6 +184,17 @@ def wiki_logs(
         "items": items,
         "actions": list(WIKI_AUDIT_ACTIONS),
     }
+
+
+@router.get("/api/admin/wiki/index")
+def wiki_index(
+    knowledge_scope: str = Query("production"),
+    status: str = Query("published", pattern="^(published|draft|archived|all)$"),
+    limit: int = Query(500, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    return build_wiki_index(db, knowledge_scope=knowledge_scope, status=status, limit=limit)
 
 
 @router.get("/api/admin/wiki/status")

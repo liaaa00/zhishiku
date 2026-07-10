@@ -12,6 +12,7 @@ from app.wiki.compiler import compile_document_to_wiki
 from app.wiki.context_budget import apply_context_budget
 from app.wiki.graph import build_wiki_graph
 from app.wiki.health import evaluate_wiki_health
+from app.wiki.index import build_wiki_index
 from app.wiki.search import retrieve_wiki_contexts
 
 
@@ -315,6 +316,15 @@ def test_wiki_health_reports_orphan_and_no_backlink_pages() -> None:
         assert orphan_finding["slug"] == "orphan-page"
         assert no_backlink_finding["slug"] == "hub-page"
         assert no_backlink_finding["outgoing_link_count"] == 1
+
+        index = build_wiki_index(db, knowledge_scope="test", status="published")
+        items = {item["slug"]: item for item in index["items"]}
+        assert index["summary"]["orphan_page_count"] == 1
+        assert index["summary"]["no_backlink_page_count"] == 1
+        assert items["hub-page"]["graph"]["outgoing_link_count"] == 1
+        assert items["linked-page"]["graph"]["incoming_link_count"] == 1
+        assert items["orphan-page"]["health"]["rule_counts"]["orphan-page"] == 1
+        assert any("孤页" in item for item in items["orphan-page"]["recommendations"])
     finally:
         db.close()
 
