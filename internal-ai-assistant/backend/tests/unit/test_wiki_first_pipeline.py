@@ -252,6 +252,72 @@ def test_wiki_health_reports_invalid_citations_and_broken_wikilinks() -> None:
         db.close()
 
 
+def test_wiki_health_reports_orphan_and_no_backlink_pages() -> None:
+    Session = make_session()
+    db = Session()
+    try:
+        hub = WikiPage(
+            id="wiki-hub",
+            slug="hub-page",
+            title="Hub Page",
+            page_type="concept",
+            status="published",
+            knowledge_scope="test",
+            summary="Hub summary",
+            content_md="# Hub Page\n\nThis page intentionally points to one related page and has enough prose for linting.",
+            confidence=0.8,
+        )
+        linked = WikiPage(
+            id="wiki-linked",
+            slug="linked-page",
+            title="Linked Page",
+            page_type="concept",
+            status="published",
+            knowledge_scope="test",
+            summary="Linked summary",
+            content_md="# Linked Page\n\nThis page receives an incoming link from the hub page but does not link back.",
+            confidence=0.8,
+        )
+        orphan = WikiPage(
+            id="wiki-orphan",
+            slug="orphan-page",
+            title="Orphan Page",
+            page_type="concept",
+            status="published",
+            knowledge_scope="test",
+            summary="Orphan summary",
+            content_md="# Orphan Page\n\nThis standalone page has neither incoming nor outgoing wiki links in the graph.",
+            confidence=0.8,
+        )
+        persisted_link = WikiPageLink(
+            id="wpl-hub-linked",
+            source_page_id=hub.id,
+            target_page_id=linked.id,
+            link_type="manual",
+            anchor_text="Linked Page",
+        )
+        db.add_all([hub, linked, orphan, persisted_link])
+        db.commit()
+
+        health = evaluate_wiki_health(db, knowledge_scope="test")
+        rules = {finding["rule"] for finding in health["findings"]}
+
+        assert health["report_type"] == "wiki_lint_v1"
+        assert health["link_count"] == 1
+        assert health["linked_page_count"] == 2
+        assert health["orphan_page_count"] == 1
+        assert health["no_backlink_page_count"] == 1
+        assert "orphan-page" in rules
+        assert "no-backlink" in rules
+        orphan_finding = next(finding for finding in health["findings"] if finding["rule"] == "orphan-page")
+        no_backlink_finding = next(finding for finding in health["findings"] if finding["rule"] == "no-backlink")
+        assert orphan_finding["slug"] == "orphan-page"
+        assert no_backlink_finding["slug"] == "hub-page"
+        assert no_backlink_finding["outgoing_link_count"] == 1
+    finally:
+        db.close()
+
+
 def test_wiki_context_budget_trims_context_pack_without_mutating_input() -> None:
     contexts = [
         {

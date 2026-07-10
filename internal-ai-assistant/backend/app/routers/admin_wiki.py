@@ -123,6 +123,15 @@ def wiki_health(
     return evaluate_wiki_health(db, knowledge_scope=knowledge_scope, include_findings=True)
 
 
+@router.get("/api/admin/wiki/lint")
+def wiki_lint(
+    knowledge_scope: str = Query("production"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    return evaluate_wiki_health(db, knowledge_scope=knowledge_scope, include_findings=True)
+
+
 @router.get("/api/admin/wiki/graph")
 def wiki_graph(
     knowledge_scope: str = Query("production"),

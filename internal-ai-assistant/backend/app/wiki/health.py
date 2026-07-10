@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Document, DocumentChunk, WikiCompileStatus, WikiPage
+from ..models import Document, DocumentChunk, WikiCompileStatus, WikiPage, WikiPageLink
 from .citations import citation_coverage, extract_wikilinks, invalid_source_markers
 from .compiler import _slugify_title, document_wiki_checksum
 
@@ -105,14 +105,38 @@ def evaluate_wiki_health(db: Session, *, knowledge_scope: str = "production", in
 
     findings: list[dict[str, Any]] = []
     title_to_pages: dict[str, list[WikiPage]] = defaultdict(list)
-    known_wikilink_targets: set[str] = set()
+    page_by_key: dict[str, WikiPage] = {}
+    page_by_id: dict[str, WikiPage] = {}
     for page in pages:
-        known_wikilink_targets.update(_page_target_keys(page))
+        page_by_id[str(page.id)] = page
+        for key in _page_target_keys(page):
+            page_by_key.setdefault(key, page)
+
+    incoming_link_counts: Counter[str] = Counter({str(page.id): 0 for page in pages})
+    outgoing_link_counts: Counter[str] = Counter({str(page.id): 0 for page in pages})
+    recorded_link_pairs: set[tuple[str, str]] = set()
+
+    def _record_live_link(source_page: WikiPage, target_page: WikiPage) -> None:
+        source_id = str(source_page.id or "")
+        target_id = str(target_page.id or "")
+        if not source_id or not target_id or source_id == target_id:
+            return
+        if source_id not in page_by_id or target_id not in page_by_id:
+            return
+        pair = (source_id, target_id)
+        if pair in recorded_link_pairs:
+            return
+        recorded_link_pairs.add(pair)
+        outgoing_link_counts[source_id] += 1
+        incoming_link_counts[target_id] += 1
 
     total_claim_blocks = 0
     total_cited_blocks = 0
     wikilink_count = 0
     broken_wikilink_count = 0
+    broken_page_link_count = 0
+    orphan_page_count = 0
+    no_backlink_page_count = 0
 
     for page in pages:
         content_md = page.content_md or ""
@@ -175,7 +199,8 @@ def evaluate_wiki_health(db: Session, *, knowledge_scope: str = "production", in
             if not target_keys:
                 continue
             wikilink_count += 1
-            if target_keys.isdisjoint(known_wikilink_targets):
+            target_page = next((page_by_key[key] for key in target_keys if key in page_by_key), None)
+            if target_page is None:
                 broken_wikilink_count += 1
                 findings.append(
                     _finding(
@@ -186,6 +211,60 @@ def evaluate_wiki_health(db: Session, *, knowledge_scope: str = "production", in
                         target=wikilink,
                     )
                 )
+            else:
+                _record_live_link(page, target_page)
+
+    if page_by_id:
+        persisted_links = db.execute(
+            select(WikiPageLink).where(WikiPageLink.source_page_id.in_(list(page_by_id.keys())))
+        ).scalars().all()
+        for link in persisted_links:
+            source_page = page_by_id.get(str(link.source_page_id))
+            target_page = page_by_id.get(str(link.target_page_id))
+            if source_page and target_page:
+                _record_live_link(source_page, target_page)
+            elif source_page:
+                broken_page_link_count += 1
+                findings.append(
+                    _finding(
+                        "broken-page-link",
+                        "warning",
+                        "Persisted wiki link points to a missing wiki page",
+                        source_page,
+                        target_page_id=link.target_page_id,
+                        link_type=link.link_type,
+                    )
+                )
+
+    for page in pages:
+        if page.status != "published":
+            continue
+        incoming_count = int(incoming_link_counts.get(str(page.id), 0))
+        outgoing_count = int(outgoing_link_counts.get(str(page.id), 0))
+        if incoming_count == 0 and outgoing_count == 0:
+            orphan_page_count += 1
+            findings.append(
+                _finding(
+                    "orphan-page",
+                    "warning",
+                    "Published wiki page has no incoming or outgoing wiki links",
+                    page,
+                    incoming_link_count=incoming_count,
+                    outgoing_link_count=outgoing_count,
+                )
+            )
+        elif incoming_count == 0:
+            no_backlink_page_count += 1
+            findings.append(
+                _finding(
+                    "no-backlink",
+                    "info",
+                    "Published wiki page has no incoming wiki links",
+                    page,
+                    incoming_link_count=incoming_count,
+                    outgoing_link_count=outgoing_count,
+                )
+            )
 
     for title_key, duplicate_pages in title_to_pages.items():
         if title_key and len(duplicate_pages) > 1:
@@ -222,6 +301,7 @@ def evaluate_wiki_health(db: Session, *, knowledge_scope: str = "production", in
     overall_citation_coverage = 1.0 if total_claim_blocks == 0 else round(total_cited_blocks / total_claim_blocks, 4)
     payload: dict[str, Any] = {
         "knowledge_scope": knowledge_scope,
+        "report_type": "wiki_lint_v1",
         "score": round(score, 1),
         "max_score": 100,
         "page_count": len(pages),
@@ -233,7 +313,17 @@ def evaluate_wiki_health(db: Session, *, knowledge_scope: str = "production", in
         "cited_block_count": total_cited_blocks,
         "citation_coverage": overall_citation_coverage,
         "wikilink_count": wikilink_count,
+        "link_count": len(recorded_link_pairs),
+        "linked_page_count": sum(
+            1
+            for page in pages
+            if incoming_link_counts.get(str(page.id), 0) > 0 or outgoing_link_counts.get(str(page.id), 0) > 0
+        ),
+        "orphan_page_count": orphan_page_count,
+        "no_backlink_page_count": no_backlink_page_count,
         "broken_wikilink_count": broken_wikilink_count,
+        "broken_page_link_count": broken_page_link_count,
+        "broken_link_count": broken_wikilink_count + broken_page_link_count,
         "failed_document_count": len(failed_statuses),
         "finding_count": len(findings),
         "rule_counts": dict(sorted(rule_counts.items())),
