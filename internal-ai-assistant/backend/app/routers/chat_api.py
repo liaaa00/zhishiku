@@ -618,6 +618,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
     session_id = req.session_id or new_id()
     if not req.session_id:
         db.add(ChatSession(id=session_id, user_id=user.id))
+        db.flush()
     user_message_id = new_id()
     assistant_message_id = new_id()
     message_created_at = datetime.utcnow()
