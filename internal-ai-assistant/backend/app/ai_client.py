@@ -66,7 +66,7 @@ def _openai_client(api_key: Optional[str] = None, base_url: Optional[str] = None
     return OpenAI(api_key=real_key, base_url=real_base_url, timeout=45.0, max_retries=0)
 
 
-def embed_texts(texts: List[str]) -> List[List[float]]:
+def embed_texts(texts: List[str], *, strict: bool = False) -> List[List[float]]:
     """生成文本向量。
 
     默认使用 local-hash，方便本地试用；当 EMBEDDING_PROVIDER=openai 且配置了
@@ -87,7 +87,7 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
             return [list(item.embedding) for item in resp.data]
         except Exception as exc:
             from .config import IS_PRODUCTION
-            if IS_PRODUCTION:
+            if strict or IS_PRODUCTION:
                 raise RuntimeError(f"Embedding service unavailable: {str(exc)[:200]}") from exc
             # 不能因为向量服务临时不可用阻断系统使用；生产环境建议接监控告警。
             pass

@@ -1,0 +1,164 @@
+{
+  "description": "PostgreSQL + Qdrant production answer and citation evaluation cases.",
+  "defaults": {
+    "username": "admin",
+    "top_k": 8,
+    "knowledge_scope": "all"
+  },
+  "cases": [
+    {
+      "id": "answer_real_employee_esign",
+      "category": "流程回答与跨文档引用",
+      "question": "员工怎么签署电子劳动合同？",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "电子劳动合同",
+          "微助手"
+        ]
+      },
+      "answer_expected": {
+        "must_include_terms": [
+          "电子劳动合同",
+          "签署",
+          "实名认证"
+        ]
+      },
+      "citation_expected": {
+        "min_count": 2,
+        "max_count": 8,
+        "must_match_titles": [
+          "电子劳动合同",
+          "微助手"
+        ],
+        "must_not_match_titles": [
+          "入职人员信息表"
+        ]
+      }
+    },
+    {
+      "id": "answer_real_micro_assistant_registration",
+      "category": "员工入口回答",
+      "question": "外服微助手个人怎么注册并完成身份验证？",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "微助手"
+        ]
+      },
+      "answer_expected": {
+        "must_include_terms": [
+          "注册",
+          "身份认证"
+        ]
+      },
+      "citation_expected": {
+        "min_count": 1,
+        "max_count": 8,
+        "must_match_titles": [
+          "微助手"
+        ],
+        "must_not_match_titles": [
+          "北仑派单"
+        ]
+      }
+    },
+    {
+      "id": "answer_real_workorder_contract",
+      "category": "工单流程回答",
+      "question": "劳动合同续签信息通过工单系统交给谁，完成后怎么反馈？",
+      "expected": {
+        "top_n": 5,
+        "top_n_must_match_titles": [
+          "工单系统"
+        ]
+      },
+      "answer_expected": {
+        "must_include_terms": [
+          "合同组",
+          "工单",
+          "反馈"
+        ]
+      },
+      "citation_expected": {
+        "min_count": 1,
+        "max_count": 8,
+        "must_match_titles": [
+          "工单系统"
+        ],
+        "must_not_match_titles": [
+          "微助手"
+        ]
+      }
+    },
+    {
+      "id": "answer_real_beilun_deadline",
+      "category": "表格精确回答",
+      "question": "202603北仑派单的社保、医保和公积金截止时间分别是什么？",
+      "expected": {
+        "top_n": 3,
+        "top_n_must_match_titles": [
+          "北仑派单截止时间"
+        ]
+      },
+      "answer_expected": {
+        "must_include_terms": [
+          "26号",
+          "18号"
+        ]
+      },
+      "citation_expected": {
+        "min_count": 1,
+        "max_count": 2,
+        "must_match_titles": [
+          "北仑派单截止时间"
+        ]
+      }
+    },
+    {
+      "id": "answer_real_onboarding_fields",
+      "category": "表单字段与引用去噪",
+      "question": "给员工-入职人员信息表(16)里的全职员工需要填写哪些字段？",
+      "expected": {
+        "top_n": 3,
+        "top_n_must_match_titles": [
+          "入职人员信息表"
+        ]
+      },
+      "answer_expected": {
+        "must_include_terms": [
+          "姓名",
+          "身份证号码",
+          "手机号"
+        ]
+      },
+      "citation_expected": {
+        "min_count": 1,
+        "max_count": 8,
+        "must_match_titles": [
+          "入职人员信息表"
+        ],
+        "must_not_match_titles": [
+          "北仑分公司",
+          "派单截止时间"
+        ]
+      }
+    },
+    {
+      "id": "answer_real_no_evidence",
+      "category": "无证据拒答",
+      "question": "深圳2027医保缴费规则是什么？",
+      "expected": {
+        "max_contexts": 0
+      },
+      "answer_expected": {
+        "must_include_terms": [
+          "未在知识库中找到依据"
+        ]
+      },
+      "citation_expected": {
+        "max_count": 0
+      }
+    }
+  ]
+}

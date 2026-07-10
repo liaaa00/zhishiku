@@ -83,6 +83,21 @@ def ensure_collection(vector_size: int = EMBEDDING_DIM):
         )
 
 
+def recreate_collection(vector_size: int):
+    if not qdrant_enabled():
+        return
+    try:
+        _request("DELETE", f"/collections/{QDRANT_COLLECTION}", timeout=10.0)
+    except QdrantUnavailable:
+        pass
+    _request(
+        "PUT",
+        f"/collections/{QDRANT_COLLECTION}",
+        {"vectors": {"size": vector_size, "distance": "Cosine"}},
+        timeout=10.0,
+    )
+
+
 def document_payload(doc, chunk) -> dict:
     source_type = str(doc.source_type or "")
     visibility = "personal" if source_type.startswith("chat_") else "managed"

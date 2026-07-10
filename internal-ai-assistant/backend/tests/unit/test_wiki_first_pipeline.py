@@ -168,6 +168,12 @@ def test_low_score_wiki_contexts_fall_back_to_legacy_and_rerank(monkeypatch) -> 
         "wiki_source_count": 1,
         "retrieval_channel": "wiki",
     }
+    shared_legacy_context = {
+        "document_id": "doc-wiki",
+        "chunk_id": "wiki-chunk",
+        "content": "原始短片段：完成签署。",
+        "retrieval_channel": "semantic",
+    }
     legacy_context = {
         "document_id": "doc-legacy",
         "chunk_id": "legacy-chunk",
@@ -192,7 +198,7 @@ def test_low_score_wiki_contexts_fall_back_to_legacy_and_rerank(monkeypatch) -> 
         rag_pipeline,
         "_retrieve_by_route",
         lambda *_args, **_kwargs: RetrievalResult(
-            contexts=[legacy_context],
+            contexts=[shared_legacy_context, legacy_context],
             backend="local",
             note="legacy_retrieval",
             candidate_count=2,
@@ -215,6 +221,7 @@ def test_low_score_wiki_contexts_fall_back_to_legacy_and_rerank(monkeypatch) -> 
     )
 
     assert {context["document_id"] for context in rerank_inputs} == {"doc-wiki", "doc-legacy"}
+    assert next(context for context in rerank_inputs if context["document_id"] == "doc-wiki")["retrieval_channel"] == "wiki"
     assert {context["document_id"] for context in contexts} == {"doc-wiki", "doc-legacy"}
     assert backend == "local+wiki"
     assert "wiki_fallback=wiki_score_below_direct_threshold" in note

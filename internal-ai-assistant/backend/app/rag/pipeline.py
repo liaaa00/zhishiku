@@ -343,7 +343,7 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
         from ..retrieval import rerank_contexts
 
         mixed_limit = max(top_k, len(contexts), 8)
-        mixed_contexts = _merge_contexts(wiki_contexts, contexts, mixed_limit * 2, extra_first=True)
+        mixed_contexts = _merge_contexts(wiki_contexts, contexts, mixed_limit * 2, extra_first=False)
         contexts, _wiki_selected = rerank_contexts(
             question,
             mixed_contexts,

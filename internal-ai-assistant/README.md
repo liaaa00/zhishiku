@@ -11,7 +11,7 @@
 docker compose up -d --build
 ```
 
-Docker Compose 使用三服务部署形态：`frontend`（Nginx + Vue SPA）对外暴露 `8080`，`backend` 在内部网络提供 `8000` API，`qdrant` 提供向量库。可通过环境变量 `FRONTEND_PORT` 调整前端入口端口；例如本机 `8080` 已被其他容器占用时，可先执行 PowerShell 命令 `$env:FRONTEND_PORT='8081'`，再运行 `docker compose up -d --build`。
+Docker Compose 默认使用 `frontend`、`backend`、`postgres` 和 `qdrant`；可选的 `ollama` profile 仅绑定本机 `127.0.0.1:11434`。可通过环境变量 `FRONTEND_PORT` 调整前端入口端口；例如本机 `8080` 已被其他容器占用时，可先执行 PowerShell 命令 `$env:FRONTEND_PORT='8081'`，再运行 `docker compose up -d --build`。
 
 如果你不想用 Docker，也可以直接：
 
@@ -34,7 +34,18 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 - 对话模型：`.env` 中的 `CHAT_MODEL`
 - 接口地址：`https://api.deepseek.com`
-- 文档检索本地试用可使用 local-hash；生产环境必须配置远程 embedding
+- 文档检索可用 local-hash 做基线；正式使用应配置真实语义 embedding（本地 Ollama 或外部 OpenAI-compatible 服务）
+
+## 本地语义向量（Ollama）
+
+Ollama 只替换 embedding 引擎，不新增索引体系；检索仍使用 Qdrant、Wiki-first 和知识图谱。首次使用先拉取模型：
+
+```powershell
+docker compose --profile ollama up -d ollama
+docker compose exec ollama ollama pull bge-m3
+```
+
+在后台模型配置中填写 `openai-compatible`、`http://ollama:11434/v1`、`bge-m3` 和占位 API Key `ollama`。先执行 Embedding 连接测试，再执行“重建向量”；`bge-m3` 会把 Qdrant 集合安全重建为 1024 维。若连接或重建失败，保留原配置和集合，不要混用两种向量。
 
 ## 可选 PageIndex 兼容索引
 
@@ -66,10 +77,14 @@ python -X utf8 scripts\preflight_check.py
 ```powershell
 cd backend
 python -X utf8 -m pytest tests/unit -q
-python -X utf8 tests/qa_retrieval_eval_runner.py --real-db --cases tests/retrieval_eval_real_cases.json
+python -X utf8 tests/qa_retrieval_eval_runner.py --real-db --pipeline --cases tests/retrieval_eval_real_cases.json
+python -X utf8 tests/qa_answer_eval_runner.py --real-db --pipeline
+python -X utf8 tests/qa_answer_eval_runner.py --real-db --pipeline --llm
 cd ..\frontend
 npm run build
 ```
+
+切换 OpenAI-compatible embedding 前，先在模型配置中通过 Embedding 连接测试。随后执行后台“重建向量”；该操作会用当前模型重新生成全部 chunk embedding、校验统一维度，再重建 Qdrant 集合，而不是重传旧向量。
 
 ## 说明
 
