@@ -5,8 +5,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.models import Document, DocumentChunk, DocumentProcessingStatus, User, WikiPage, WikiPageLink, WikiPageSource
+from app.models import AuditLog, Document, DocumentChunk, DocumentProcessingStatus, User, WikiPage, WikiPageLink, WikiPageSource
 from app.rag.pipeline import retrieve_contexts
+from app.routers.admin_wiki import wiki_lint, wiki_logs, wiki_search_test
 from app.wiki.compiler import compile_document_to_wiki
 from app.wiki.context_budget import apply_context_budget
 from app.wiki.graph import build_wiki_graph
@@ -314,6 +315,34 @@ def test_wiki_health_reports_orphan_and_no_backlink_pages() -> None:
         assert orphan_finding["slug"] == "orphan-page"
         assert no_backlink_finding["slug"] == "hub-page"
         assert no_backlink_finding["outgoing_link_count"] == 1
+    finally:
+        db.close()
+
+
+def test_wiki_lint_and_search_test_write_operation_logs() -> None:
+    Session = make_session()
+    db = Session()
+    try:
+        admin, doc, _chunk = _seed_esign_document(db)
+        compile_document_to_wiki(db, doc.id, publish=True)
+        db.commit()
+
+        lint_result = wiki_lint(knowledge_scope="test", db=db, actor=admin)
+        search_result = wiki_search_test(q="电子劳动合同", knowledge_scope="test", top_k=2, db=db, actor=admin)
+        logs = wiki_logs(knowledge_scope="test", limit=10, db=db, _=admin)
+
+        actions = [row.action for row in db.query(AuditLog).order_by(AuditLog.created_at.asc()).all()]
+        assert lint_result["report_type"] == "wiki_lint_v1"
+        assert "meta" in search_result
+        assert "wiki.lint" in actions
+        assert "wiki.search_test" in actions
+        assert logs["knowledge_scope"] == "test"
+        assert logs["count"] >= 2
+        by_action = {item["action"]: item for item in logs["items"]}
+        assert by_action["wiki.lint"]["detail"]["report_type"] == "wiki_lint_v1"
+        assert by_action["wiki.lint"]["detail"]["knowledge_scope"] == "test"
+        assert by_action["wiki.search_test"]["detail"]["query"] == "电子劳动合同"
+        assert by_action["wiki.search_test"]["detail"]["knowledge_scope"] == "test"
     finally:
         db.close()
 

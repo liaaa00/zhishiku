@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Document, User, WikiCompileStatus, WikiPage
+from ..models import AuditLog, Document, User, WikiCompileStatus, WikiPage
 from ..wiki.compiler import compile_document_to_wiki, compile_ready_documents
 from ..wiki.graph import build_wiki_graph
 from ..wiki.health import evaluate_wiki_health
@@ -13,6 +15,60 @@ from ..wiki.search import retrieve_wiki_contexts
 from .deps import audit, require_admin
 
 router = APIRouter()
+
+WIKI_AUDIT_ACTIONS = (
+    "wiki.compile.document",
+    "wiki.compile.all",
+    "wiki.lint",
+    "wiki.search_test",
+)
+
+
+def _parse_detail(raw: str) -> dict:
+    try:
+        parsed = json.loads(raw or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _wiki_log_scope(row: AuditLog, detail: dict) -> str:
+    if row.resource_type == "wiki" and row.resource_id:
+        return row.resource_id
+    return str(detail.get("knowledge_scope") or "")
+
+
+def _wiki_log_payload(row: AuditLog) -> dict:
+    detail = _parse_detail(row.detail_json)
+    return {
+        "id": row.id,
+        "action": row.action,
+        "resource_type": row.resource_type,
+        "resource_id": row.resource_id,
+        "knowledge_scope": _wiki_log_scope(row, detail),
+        "actor_user_id": row.actor_user_id,
+        "actor_username": row.actor_username,
+        "detail": detail,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _wiki_lint_audit_detail(result: dict) -> dict:
+    keys = (
+        "knowledge_scope",
+        "report_type",
+        "score",
+        "page_count",
+        "published_count",
+        "finding_count",
+        "orphan_page_count",
+        "no_backlink_page_count",
+        "broken_link_count",
+        "failed_document_count",
+        "rule_counts",
+        "severity_counts",
+    )
+    return {key: result.get(key) for key in keys if key in result}
 
 
 def _page_payload(page: WikiPage) -> dict:
@@ -74,7 +130,14 @@ def compile_document(document_id: str, db: Session = Depends(get_db), actor: Use
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     result = compile_document_to_wiki(db, doc.id, publish=True)
-    audit(db, actor, "wiki.compile.document", "document", doc.id, result)
+    audit(
+        db,
+        actor,
+        "wiki.compile.document",
+        "document",
+        doc.id,
+        {"knowledge_scope": getattr(doc, "knowledge_scope", "production") or "production", **result},
+    )
     db.commit()
     return result
 
@@ -90,6 +153,36 @@ def compile_all_ready_documents(
     audit(db, actor, "wiki.compile.all", "wiki", knowledge_scope, {"limit": limit, **result})
     db.commit()
     return result
+
+
+@router.get("/api/admin/wiki/logs")
+def wiki_logs(
+    knowledge_scope: str = Query("production"),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    fetch_limit = limit if knowledge_scope == "all" else min(500, max(limit, limit * 5))
+    rows = db.execute(
+        select(AuditLog)
+        .where(AuditLog.action.in_(list(WIKI_AUDIT_ACTIONS)))
+        .order_by(AuditLog.created_at.desc())
+        .limit(fetch_limit)
+    ).scalars().all()
+    items: list[dict] = []
+    for row in rows:
+        payload = _wiki_log_payload(row)
+        if knowledge_scope != "all" and payload["knowledge_scope"] != knowledge_scope:
+            continue
+        items.append(payload)
+        if len(items) >= limit:
+            break
+    return {
+        "knowledge_scope": knowledge_scope,
+        "count": len(items),
+        "items": items,
+        "actions": list(WIKI_AUDIT_ACTIONS),
+    }
 
 
 @router.get("/api/admin/wiki/status")
@@ -127,9 +220,12 @@ def wiki_health(
 def wiki_lint(
     knowledge_scope: str = Query("production"),
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    actor: User = Depends(require_admin),
 ):
-    return evaluate_wiki_health(db, knowledge_scope=knowledge_scope, include_findings=True)
+    result = evaluate_wiki_health(db, knowledge_scope=knowledge_scope, include_findings=True)
+    audit(db, actor, "wiki.lint", "wiki", knowledge_scope, _wiki_lint_audit_detail(result))
+    db.commit()
+    return result
 
 
 @router.get("/api/admin/wiki/graph")
@@ -152,4 +248,22 @@ def wiki_search_test(
     actor: User = Depends(require_admin),
 ):
     contexts, meta = retrieve_wiki_contexts(db, q, actor, top_k=top_k, knowledge_scope=knowledge_scope)
+    audit(
+        db,
+        actor,
+        "wiki.search_test",
+        "wiki",
+        knowledge_scope,
+        {
+            "knowledge_scope": knowledge_scope,
+            "query": q[:200],
+            "top_k": top_k,
+            "used": meta.get("used"),
+            "candidate_count": meta.get("candidate_count"),
+            "context_count": meta.get("context_count"),
+            "best_score": meta.get("best_score"),
+            "reason": meta.get("reason"),
+        },
+    )
+    db.commit()
     return {"meta": meta, "contexts": contexts}
