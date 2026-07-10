@@ -47,6 +47,18 @@ docker compose exec ollama ollama pull bge-m3
 
 在后台模型配置中填写 `openai-compatible`、`http://ollama:11434/v1`、`bge-m3` 和占位 API Key `ollama`。先执行 Embedding 连接测试，再执行“重建向量”；`bge-m3` 会把 Qdrant 集合安全重建为 1024 维。若连接或重建失败，保留原配置和集合，不要混用两种向量。
 
+## 运行健康检查
+
+`GET /api/health` 只检查应用进程存活，不访问外部依赖；`GET /api/ready` 会实际检查 PostgreSQL、Qdrant、当前 embedding 服务，并校验 embedding 与 Qdrant 的向量维度一致。任一依赖失败时，`/api/ready` 返回 HTTP 503。
+
+监控系统建议每 5 分钟调用一次 `/api/ready`，请求超时设为 30 秒，连续两次非 200 后告警。不要把深度检查作为高频 Docker liveness probe，以免反复触发 embedding 推理。
+
+```powershell
+curl.exe --fail --max-time 30 http://localhost:8080/api/ready
+```
+
+Docker Compose 已为 PostgreSQL、Qdrant 和可选 Ollama 服务配置容器健康检查。Ollama 默认检查 `bge-m3`，如使用其他模型，可设置 `OLLAMA_EMBEDDING_MODEL`。
+
 ## 可选 PageIndex 兼容索引
 
 默认检索链路使用 Wiki-first、Qdrant 和知识图谱，PageIndex 默认关闭，不参与文档解析或检索。只有超长 PDF / Markdown 的专项评测证明结构索引有稳定收益时，才建议安装并在 `.env` 中设置 `PAGEINDEX_ENABLED=1`。

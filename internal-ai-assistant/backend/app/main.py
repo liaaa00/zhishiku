@@ -1,12 +1,16 @@
 import logging
+import math
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy import text
 
 from .config import CORS_ORIGINS, FRONTEND_DIST_DIR, validate_security, warn_insecure_defaults
-from .database import Base, engine
+from .database import Base, SessionLocal, engine
 from .ai_client import chat_answer, embed_texts
+from .settings_service import get_embedding_config
+from .vector_store import qdrant_health
 from .html_pages import ADMIN_HTML, CHAT_HTML
 from .routers.admin_documents import router as admin_documents_router
 from .routers.admin_evaluation import router as admin_evaluation_router
@@ -157,5 +161,74 @@ def admin_page():
 @app.get("/api/health")
 def health():
     return {"ok": True, "version": "0.9.0"}
+
+
+@app.get("/api/ready")
+def readiness():
+    components: dict[str, dict] = {}
+    embedding_config: dict = {}
+    db = None
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        embedding_config = get_embedding_config(db)
+        components["database"] = {"ok": True}
+    except Exception:
+        logger.warning("就绪检查失败 | component=database", exc_info=True)
+        components["database"] = {"ok": False}
+    finally:
+        if db is not None:
+            db.close()
+
+    try:
+        qdrant = qdrant_health()
+        qdrant_required = bool(qdrant.get("qdrant_enabled"))
+        qdrant_ready = bool(qdrant.get("qdrant_ready")) if qdrant_required else True
+        components["qdrant"] = {
+            "ok": qdrant_ready,
+            "required": qdrant_required,
+            "points_count": qdrant.get("points_count"),
+            "dimension": qdrant.get("vector_size"),
+        }
+    except Exception:
+        logger.warning("就绪检查失败 | component=qdrant", exc_info=True)
+        components["qdrant"] = {"ok": False, "required": True, "points_count": None, "dimension": None}
+
+    provider = str(embedding_config.get("provider") or "local").lower()
+    model = str(embedding_config.get("model") or "local-hash")
+    embedding_dimension = None
+    try:
+        if provider in {"openai", "openai-compatible", "remote"}:
+            if not embedding_config.get("api_key") or not model:
+                raise RuntimeError("remote embedding configuration is incomplete")
+        vectors = embed_texts(["readiness probe"], strict=True, timeout=15.0)
+        if len(vectors) != 1 or not vectors[0]:
+            raise RuntimeError("embedding probe returned no vector")
+        if any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in vectors[0]):
+            raise RuntimeError("embedding probe returned invalid values")
+        embedding_dimension = len(vectors[0])
+        qdrant_dimension = components["qdrant"].get("dimension")
+        if components["qdrant"].get("ok") and qdrant_dimension and embedding_dimension != qdrant_dimension:
+            raise RuntimeError("embedding and Qdrant dimensions do not match")
+        components["embedding"] = {
+            "ok": True,
+            "provider": provider,
+            "model": model,
+            "dimension": embedding_dimension,
+        }
+    except Exception:
+        logger.warning("就绪检查失败 | component=embedding provider=%s model=%s", provider, model, exc_info=True)
+        components["embedding"] = {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "dimension": embedding_dimension,
+        }
+
+    ready = all(component.get("ok") for component in components.values())
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"ok": ready, "status": "ready" if ready else "degraded", "version": "0.9.0", "components": components},
+    )
 
 

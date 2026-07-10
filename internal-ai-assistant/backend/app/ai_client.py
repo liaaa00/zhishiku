@@ -66,7 +66,7 @@ def _openai_client(api_key: Optional[str] = None, base_url: Optional[str] = None
     return OpenAI(api_key=real_key, base_url=real_base_url, timeout=45.0, max_retries=0)
 
 
-def embed_texts(texts: List[str], *, strict: bool = False) -> List[List[float]]:
+def embed_texts(texts: List[str], *, strict: bool = False, timeout: float | None = None) -> List[List[float]]:
     """生成文本向量。
 
     默认使用 local-hash，方便本地试用；当 EMBEDDING_PROVIDER=openai 且配置了
@@ -82,7 +82,10 @@ def embed_texts(texts: List[str], *, strict: bool = False) -> List[List[float]]:
     model = str(cfg.get("model") or "local-hash")
     if provider in {"openai", "openai-compatible", "remote"} and api_key:
         try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            if timeout is None:
+                client = OpenAI(api_key=api_key, base_url=base_url)
+            else:
+                client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
             resp = client.embeddings.create(model=model, input=texts)
             return [list(item.embedding) for item in resp.data]
         except Exception as exc:

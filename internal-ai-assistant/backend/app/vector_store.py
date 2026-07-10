@@ -47,6 +47,8 @@ def qdrant_health() -> dict:
         data = _request("GET", f"/collections/{QDRANT_COLLECTION}", timeout=2.0)
         result = data.get("result") or {}
         points_count = result.get("points_count") or result.get("vectors_count") or 0
+        vector_config = (((result.get("config") or {}).get("params") or {}).get("vectors") or {})
+        vector_size = vector_config.get("size") if isinstance(vector_config, dict) else None
         return {
             "backend": "qdrant",
             "qdrant_enabled": True,
@@ -55,6 +57,7 @@ def qdrant_health() -> dict:
             "status": "ready",
             "collection": QDRANT_COLLECTION,
             "points_count": points_count,
+            "vector_size": vector_size,
             "message": f"Qdrant 连接正常，集合 {QDRANT_COLLECTION} 可用。",
         }
     except QdrantUnavailable as exc:
