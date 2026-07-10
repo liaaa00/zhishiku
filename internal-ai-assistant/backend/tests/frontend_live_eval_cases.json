@@ -1,0 +1,432 @@
+{
+  "description": "基于生产库已上传文档构建的 40 条真实前端问答验收集。问题不使用入职表中的个人敏感值。",
+  "base_url": "http://127.0.0.1:8081",
+  "excluded_documents": [
+    {
+      "title": "image",
+      "reason": "两张重复的 AI 对话界面截图，不包含可复用的业务知识。"
+    }
+  ],
+  "cases": [
+    {
+      "id": "live_esign_01_sms_entry",
+      "category": "电子合同",
+      "question": "员工收到电子劳动合同通知后，第一步怎么进入签署页面？",
+      "reference_answer": "查收短信并点击短信中的链接进入。",
+      "expected": {
+        "answer_groups": [["短信"], ["链接"]],
+        "citation_titles": ["电子劳动合同操作指南"],
+        "forbidden_titles": ["浙江企服工单系统开发需求文档"]
+      }
+    },
+    {
+      "id": "live_esign_02_prerequisites",
+      "category": "电子合同",
+      "question": "正式签电子劳动合同前，需要先完成哪些前置步骤？",
+      "reference_answer": "先完成平台注册，再完成实名认证。",
+      "expected": {
+        "answer_groups": [["平台注册", "注册"], ["实名认证", "身份认证", "个人身份认证"]],
+        "citation_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_esign_03_realname_methods",
+      "category": "电子合同",
+      "question": "电子劳动合同实名认证可以使用哪两种方式？还需要输入什么？",
+      "reference_answer": "可以使用支付宝或微信进行实名认证，并输入验证码。",
+      "expected": {
+        "answer_groups": [["支付宝"], ["微信"], ["验证码"]],
+        "citation_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_esign_04_find_contract",
+      "category": "电子合同",
+      "question": "实名认证完成后，在哪里找到要签署的劳动合同？",
+      "reference_answer": "实名认证后点击“劳动合同”进入待签合同。",
+      "expected": {
+        "answer_groups": [["劳动合同"], ["点击", "进入"]],
+        "citation_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_esign_05_create_signature",
+      "category": "电子合同",
+      "question": "创建并提交电子签名要经过哪些操作？",
+      "reference_answer": "依次点击签署、点击签名、创建签名，输入签名后点击完成并提交。",
+      "expected": {
+        "answer_groups": [["签署"], ["签名"], ["创建"], ["完成"], ["提交"]],
+        "citation_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_esign_06_submit_verify",
+      "category": "电子合同",
+      "question": "电子签名提交后，还要做什么验证才能确认？",
+      "reference_answer": "输入验证码并点击确定。",
+      "expected": {
+        "answer_groups": [["验证码", "验证"], ["确定", "确认"]],
+        "citation_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_esign_07_completion_notice",
+      "category": "电子合同",
+      "question": "怎么知道公司已经完成签章、电子合同正式签完了？",
+      "reference_answer": "公司签章完成后会收到合同签署完成短信。",
+      "expected": {
+        "answer_groups": [["公司签章", "签章"], ["短信"], ["签署完成", "完成"]],
+        "citation_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_esign_08_download",
+      "category": "电子合同",
+      "question": "签完的电子劳动合同可以从哪里下载保存？",
+      "reference_answer": "可通过签署完成短信中的链接，或登录外服微助手的“电子签合同”模块下载保存。",
+      "expected": {
+        "answer_groups": [["短信链接", "短信"], ["外服微助手", "微助手"], ["电子签合同"], ["下载", "保存"]],
+        "citation_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_micro_01_entry",
+      "category": "微助手",
+      "question": "从微信里怎么进入上海外服微助手的登录页面？",
+      "reference_answer": "关注“上海外服微助手”公众号，在对话框选择“员工服务”进入登录界面。",
+      "expected": {
+        "answer_groups": [["上海外服微助手"], ["员工服务"], ["登录"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_02_login_methods",
+      "category": "微助手",
+      "question": "外服云个人登录有哪两种方式？",
+      "reference_answer": "支持密码登录和短信登录。",
+      "expected": {
+        "answer_groups": [["密码登录"], ["短信登录"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_03_password_login",
+      "category": "微助手",
+      "question": "使用密码方式登录外服云，需要填写什么？",
+      "reference_answer": "填写个人账号和账号密码。",
+      "expected": {
+        "answer_groups": [["个人账号", "账号"], ["账号密码", "密码"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_04_recovery_methods",
+      "category": "微助手",
+      "question": "忘记外服云密码时有哪三种找回方式？",
+      "reference_answer": "可以通过手机找回、邮箱找回或证件找回。",
+      "expected": {
+        "answer_groups": [["手机找回", "手机"], ["邮箱找回", "邮箱"], ["证件找回", "证件"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_05_document_recovery",
+      "category": "微助手",
+      "question": "用证件找回外服云密码时，具体怎么验证并重设密码？",
+      "reference_answer": "先用账号已认证的证件号码验证身份，再用账号或个人信息中的手机或邮箱重新设置密码。",
+      "expected": {
+        "answer_groups": [["证件号码", "证件"], ["验证身份", "身份"], ["手机", "邮箱"], ["重新设置密码", "重设密码", "设置新密码"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_06_bind_wechat",
+      "category": "微助手",
+      "question": "外服云账号绑定微信后有什么用，怎么完成绑定？",
+      "reference_answer": "在账号与安全中启动微信授权，完成授权后绑定微信，之后可使用微信登录。",
+      "expected": {
+        "answer_groups": [["微信授权", "授权"], ["绑定微信", "绑定"], ["微信登录", "微信快速登录", "微信快捷登录"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_07_cancel_conditions",
+      "category": "微助手",
+      "question": "注销外服云账号前必须满足什么条件？",
+      "reference_answer": "近一个月成功登录过 3 次，并且所有第三方账户都已经解绑。",
+      "expected": {
+        "answer_groups": [["近一个月", "一个月", "近1个月"], ["3次", "三次"], ["第三方账户", "第三方"], ["解绑"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_08_salary_entry",
+      "category": "微助手",
+      "question": "员工可以通过哪两个微信公众号入口查询薪酬？",
+      "reference_answer": "可从“上海外服微助手”-员工服务-薪酬服务进入，也可从“上海外服薪酬福利”-我的薪福-薪酬服务进入。",
+      "expected": {
+        "answer_groups": [["上海外服微助手"], ["员工服务"], ["上海外服薪酬福利"], ["我的薪福"], ["薪酬服务"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_09_security_functions",
+      "category": "微助手",
+      "question": "外服云“账号与安全”里可以管理哪些内容？",
+      "reference_answer": "可以修改密码、换绑手机、绑定或换绑及解绑邮箱、绑定微信、注销账号。",
+      "expected": {
+        "answer_groups": [["修改密码", "密码"], ["换绑手机", "手机"], ["邮箱"], ["绑定微信", "微信"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_micro_10_identity_types",
+      "category": "微助手",
+      "question": "外服云身份认证包含哪两类身份验证？",
+      "reference_answer": "包含普通个人身份验证和雇员身份验证。",
+      "expected": {
+        "answer_groups": [["普通个人"], ["雇员"]],
+        "citation_titles": ["新版外服云平台注册流程-微助手"]
+      }
+    },
+    {
+      "id": "live_workorder_01_goal",
+      "category": "工单系统",
+      "question": "浙江企服建设工单系统的主要目标是什么？",
+      "reference_answer": "打通前后道数据和服务交付流程，通过数据中台自动处理和任务分派，提高信息流转效率、规范数据记录并提升组织效能。",
+      "expected": {
+        "answer_groups": [["前后道", "前后台"], ["自动化处理", "自动处理"], ["任务分派", "分发派单"], ["信息流转效率", "效率"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"]
+      }
+    },
+    {
+      "id": "live_workorder_02_onboarding_orders",
+      "category": "工单系统",
+      "question": "员工入职信息导入工单系统后，会自动派出哪些工单？",
+      "reference_answer": "会派出劳动合同签订、入职联系、商保投保和报岗集约录入等工单。",
+      "expected": {
+        "answer_groups": [["劳动合同签订"], ["入职联系"], ["商保投保"], ["报岗集约录入"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"],
+        "forbidden_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_workorder_03_downstream_actions",
+      "category": "工单系统",
+      "question": "后道交付团队登录工单系统后，可以做哪些事情？",
+      "reference_answer": "按权限查询待办工单，导出办理所需表单和附件，推进交付并把结果回写系统反馈进度。",
+      "expected": {
+        "answer_groups": [["待办工单"], ["导出"], ["附件"], ["回写", "反馈"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"]
+      }
+    },
+    {
+      "id": "live_workorder_04_renewal",
+      "category": "工单系统",
+      "question": "劳动合同续签在工单系统里按什么流程处理？",
+      "reference_answer": "业务员发续签信息收集表并采集信息，导入系统传给合同组；合同组按模板输出报表线下交付，完成后回写进度。",
+      "expected": {
+        "answer_groups": [["续签信息收集表", "收集表"], ["导入工单系统", "导入"], ["合同组"], ["合同模板", "模板"], ["进度反馈", "反馈", "进度回写", "更新工单处理进度"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"],
+        "forbidden_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_workorder_05_benefit_apply",
+      "category": "工单系统",
+      "question": "待遇申报工单从发起到审核，前几步怎么走？",
+      "reference_answer": "业务员按待遇类型发起工单，确认当地所需信息和材料并填写上传，后道进行线上审核。",
+      "expected": {
+        "answer_groups": [["待遇申报"], ["工单"], ["信息", "材料"], ["线上审核", "审核"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"]
+      }
+    },
+    {
+      "id": "live_workorder_06_material_return",
+      "category": "工单系统",
+      "question": "待遇申报材料有问题时，后道应该怎么处理？",
+      "reference_answer": "后道可退回业务员，要求重新修改并补充完善信息或材料。",
+      "expected": {
+        "answer_groups": [["退回"], ["业务员"], ["修改", "补充"], ["材料", "信息"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"]
+      }
+    },
+    {
+      "id": "live_workorder_07_seal",
+      "category": "工单系统",
+      "question": "待遇申报材料审核通过后，用印和后续交付流程是什么？",
+      "reference_answer": "后道确认材料无问题后通知业务员申请用印；业务员用印后线下交给后道，后道确认材料收齐并进入申报交付，最后反馈进度。",
+      "expected": {
+        "answer_groups": [["用印申请", "申请用印"], ["业务员"], ["线下"], ["材料已收集齐", "材料收齐", "材料齐全", "收齐确认"], ["进度反馈", "反馈", "进度同步", "更新交付进度", "更新交付完成进度", "进度更新"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"]
+      }
+    },
+    {
+      "id": "live_workorder_08_resignation",
+      "category": "工单系统",
+      "question": "离职场景里，合同组怎么联系员工并开具离职证明？",
+      "reference_answer": "合同组按工单筛选需要联系的员工，线下通过小程序收集离职信息和材料，并根据反馈开具离职证明。",
+      "expected": {
+        "answer_groups": [["合同组"], ["小程序"], ["离职信息", "离职材料"], ["离职证明"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"],
+        "forbidden_titles": ["电子劳动合同操作指南"]
+      }
+    },
+    {
+      "id": "live_workorder_09_batch_search",
+      "category": "工单系统",
+      "question": "工单系统对批量处理和查询修改有哪些功能设想？",
+      "reference_answer": "前后道支持批量导入、批量导出、按条件模糊搜索、单个查询修改保存，以及批量选择导出或更新状态。",
+      "expected": {
+        "answer_groups": [["批导入", "批量导入"], ["批导出", "批量导出", "批量导入导出", "批量数据导入导出", "导出"], ["模糊搜索"], ["查询"], ["修改", "保存"], ["更新状态", "批量更新工单状态", "批量更新办理状态", "批量状态更新", "更新办理状态"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"]
+      }
+    },
+    {
+      "id": "live_workorder_10_permissions",
+      "category": "工单系统",
+      "question": "工单系统如何限制后道权限，并给项目经理或业务员展示什么？",
+      "reference_answer": "后道团队只能查询自己模块的工单；前端按项目经理、业务员等层级配置门户和数据看板，展示权限内当月办理量及完成进度。",
+      "expected": {
+        "answer_groups": [["自己模块", "各自模块", "自身所属业务模块", "自身业务模块", "自身所属职能模块"], ["项目经理"], ["业务员"], ["数据看板"], ["当月办理数量", "办理数量", "当月办理总数量", "当月办理总量"], ["完成进度"]],
+        "citation_titles": ["浙江企服工单系统开发需求文档"]
+      }
+    },
+    {
+      "id": "live_deadline_01_ningbo",
+      "category": "派单表",
+      "question": "2026年3月宁波北仑派单的社保、医保、公积金截止日分别是几号？",
+      "reference_answer": "社保 26 号、医保 26 号、公积金 18 号。",
+      "expected": {
+        "answer_groups": [["社保"], ["医保"], ["公积金"], ["26号", "26 号"], ["18号", "18 号"]],
+        "citation_titles": ["202603北仑派单截止时间"],
+        "backend_contains": "table"
+      }
+    },
+    {
+      "id": "live_deadline_02_shanghai",
+      "category": "派单表",
+      "question": "2026年3月上海的社保、医保和公积金派单截止时间是什么？",
+      "reference_answer": "社保、医保和公积金均为 25 号。",
+      "expected": {
+        "answer_groups": [["社保"], ["医保"], ["公积金"], ["25号", "25 号"]],
+        "citation_titles": ["202603北仑派单截止时间"],
+        "backend_contains": "table"
+      }
+    },
+    {
+      "id": "live_deadline_03_shenzhen",
+      "category": "派单表",
+      "question": "2026年3月深圳三项派单截止时间和公积金预计缴款时间是什么？有什么备注？",
+      "reference_answer": "社保、医保、公积金截止时间均为 24 号，公积金预计当月 25 号缴款；若原单位停保至月底，新单位参保可能直接产生当月单工伤费用。",
+      "expected": {
+        "answer_groups": [["24号", "24 号"], ["25号", "25 号"], ["单工伤"]],
+        "citation_titles": ["202603北仑派单截止时间"],
+        "backend_contains": "table"
+      }
+    },
+    {
+      "id": "live_deadline_04_shenyang",
+      "category": "派单表",
+      "question": "2026年3月沈阳社保、医保、公积金截止日分别是什么？增减员还要准备什么？",
+      "reference_answer": "社保 13 号、医保 13 号、公积金 23 号；增减员需办理劳动关系新签或解除，并提供劳动合同和劳动关系解除书。",
+      "expected": {
+        "answer_groups": [["13号", "13 号"], ["23号", "23 号"], ["劳动关系"], ["劳动合同"], ["解除书", "劳动关系解除"]],
+        "citation_titles": ["202603北仑派单截止时间"],
+        "backend_contains": "table"
+      }
+    },
+    {
+      "id": "live_deadline_05_shijiazhuang",
+      "category": "派单表",
+      "question": "2026年3月石家庄三项截止日分别是什么？公积金同城转入由谁操作？",
+      "reference_answer": "社保 23 号、医保 20 号、公积金 27 号；同城转入需原单位或员工本人操作。",
+      "expected": {
+        "answer_groups": [["23号", "23 号"], ["20号", "20 号"], ["27号", "27 号"], ["原单位"], ["员工本人"]],
+        "citation_titles": ["202603北仑派单截止时间"],
+        "backend_contains": "table"
+      }
+    },
+    {
+      "id": "live_deadline_06_kunming",
+      "category": "派单表",
+      "question": "2026年3月昆明三项派单截止日是什么？社保增减需要上传哪些证明材料？",
+      "reference_answer": "社保和医保 17 号、公积金 27 号；需上传单位盖章的劳动关系新签或解除证明书，以及员工身份证正反面原件照片。",
+      "expected": {
+        "answer_groups": [["17号", "17 号"], ["27号", "27 号"], ["劳动关系"], ["证明书"], ["身份证"], ["正反面"]],
+        "citation_titles": ["202603北仑派单截止时间"],
+        "backend_contains": "table"
+      }
+    },
+    {
+      "id": "live_branch_01_shanghai",
+      "category": "分公司进度",
+      "question": "上海分公司的银行账户和社保公积金账户是否完成？公积金比例是多少？",
+      "reference_answer": "两类账户均已完成；公积金比例为 5%+5%，补充公积金为 2%+2%。",
+      "expected": {
+        "answer_groups": [["银行账户"], ["社保公积金账户"], ["是", "完成"], ["5%+5%"], ["2%+2%"]],
+        "citation_titles": ["北仑分公司开设最新进度表0310"],
+        "backend_contains": "table"
+      }
+    },
+    {
+      "id": "live_branch_02_chengdu",
+      "category": "分公司进度",
+      "question": "成都分公司的公积金比例范围是什么？银行和社保公积金账户开好了吗？",
+      "reference_answer": "公积金支持 5%-12% 全比例，银行账户和社保公积金账户均已开具完成。",
+      "expected": {
+        "answer_groups": [["5%-12%", "5% - 12%", "5%至12%"], ["银行账户"], ["社保公积金账户"], ["是", "完成"]],
+        "citation_titles": ["北仑分公司开设最新进度表0310"],
+        "backend_contains": "table"
+      }
+    },
+    {
+      "id": "live_branch_03_not_opened",
+      "category": "分公司进度",
+      "question": "进度表里哪些城市明确写着公司未开设？请至少列出5个。",
+      "reference_answer": "例如上海黄浦区、南京、海口、三亚、吉林、呼和浩特、兰州等均明确标记未开设。",
+      "expected": {
+        "answer_groups": [["上海黄浦区"], ["南京"], ["海口"], ["三亚"], ["吉林"]],
+        "citation_titles": ["北仑分公司开设最新进度表0310"],
+        "backend_contains": "table",
+        "max_sources": 12
+      }
+    },
+    {
+      "id": "live_branch_04_yuncheng",
+      "category": "分公司进度",
+      "question": "运城分公司的银行账户、社保公积金账户和公司开设状态分别怎样？",
+      "reference_answer": "银行账户已完成，社保公积金账户未完成，公司名称已开设为外服（浙江）企业服务有限公司运城分公司。",
+      "expected": {
+        "answer_groups": [["银行账户"], ["是", "完成"], ["社保公积金账户"], ["否", "未完成", "暂未开具完成"], ["运城分公司"]],
+        "citation_titles": ["北仑分公司开设最新进度表0310"],
+        "backend_contains": "table",
+        "max_sources": 6
+      }
+    },
+    {
+      "id": "live_onboarding_01_fulltime_fields",
+      "category": "入职信息表",
+      "question": "全职员工入职信息表最基础的身份和联系方式字段有哪些？",
+      "reference_answer": "包括姓名、入职日期、身份证号码、手机号、公司邮箱和私人邮箱等。",
+      "expected": {
+        "answer_groups": [["姓名"], ["入职日期"], ["身份证号码"], ["手机号"], ["公司邮箱"], ["私人邮箱"]],
+        "citation_titles": ["给员工-入职人员信息表(16)"],
+        "forbidden_titles": ["北仑分公司开设最新进度表0310"],
+        "max_sources": 4
+      }
+    },
+    {
+      "id": "live_onboarding_02_intern_fields",
+      "category": "入职信息表",
+      "question": "实习生信息表需要填写哪些核心字段？",
+      "reference_answer": "包括姓名、入职日期、身份证号码、手机号、邮箱、所属部门、岗位、所在地、学历、毕业院校、专业、毕业时间、银行账户、开户行、协议到期日和员工类型等。",
+      "expected": {
+        "answer_groups": [["姓名"], ["入职日期"], ["身份证号码"], ["手机号"], ["所属部门"], ["岗位"], ["协议到期日"], ["员工类型"]],
+        "citation_titles": ["给员工-入职人员信息表(16)"],
+        "forbidden_titles": ["北仑分公司开设最新进度表0310"],
+        "max_sources": 4
+      }
+    }
+  ]
+}

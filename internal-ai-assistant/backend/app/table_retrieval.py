@@ -270,7 +270,7 @@ def _required_column_groups(question: str, select_columns: list[str]) -> list[st
         return []
     # 展示字段不等于过滤条件；这里只收窄到用户明确要求必须存在的业务字段，避免统计类问题误删记录。
     required: list[str] = []
-    if "银行账户" in compact_question:
+    if "银行账户" in compact_question or ("银行" in compact_question and "账户" in compact_question):
         required.append("bank_account")
     if any(term in compact_question for term in ("社保公积金账户", "社保账户", "公积金账户")):
         required.append("social_account")

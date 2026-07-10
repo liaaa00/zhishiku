@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import retrieval
 from app.database import Base
+from app.document_metadata import prefer_contexts_for_query_topic
 from app.models import Document, DocumentChunk, DocumentProcessingStatus
 from app.retrieval import apply_document_quality_signals, rerank_contexts
 
@@ -17,6 +18,23 @@ def _db_session():
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     return Session()
+
+
+def test_form_field_topic_prefers_form_documents_but_keeps_table_fallback() -> None:
+    contexts = [
+        {"document_id": "form-doc", "document_kind": "form", "content": "全职员工字段"},
+        {"document_id": "branch-table", "document_kind": "table", "content": "分公司进度"},
+        {"document_id": "form-doc", "document_kind": "form", "content": "实习生字段"},
+        {"document_id": "deadline-table", "document_kind": "table", "content": "派单截止时间"},
+    ]
+
+    preferred, dropped = prefer_contexts_for_query_topic(contexts, "form_fields")
+    fallback, fallback_dropped = prefer_contexts_for_query_topic(contexts[1::2], "form_fields")
+
+    assert [item["document_id"] for item in preferred] == ["form-doc", "form-doc"]
+    assert dropped == 2
+    assert fallback == contexts[1::2]
+    assert fallback_dropped == 0
 
 
 def test_retrieval_quality_guard_penalizes_low_quality_document(tmp_path: Path) -> None:

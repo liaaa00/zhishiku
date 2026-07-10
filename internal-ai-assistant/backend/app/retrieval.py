@@ -15,6 +15,7 @@ from .document_metadata import (
     get_document_kind,
     get_document_scope,
     normalize_document_scope,
+    prefer_contexts_for_query_topic,
 )
 from .document_routing_config import allowed_kinds_for_query_topic_config
 from .grounding import filter_relevant_contexts, relevance_terms
@@ -1737,6 +1738,10 @@ def _adaptive_text_retrieve_contexts(db: Session, question: str, user: User, top
     filtered_by_kind, document_kind_dropped = filter_contexts_by_allowed_kinds(expanded_contexts, allowed_doc_kinds)
     if filtered_by_kind:
         expanded_contexts = filtered_by_kind
+    expanded_contexts, topic_preference_dropped = prefer_contexts_for_query_topic(
+        expanded_contexts, query_profile.get("topic")
+    )
+    document_kind_dropped += topic_preference_dropped
     expanded_contexts = expanded_contexts[:ADAPTIVE_CONTEXT_MAX]
     pre_rerank_count = len(expanded_contexts)
     final_limit = min(ADAPTIVE_FINAL_CONTEXT_MAX, max(ADAPTIVE_FINAL_CONTEXT_MIN, int(plan["target_contexts"])))

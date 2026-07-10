@@ -10,6 +10,7 @@ from ..document_metadata import (
     enrich_context_metadata,
     filter_contexts_by_allowed_kinds,
     normalize_document_scope,
+    prefer_contexts_for_query_topic,
 )
 from ..document_routing_config import allowed_kinds_for_query_topic_config
 from ..models import Document, DocumentChunk, User
@@ -384,6 +385,11 @@ def retrieve_contexts(db: Session, question: str, user: User, top_k: int = 5, kn
     filtered_contexts, document_kind_dropped = filter_contexts_by_allowed_kinds(contexts, allowed_doc_kinds)
     if filtered_contexts:
         contexts = filtered_contexts
+    contexts, topic_preference_dropped = prefer_contexts_for_query_topic(
+        contexts, query_profile.get("topic")
+    )
+    document_kind_dropped += topic_preference_dropped
+    document_kind_dropped += int((result.meta or {}).get("document_kind_filtered_count") or 0)
 
     evidence_route_name = route_meta.get("name") or route.name
     if evidence_route_name != route.name:

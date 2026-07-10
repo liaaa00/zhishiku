@@ -303,6 +303,140 @@ def test_compiled_wiki_page_becomes_primary_answer_context() -> None:
         db.close()
 
 
+def test_wiki_source_context_keeps_relevant_late_page_facts_before_long_summary() -> None:
+    Session = make_session()
+    db = Session()
+    try:
+        admin = User(id="admin-late-pages", username="admin-late-pages", password_hash="", is_admin=True, is_active=True)
+        doc = Document(
+            id="doc-security-guide",
+            title="外服云账号与安全完整指南",
+            filename="security-guide.pdf",
+            storage_path="/tmp/security-guide.pdf",
+            source_type="pdf",
+            knowledge_scope="test",
+            document_kind="employee_guide",
+        )
+        page = WikiPage(
+            id="wiki-security-guide",
+            slug="security-guide",
+            title=doc.title,
+            page_type="source",
+            status="published",
+            knowledge_scope="test",
+            summary=("账号与安全页面用于个人资料管理。" * 80),
+            content_md="\n\n".join(
+                f"## 账号与安全说明 {index}\n" + ("通用页面说明。" * 100)
+                for index in range(8)
+            ),
+            confidence=0.86,
+        )
+        db.add_all([admin, doc, page])
+        db.flush()
+        quotes = [
+            "账号与安全功能导航。",
+            "账号与安全可以修改密码。",
+            "账号与安全可以换绑手机。",
+            "账号与安全可以绑定、换绑和解绑邮箱。",
+            "账号与安全可以绑定微信。",
+            "账号与安全可以注销账号。",
+        ]
+        db.add_all(
+            [
+                WikiPageSource(
+                    id=f"wiki-security-source-{index}",
+                    page_id=page.id,
+                    document_id=doc.id,
+                    page_number=14 + index,
+                    source_order=index,
+                    quote=quote,
+                )
+                for index, quote in enumerate(quotes)
+            ]
+        )
+        db.commit()
+
+        contexts, meta = retrieve_wiki_contexts(
+            db,
+            "外服云账号与安全里可以管理哪些内容？",
+            admin,
+            top_k=5,
+            knowledge_scope="test",
+        )
+
+        assert meta["used"] is True
+        assert contexts
+        content = contexts[0]["content"]
+        for expected in ("修改密码", "换绑手机", "解绑邮箱", "绑定微信", "注销账号"):
+            assert expected in content
+        assert contexts[0]["page_number"] in {15, 16, 17, 18, 19}
+    finally:
+        db.close()
+
+
+def test_wiki_context_uses_full_source_chunk_when_stored_quote_is_truncated() -> None:
+    Session = make_session()
+    db = Session()
+    try:
+        admin = User(id="admin-full-source", username="admin-full-source", password_hash="", is_admin=True, is_active=True)
+        doc = Document(
+            id="doc-workorder-permissions",
+            title="工单系统权限和数据看板",
+            filename="workorder-permissions.pdf",
+            storage_path="/tmp/workorder-permissions.pdf",
+            source_type="pdf",
+            knowledge_scope="test",
+            document_kind="workorder",
+        )
+        prefix = "后道团队只能查询自己模块所涉业务的工单。" + ("权限配置说明。" * 45)
+        full_content = prefix + "前端按项目经理、业务员层级配置门户和数据看板，展示权限内各项业务的当月办理数量及完成进度。"
+        chunk = DocumentChunk(
+            id="chunk-workorder-permissions",
+            document_id=doc.id,
+            chunk_index=8,
+            page_number=9,
+            content=full_content,
+            embedding_json="[]",
+        )
+        page = WikiPage(
+            id="wiki-workorder-permissions",
+            slug="workorder-permissions",
+            title=doc.title,
+            page_type="source",
+            status="published",
+            knowledge_scope="test",
+            summary="工单系统如何限制后道权限，并给项目经理或业务员展示内容。",
+            content_md="# 工单系统权限说明\n\n后道权限和前端门户展示规则。",
+            confidence=0.86,
+        )
+        source = WikiPageSource(
+            id="wiki-workorder-permissions-source",
+            page_id=page.id,
+            document_id=doc.id,
+            chunk_id=chunk.id,
+            page_number=9,
+            source_order=0,
+            quote=full_content[:360],
+        )
+        db.add_all([admin, doc, chunk, page, source])
+        db.commit()
+
+        contexts, _meta = retrieve_wiki_contexts(
+            db,
+            "工单系统如何限制后道权限，并给项目经理或业务员展示什么？",
+            admin,
+            top_k=5,
+            knowledge_scope="test",
+        )
+
+        assert contexts
+        content = contexts[0]["content"]
+        for expected in ("自己模块", "数据看板", "当月办理数量", "完成进度"):
+            assert expected in content
+    finally:
+        db.close()
+
+
 def test_wiki_compiler_v2_removes_stale_derived_pages_on_recompile() -> None:
     Session = make_session()
     db = Session()

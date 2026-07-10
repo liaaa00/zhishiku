@@ -27,6 +27,7 @@ def main() -> None:
         "2026年3月社保预计缴款时间": True,
         "列出上海有效网点清单": True,
         "上海有哪些开设公司的城市名单？": True,
+        "运城分公司的银行账户、社保公积金账户和公司开设状态分别怎样？": True,
     }
 
     for question, expected in cases.items():

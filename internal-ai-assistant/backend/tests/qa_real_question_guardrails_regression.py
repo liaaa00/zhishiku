@@ -116,6 +116,35 @@ def main() -> None:
                     "后道对接人": "石家庄后道",
                     "备注": "公积金同城转入需要原单位或者员工本人操作。",
                 }),
+                _row("doc-dispatch", "shenyang-202603", "202603", 10, {
+                    "省份": "辽宁",
+                    "城市": "沈阳",
+                    "单位名称": "外服（浙江）企业服务有限公司沈阳分公司",
+                    "截止时间-社保": "13号",
+                    "截止时间-医保": "13号",
+                    "截止时间-公积金": "23号",
+                    "操作规则-社保": "增减员需办理劳动关系新签或解除。",
+                    "备注": "需提供劳动合同和劳动关系解除书。",
+                }),
+                _row("doc-dispatch", "sjz-202603", "202603", 11, {
+                    "省份": "河北",
+                    "城市": "石家庄",
+                    "单位名称": "外服（浙江）企业服务有限公司石家庄分公司",
+                    "截止时间-社保": "23号",
+                    "截止时间-医保": "20号",
+                    "截止时间-公积金": "27号",
+                    "备注": "公积金同城转入需原单位或员工本人操作。",
+                }),
+                _row("doc-dispatch", "kunming-202603", "202603", 12, {
+                    "省份": "云南",
+                    "城市": "昆明",
+                    "单位名称": "外服（浙江）企业服务有限公司昆明分公司",
+                    "截止时间-社保": "17号",
+                    "截止时间-医保": "17号",
+                    "截止时间-公积金": "27号",
+                    "操作规则-社保": "社保增减需上传单位盖章的劳动关系新签或解除证明书。",
+                    "备注": "还需上传员工身份证正反面原件照片。",
+                }),
                 _row("doc-progress", "beilun", "Sheet1", 3, {
                     "省份": "浙江",
                     "城市": "宁波北仑",
@@ -178,14 +207,14 @@ def main() -> None:
             raise AssertionError(f"个人注册页模块问题不应路由到 table，got {route}")
 
         # Guardrail 2: concrete city + completion/status fields should not turn into global branch-completion statistics.
-        city_question = "成都分公司的银行账户、社保公积金账户是否已完成？公积金比例范围是什么？"
+        city_question = "成都分公司的公积金比例范围是什么？银行和社保公积金账户开好了吗？"
         contexts, meta = table_mode_contexts(db, city_question, user, top_k=10)
         if meta.get("branch_completion_filter"):
             raise AssertionError(f"具体城市问题不应触发全局分公司完成度过滤，meta={meta}")
         if _row_ids(contexts) != {"chengdu"}:
             raise AssertionError(f"成都问题应只命中成都行，got rows={_row_ids(contexts)}, meta={meta}")
         answer = build_table_answer(city_question, contexts)
-        _assert_contains(answer, "成都", "5%-12%全比例")
+        _assert_contains(answer, "成都", "银行账户", "社保公积金账户", "5%-12%全比例")
         if "共有 28 家" in answer or "银行账户、社保公积金账户、公积金比例、公司名称均已完成" in answer:
             raise AssertionError(f"成都问题不应输出全局完成度文案，answer={answer}")
 
@@ -255,6 +284,34 @@ def main() -> None:
             raise AssertionError(f"北京备注风险问题应命中北京 202512 行，got rows={_row_ids(contexts)}, meta={meta}")
         answer = build_table_answer(bj_question, contexts)
         _assert_contains(answer, "工伤", "无法撤销", "备注")
+
+        # Guardrail 8: compound deadline questions must project all three deadlines plus requested operational evidence.
+        compound_cases = [
+            (
+                "2026年3月沈阳社保、医保、公积金截止日分别是什么？增减员还要准备什么？",
+                "shenyang-202603",
+                ("截止时间-社保=13号", "截止时间-医保=13号", "截止时间-公积金=23号", "劳动合同", "劳动关系解除书"),
+            ),
+            (
+                "2026年3月石家庄三项截止日分别是什么？公积金同城转入由谁操作？",
+                "sjz-202603",
+                ("截止时间-社保=23号", "截止时间-医保=20号", "截止时间-公积金=27号", "原单位", "员工本人"),
+            ),
+            (
+                "2026年3月昆明三项派单截止日是什么？社保增减需要上传哪些证明材料？",
+                "kunming-202603",
+                ("截止时间-社保=17号", "截止时间-医保=17号", "截止时间-公积金=27号", "劳动关系", "身份证正反面"),
+            ),
+        ]
+        for compound_question, expected_row_id, expected_terms in compound_cases:
+            contexts, meta = table_mode_contexts(db, compound_question, user, top_k=10)
+            if _row_ids(contexts) != {expected_row_id}:
+                raise AssertionError(
+                    f"复合截止日问题应只命中目标城市行，question={compound_question}, "
+                    f"rows={_row_ids(contexts)}, meta={meta}"
+                )
+            answer = build_table_answer(compound_question, contexts)
+            _assert_contains(answer, *expected_terms)
 
         print("Real question guardrail regression passed.")
     finally:

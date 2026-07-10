@@ -153,9 +153,14 @@ def extractive_fallback_answer(question: str, contexts: List[dict], reason: str 
         if content:
             highlights.append(best_snippet(content))
 
+    deterministic_fast_path = bool(reason and reason.endswith("_fast_path"))
     lines = [
-        "## 本地兜底整理（模型暂不可用）",
-        "模型暂时没有返回稳定结果，下面先基于命中证据给出简短整理；请结合来源面板核验。",
+        "## 基于知识库整理" if deterministic_fast_path else "## 本地兜底整理（模型暂不可用）",
+        (
+            "以下按命中证据直接整理，字段和明细以来源面板为准。"
+            if deterministic_fast_path
+            else "模型暂时没有返回稳定结果，下面先基于命中证据给出简短整理；请结合来源面板核验。"
+        ),
         f"- 命中文档：{'、'.join(docs[:5]) or '未知文档'}",
         f"- 命中片段数：{len(contexts)}",
         "",
@@ -166,7 +171,7 @@ def extractive_fallback_answer(question: str, contexts: List[dict], reason: str 
     else:
         lines.append("- 当前命中内容较少，暂无法稳定提炼字段。")
 
-    if reason:
+    if reason and not deterministic_fast_path:
         lines.append(f"\n> 说明：模型生成失败或未配置（{reason[:160]}），已避免把原始切分片段直接输出。")
     return "\n".join(lines)
 

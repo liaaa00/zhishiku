@@ -15,6 +15,8 @@ STRONG_WIKI_SCORE = 0.42
 MAX_SCAN_PAGES = 500
 MAX_CONTEXT_CHARS = 3600
 MAX_SNIPPETS = 5
+MAX_SOURCE_QUOTES = 8
+SOURCE_QUOTE_CONTEXT_CHARS = 700
 
 CJK_STOP_TERMS = {
     "什么",
@@ -190,25 +192,46 @@ def _best_snippets(page: WikiPage, hits: list[str], max_blocks: int = MAX_SNIPPE
     return [block for _, _, block in ordered]
 
 
+def _source_text(source: WikiPageSource) -> str:
+    chunk = getattr(source, "chunk", None)
+    same_document = chunk is not None and str(getattr(chunk, "document_id", "") or "") == str(source.document_id or "")
+    chunk_content = str(getattr(chunk, "content", "") or "") if same_document else ""
+    return chunk_content or str(source.quote or "")
+
+
+def _rank_sources(sources: list[WikiPageSource], hits: list[str]) -> list[WikiPageSource]:
+    return sorted(
+        sources,
+        key=lambda source: (
+            -_block_score(_source_text(source), hits),
+            -len(_source_text(source)),
+            int(source.source_order or 0),
+        ),
+    )
+
+
 def _context_content(page: WikiPage, hits: list[str], sources: list[WikiPageSource]) -> str:
     parts: list[str] = [f"# {page.title}"]
+    selected_sources = sources[:MAX_SOURCE_QUOTES]
+    if selected_sources:
+        parts.extend(["", "## 可核验来源摘录"])
+        for source in selected_sources:
+            marker = int(source.source_order or 0) + 1
+            parts.append(f"- [S{marker}] {_truncate(_source_text(source), SOURCE_QUOTE_CONTEXT_CHARS)}")
     if page.summary:
-        parts.extend(["", "## Wiki 摘要", _truncate(page.summary, 1200)])
+        parts.extend(["", "## Wiki 摘要", _truncate(page.summary, 600)])
     snippets = _best_snippets(page, hits)
     if snippets:
         parts.extend(["", "## 命中片段"])
         parts.extend(snippets)
-    source_quotes = [source.quote for source in sources[:4] if source.quote]
-    if source_quotes:
-        parts.extend(["", "## 可核验来源摘录"])
-        parts.extend(f"- [S{index + 1}] {_truncate(quote, 360)}" for index, quote in enumerate(source_quotes))
     return _truncate("\n\n".join(parts), MAX_CONTEXT_CHARS)
 
 
 def _context_for_page(page: WikiPage, score: float, hits: list[str], sources: list[WikiPageSource]) -> dict[str, Any]:
-    primary_source = sources[0] if sources else None
+    ranked_sources = _rank_sources(sources, hits)
+    primary_source = ranked_sources[0] if ranked_sources else None
     doc = primary_source.document if primary_source else None
-    content = _context_content(page, hits, sources)
+    content = _context_content(page, hits, ranked_sources)
     return {
         "document_id": doc.id if doc else "",
         "document_title": doc.title if doc else page.title,
@@ -230,7 +253,7 @@ def _context_for_page(page: WikiPage, score: float, hits: list[str], sources: li
         "wiki_source_count": len(sources),
         "wiki_context_char_count": len(content),
         "wiki_context_pack": "matched_snippets_v3_budgeted",
-        "source_quotes": [source.quote for source in sources[:6] if source.quote],
+        "source_quotes": [_source_text(source) for source in ranked_sources[:MAX_SOURCE_QUOTES] if _source_text(source)],
     }
 
 

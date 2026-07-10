@@ -109,7 +109,28 @@ def summary_display_sources(contexts: list[dict], interaction_meta: dict, summar
         source_contexts = interaction_meta.get("source_contexts") or []
         if source_contexts:
             return serialize_sources(source_contexts)
-    return serialize_sources(contexts)
+
+    selected: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    per_document: dict[str, int] = {}
+    for context in contexts:
+        document_id = str(context.get("document_id") or context.get("document_title") or "")
+        source_id = str(
+            context.get("table_row_id")
+            or context.get("chunk_id")
+            or context.get("chunk_index")
+            or context.get("location")
+            or ""
+        )
+        identity = (document_id, source_id)
+        if identity in seen or per_document.get(document_id, 0) >= 4:
+            continue
+        seen.add(identity)
+        per_document[document_id] = per_document.get(document_id, 0) + 1
+        selected.append(context)
+        if len(selected) >= 8:
+            break
+    return serialize_sources(selected)
 
 
 GENERIC_ANSWER_MATCH_TERMS = {"公", "司", "公司", "员工", "标准", "模板", "资料", "材料", "信息", "字段", "需要", "提供", "是", "有", "在", "今年", "什么", "哪些", "多少", "是否", "吗"}
@@ -288,6 +309,9 @@ def digest_contexts_for_answer(contexts: list[dict], answer_contexts: list[dict]
 def should_use_fast_extractive_answer(question: str, contexts: list[dict], retrieval_meta: dict, *, summary_mode: bool, table_answer_mode: bool) -> bool:
     if summary_mode or table_answer_mode or not contexts:
         return False
+    query_profile = retrieval_meta.get("query_profile") if isinstance(retrieval_meta.get("query_profile"), dict) else {}
+    if query_profile.get("topic") == "form_fields":
+        return True
     intent = str(retrieval_meta.get("intent") or "")
     if intent not in {"deep_analysis", "broad_business"}:
         return False
@@ -538,9 +562,9 @@ def chat(req: ChatRequest, db: Session = Depends(get_db), user: User = Depends(r
         elif contexts and retrieval_backend != "qdrant":
             retrieval_note = retrieval_note or "recent_context_or_sqlite"
 
-    sources = summary_display_sources(contexts, interaction_meta, summary_mode)
-    source_quality_notice = build_source_quality_notice(sources)
     answer_contexts = model_contexts_for_answer(contexts, summary_mode)
+    sources = summary_display_sources(answer_contexts, interaction_meta, summary_mode)
+    source_quality_notice = build_source_quality_notice(sources)
     retrieval_meta["answer_context_count"] = len(answer_contexts)
     retrieval_meta["answer_context_filtered_count"] = max(0, len(contexts) - len(answer_contexts))
     confidence = compute_grounding_confidence(answer_contexts)
@@ -734,9 +758,9 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
                 elif contexts and retrieval_backend != "qdrant":
                     retrieval_note = retrieval_note or "recent_context_or_sqlite"
 
-            sources = summary_display_sources(contexts, interaction_meta, summary_mode)
-            source_quality_notice = build_source_quality_notice(sources)
             answer_contexts = model_contexts_for_answer(contexts, summary_mode)
+            sources = summary_display_sources(answer_contexts, interaction_meta, summary_mode)
+            source_quality_notice = build_source_quality_notice(sources)
             retrieval_meta["answer_context_count"] = len(answer_contexts)
             retrieval_meta["answer_context_filtered_count"] = max(0, len(contexts) - len(answer_contexts))
             confidence = compute_grounding_confidence(answer_contexts)

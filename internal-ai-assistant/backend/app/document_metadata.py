@@ -175,3 +175,16 @@ def filter_contexts_by_allowed_kinds(contexts: list[dict], allowed_kinds: set[st
         else:
             dropped += 1
     return kept, dropped
+
+
+def prefer_contexts_for_query_topic(contexts: list[dict], topic: str | None) -> tuple[list[dict], int]:
+    if str(topic or "") != "form_fields":
+        return contexts, 0
+    preferred = [
+        context
+        for context in contexts
+        if str(context.get("document_kind") or DOC_KIND_GENERAL) == DOC_KIND_FORM
+    ]
+    if not preferred:
+        return contexts, 0
+    return preferred, len(contexts) - len(preferred)

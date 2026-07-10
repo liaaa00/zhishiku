@@ -38,6 +38,8 @@ TABLE_QUERY_VERBS = (
     "是什么",
     "是多少",
     "分别是",
+    "分别怎样",
+    "分别如何",
     "开具完成",
     "开好",
     "完成了吗",
@@ -409,7 +411,7 @@ def _required_answer_columns(question: str, plan_select_columns: list[str]) -> l
         return []
     # 展示字段不等于过滤条件；这里只对用户明确要求必须存在的业务字段做二次过滤。
     required: list[str] = []
-    if "银行账户" in text:
+    if "银行账户" in text or ("银行" in text and "账户" in text):
         required.append("bank_account")
     if any(term in text for term in ("社保公积金账户", "社保账户", "公积金账户")):
         required.append("social_account")
@@ -536,17 +538,17 @@ def _question_subject_markers(compact_question: str) -> tuple[str, ...]:
 
 def _focus_key_markers(compact_question: str) -> tuple[str, ...]:
     markers: list[str] = []
-    if any(term in compact_question for term in ("操作规则", "规则", "办理")):
+    if any(term in compact_question for term in ("操作规则", "规则", "办理", "增减员", "增减")):
         markers.append("操作规则")
-    if any(term in compact_question for term in ("截止时间", "派单截止", "哪天", "几号", "什么时候")):
+    if any(term in compact_question for term in ("截止时间", "截止日", "派单截止", "哪天", "几号", "什么时候")):
         markers.append("截止时间")
     if any(term in compact_question for term in ("预计缴款", "缴款时间")):
         markers.append("预计缴款时间")
-    if any(term in compact_question for term in ("备注", "注意事项", "资料", "材料", "需提供", "需要提供", "提供哪些")):
+    if any(term in compact_question for term in ("备注", "注意事项", "资料", "材料", "需提供", "需要提供", "提供哪些", "准备什么", "增减员", "增减")):
         markers.append("备注")
     if any(term in compact_question for term in ("同城转入", "谁来操作", "谁操作", "谁", "哪位", "操作人", "办理人", "经办人", "对接人", "后道")):
         markers.extend(["备注", "后道对接人", "对接人", "操作人", "办理人", "经办人"])
-    if "银行账户" in compact_question:
+    if "银行账户" in compact_question or ("银行" in compact_question and "账户" in compact_question):
         markers.append("银行账户")
     if any(term in compact_question for term in ("社保公积金账户", "社保账户", "公积金账户")):
         markers.append("社保公积金账户")

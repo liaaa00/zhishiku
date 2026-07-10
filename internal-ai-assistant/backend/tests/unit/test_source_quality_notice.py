@@ -1,6 +1,41 @@
 from __future__ import annotations
 
-from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, build_table_fact_block, digest_contexts_for_answer, merge_table_fact_block, model_contexts_for_answer, should_use_fast_extractive_answer, should_use_table_llm_analysis, table_contexts_for_answer
+from app.ai_client import extractive_fallback_answer
+from app.routers.chat_api import build_prompt_context_preview, build_retrieval_debug_summary, build_source_quality_notice, build_table_fact_block, digest_contexts_for_answer, merge_table_fact_block, model_contexts_for_answer, should_use_fast_extractive_answer, should_use_table_llm_analysis, summary_display_sources, table_contexts_for_answer
+
+
+def test_non_summary_display_sources_caps_deduplicates_and_limits_each_document() -> None:
+    contexts = [
+        {
+            "document_id": "doc-a",
+            "document_title": "Document A",
+            "chunk_id": f"chunk-a-{index}",
+            "chunk_index": index,
+            "content": f"A{index}",
+            "score": 0.9 - index * 0.01,
+        }
+        for index in range(9)
+    ]
+    contexts.insert(1, dict(contexts[0]))
+    contexts.extend(
+        {
+            "document_id": "doc-b",
+            "document_title": "Document B",
+            "chunk_id": f"chunk-b-{index}",
+            "chunk_index": index,
+            "content": f"B{index}",
+            "score": 0.8 - index * 0.01,
+        }
+        for index in range(6)
+    )
+
+    sources = summary_display_sources(contexts, {}, summary_mode=False)
+
+    assert len(sources) == 8
+    assert sum(source["document_id"] == "doc-a" for source in sources) == 4
+    assert sum(source["document_id"] == "doc-b" for source in sources) == 4
+    identities = {(source["document_id"], source["chunk_id"]) for source in sources}
+    assert len(identities) == len(sources)
 
 
 def test_source_quality_notice_summarizes_poor_and_blocked_sources() -> None:
@@ -315,3 +350,25 @@ def test_fast_extractive_answer_is_used_for_large_broad_contexts() -> None:
         summary_mode=False,
         table_answer_mode=False,
     ) is False
+
+    form_context = {
+        "document_id": "form-doc",
+        "document_title": "给员工-入职人员信息表(16)",
+        "content": "[全职员工] 姓名 | 入职日期 | 身份证号码 | 手机号 | 公司邮箱 | 私人邮箱",
+        "score": 0.9,
+    }
+    assert should_use_fast_extractive_answer(
+        "全职员工入职信息表最基础的身份和联系方式字段有哪些？",
+        [form_context],
+        {"query_profile": {"topic": "form_fields"}},
+        summary_mode=False,
+        table_answer_mode=False,
+    ) is True
+    answer = extractive_fallback_answer(
+        "全职员工入职信息表最基础的身份和联系方式字段有哪些？",
+        [form_context],
+        "form_fields_fast_path",
+    )
+    assert "入职日期" in answer
+    assert "模型暂不可用" not in answer
+    assert "模型生成失败" not in answer

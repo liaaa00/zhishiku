@@ -800,7 +800,21 @@ def select_columns(question: str, value_filters: list[dict[str, str]] | None = N
             seen.add(group)
             candidates.append((min(positions), group))
     candidates.sort(key=lambda item: item[0])
-    return [group for _position, group in candidates[:8]]
+    selected = [group for _position, group in candidates[:8]]
+    if "银行" in text and "账户" in text and "bank_account" not in selected:
+        selected.append("bank_account")
+    shared_deadline = any(term in text for term in ("三项截止", "三项派单截止")) or (
+        any(term in text for term in ("截止日", "截止时间", "派单截止"))
+        and sum(subject in text for subject in ("社保", "医保", "公积金")) >= 2
+    )
+    if shared_deadline:
+        selected = [
+            *[group for group in selected if group not in {"social_deadline", "medical_deadline", "fund_deadline"}],
+            "social_deadline",
+            "medical_deadline",
+            "fund_deadline",
+        ]
+    return selected[:8]
 
 
 def aggregate_operation(question: str) -> str:
