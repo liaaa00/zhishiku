@@ -97,6 +97,53 @@ def embed_texts(texts: List[str], *, strict: bool = False, timeout: float | None
     return [local_hash_embedding(text) for text in texts]
 
 
+_EXCEL_CELL_PATTERN = re.compile(
+    r"([A-Z]{1,3})(\d+)\s*[:：]\s*(.*?)(?=\s*(?:\|\s*)?[A-Z]{1,3}\d+\s*[:：]|$)"
+)
+
+
+def _form_field_highlights(question: str, contexts: List[dict]) -> list[str]:
+    """Return form headers without including any employee data rows."""
+    focus = next((term for term in ("全职", "实习") if term in question), "")
+    highlights: list[str] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+
+    for context in contexts:
+        raw = str(context.get("content") or "")
+        sheet_match = re.search(r"\[([^\]\r\n]{1,40})\]", raw)
+        sheet = " ".join(sheet_match.group(1).split()) if sheet_match else ""
+        if focus and sheet and focus not in sheet:
+            continue
+
+        fields: list[str] = []
+        for _column, row, value in _EXCEL_CELL_PATTERN.findall(unicodedata.normalize("NFKC", raw)):
+            field = " ".join(value.split()).strip(" |")
+            if row == "1" and field and field not in fields:
+                fields.append(field)
+
+        if not fields:
+            for line in raw.splitlines():
+                normalized = unicodedata.normalize("NFKC", line).strip()
+                if not normalized.startswith("表头"):
+                    continue
+                for cell in normalized.split("|")[1:]:
+                    field = cell.split("=", 1)[-1].strip()
+                    if field and field not in fields:
+                        fields.append(field)
+                break
+
+        if not fields:
+            continue
+        identity = (sheet, tuple(fields))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        prefix = f"[{sheet}] " if sheet else ""
+        highlights.append(prefix + " | ".join(fields))
+
+    return highlights
+
+
 def extractive_fallback_answer(question: str, contexts: List[dict], reason: str = "") -> str:
     if not contexts:
         return "没有在授权知识库中找到相关内容，因此不能脱离资料泛答。"
@@ -104,6 +151,7 @@ def extractive_fallback_answer(question: str, contexts: List[dict], reason: str 
     docs: list[str] = []
     highlights: list[str] = []
     compact_question = re.sub(r"\s+", "", question or "")
+    form_field_highlights = _form_field_highlights(question, contexts) if "字段" in compact_question else []
     detail_terms = (
         "字段", "字段名", "哪些字段", "表里", "工单", "派出", "传导", "流程", "步骤", "前四步", "前几步",
         "入口", "路径", "登录", "回写", "审核", "材料", "下载保存", "分别", "如何处理",
@@ -147,11 +195,16 @@ def extractive_fallback_answer(question: str, contexts: List[dict], reason: str 
         title = context.get("document_title") or context.get("filename") or "未知文档"
         if title not in docs:
             docs.append(title)
+        if form_field_highlights:
+            continue
         content = unicodedata.normalize("NFKC", " ".join(str(context.get("content") or "").split()))
         content = re.sub(r"(?:[A-Z]{1,3}\d+\s*[:：]\s*)", "", content)
         content = re.sub(r"\[数据结果\]", "", content).strip(" |")
         if content:
             highlights.append(best_snippet(content))
+
+    if form_field_highlights:
+        highlights.extend(form_field_highlights)
 
     deterministic_fast_path = bool(reason and reason.endswith("_fast_path"))
     lines = [

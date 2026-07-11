@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -43,6 +45,63 @@ def test_new_chat_persists_session_before_messages(monkeypatch) -> None:
             .all()
         )
         assert session is not None
+        assert [message.role for message in messages] == ["user", "assistant"]
+    finally:
+        db.close()
+
+
+def test_new_stream_chat_flushes_session_before_messages(monkeypatch) -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection, _connection_record) -> None:
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+    try:
+        user = User(id="stream-user", username="stream-user", password_hash="", is_active=True)
+        db.add(user)
+        db.commit()
+
+        monkeypatch.setattr(chat_api, "SessionLocal", Session)
+        monkeypatch.setattr(chat_api, "get_model_config", lambda _db: {"api_key": "", "base_url": "", "model": ""})
+        monkeypatch.setattr(
+            chat_api,
+            "decide_chat_route",
+            lambda *_args, **_kwargs: {
+                "intent": "chat",
+                "should_retrieve": False,
+                "summary_mode": False,
+                "followup_mode": False,
+                "source": "test",
+                "reason": "stream persistence regression",
+            },
+        )
+        monkeypatch.setattr(chat_api, "stream_conversational_answer", lambda *_args, **_kwargs: iter(["你好，有什么可以帮你？"]))
+        monkeypatch.setattr(chat_api, "audit", lambda *_args, **_kwargs: None)
+
+        response = chat_api.chat_stream(chat_api.ChatRequest(question="你好"), db, user)
+
+        async def collect_body() -> str:
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        body = asyncio.run(collect_body())
+        assert '"error": true' not in body
+        assert "event: done" in body
+
+        db.expire_all()
+        session = db.query(ChatSession).filter(ChatSession.user_id == user.id).one()
+        messages = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.session_id == session.id)
+            .order_by(ChatMessage.created_at)
+            .all()
+        )
         assert [message.role for message in messages] == ["user", "assistant"]
     finally:
         db.close()

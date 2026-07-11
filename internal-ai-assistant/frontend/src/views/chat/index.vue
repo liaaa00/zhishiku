@@ -1,12 +1,20 @@
 <template>
   <div class="ai-workbench" @paste="handleWorkbenchPaste" @drop.prevent="handleWorkbenchDrop" @dragover.prevent>
-    <aside class="ai-sidebar">
+    <button
+      v-if="mobileSidebarOpen"
+      class="mobile-sidebar-backdrop"
+      type="button"
+      aria-label="关闭导航菜单"
+      @click="closeMobileSidebar"
+    ></button>
+    <aside :class="['ai-sidebar', { 'mobile-open': mobileSidebarOpen }]">
       <div class="brand-card">
         <div class="brand-logo">AI</div>
         <div>
           <div class="brand-title">内部 AI 助手</div>
           <div class="brand-subtitle">Knowledge Copilot</div>
         </div>
+        <button class="mobile-sidebar-close" type="button" title="关闭导航菜单" aria-label="关闭导航菜单" @click="closeMobileSidebar">×</button>
       </div>
 
       <button class="new-chat" type="button" aria-label="新建对话" @click="newConversation">
@@ -35,16 +43,21 @@
       </div>
 
       <div class="side-footer">
-        <button v-if="isAdmin" class="side-action" type="button" @click="router.push('/admin')">后台管理</button>
+        <button v-if="isAdmin" class="side-action" type="button" @click="goToAdmin">后台管理</button>
         <button class="side-action subtle" type="button" @click="logout">退出登录</button>
       </div>
     </aside>
 
     <main class="ai-main">
       <header class="topbar">
-        <div>
-          <div class="eyebrow">内部 AI 助手</div>
-          <h1>知识库问答</h1>
+        <div class="topbar-title">
+          <button class="mobile-sidebar-toggle" type="button" title="打开导航菜单" aria-label="打开导航菜单" @click="toggleMobileSidebar">
+            <span aria-hidden="true">☰</span>
+          </button>
+          <div>
+            <div class="eyebrow">内部 AI 助手</div>
+            <h1>知识库问答</h1>
+          </div>
         </div>
         <div class="topbar-actions">
           <div class="chat-search-box">
@@ -596,6 +609,7 @@ const isAdmin = computed(() => auth.isAdmin)
 const sessions = ref<SessionSummary[]>([])
 const messages = ref<ChatMessageItem[]>([welcomeMessage()])
 const sourcePanelVisible = ref(false)
+const mobileSidebarOpen = ref(false)
 const activeSourceMessage = ref<ChatMessageItem | null>(null)
 const activeSourceSectionIndex = ref<number | null>(null)
 const sourceViewMode = ref<'all' | 'related' | 'top'>('top')
@@ -1327,7 +1341,21 @@ async function loadSessions() {
   }
 }
 
+function toggleMobileSidebar() {
+  mobileSidebarOpen.value = !mobileSidebarOpen.value
+}
+
+function closeMobileSidebar() {
+  mobileSidebarOpen.value = false
+}
+
+function goToAdmin() {
+  closeMobileSidebar()
+  router.push('/admin')
+}
+
 async function openSession(id: string) {
+  closeMobileSidebar()
   try {
     const { data } = await http.get(`/chat/sessions/${id}`)
     sessionId.value = id
@@ -1393,6 +1421,7 @@ async function recoverAssistantMessageFromSession(assistantMessage: ChatMessageI
 }
 
 function newConversation() {
+  closeMobileSidebar()
   sessionId.value = ''
   messages.value = [welcomeMessage()]
   error.value = ''
@@ -1402,6 +1431,7 @@ function newConversation() {
 }
 
 function logout() {
+  closeMobileSidebar()
   auth.logout()
   router.push('/login')
 }

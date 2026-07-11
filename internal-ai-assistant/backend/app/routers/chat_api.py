@@ -908,6 +908,7 @@ def chat_stream(req: ChatRequest, db: Session = Depends(get_db), user: User = De
             answer = strip_inline_source_markers("".join(answer_parts))
             if not req.session_id:
                 stream_db.add(ChatSession(id=session_id, user_id=stream_user.id))
+                stream_db.flush()
             message_created_at = datetime.utcnow()
             stream_db.add(ChatMessage(id=user_message_id, session_id=session_id, role="user", content=question, created_at=message_created_at))
             stream_db.add(ChatMessage(id=assistant_message_id, session_id=session_id, role="assistant", content=answer, sources_json=json.dumps(sources, ensure_ascii=False), mode=mode, created_at=message_created_at + timedelta(milliseconds=1)))

@@ -354,7 +354,12 @@ def test_fast_extractive_answer_is_used_for_large_broad_contexts() -> None:
     form_context = {
         "document_id": "form-doc",
         "document_title": "给员工-入职人员信息表(16)",
-        "content": "[全职员工] 姓名 | 入职日期 | 身份证号码 | 手机号 | 公司邮箱 | 私人邮箱",
+        "content": (
+            "[全职员工] A1: 姓名 | B1: 入职日期 | C1: 身份证号码 | D1: 手机号 | "
+            "E1: 公司邮箱 | F1: 私人邮箱 A2: 测试员工 | B2: 46149 | "
+            "C2: 110101199001011234 | D2: 13800138000 | "
+            "E2: employee@example.com | F2: private@example.com"
+        ),
         "score": 0.9,
     }
     assert should_use_fast_extractive_answer(
@@ -370,5 +375,12 @@ def test_fast_extractive_answer_is_used_for_large_broad_contexts() -> None:
         "form_fields_fast_path",
     )
     assert "入职日期" in answer
+    assert "私人邮箱" in answer
+    assert "测试员工" not in answer
+    assert "46149" not in answer
+    assert "110101199001011234" not in answer
+    assert "13800138000" not in answer
+    assert "employee@example.com" not in answer
+    assert "private@example.com" not in answer
     assert "模型暂不可用" not in answer
     assert "模型生成失败" not in answer
